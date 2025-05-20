@@ -472,7 +472,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "futures-util",
  "rand 0.9.1",
+ "serde",
+ "serde_json",
  "thiserror 2.0.12",
  "tokio",
  "tokio-tungstenite",
