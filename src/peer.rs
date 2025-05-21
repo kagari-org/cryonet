@@ -1,23 +1,27 @@
+use std::sync::Arc;
+
 use anyhow::Result;
+use futures_util::StreamExt;
+use tokio_tungstenite::connect_async;
+use webrtc::{data_channel::RTCDataChannel, peer_connection::RTCPeerConnection};
 
-use crate::channel::{webrtc::WebRTCChannel, ws::WSChannel};
+use crate::error::CryonetError;
 
-#[derive(Debug)]
-struct Peer {
+pub(crate) struct Peer {
     id: String,
 
-    ws: Option<WSChannel>,
-    webrtc: Option<WebRTCChannel>,
-    data: Option<WebRTCChannel>,
+    rtc: RTCPeerConnection,
+    signal: Arc<RTCDataChannel>,
+    data: Arc<RTCDataChannel>,
 }
 
 impl Peer {
-    pub(crate) async fn from_ws(endpoint: String) -> Result<Peer> {
-        let (ws, id) = WSChannel::new(endpoint).await?;
-        Ok(Peer {
-            id, ws: Some(ws),
-            webrtc: None,
-            data: None,
-        })
+    pub(crate) fn new(
+        id: String,
+        rtc: RTCPeerConnection,
+        signal: Arc<RTCDataChannel>,
+        data: Arc<RTCDataChannel>,
+    ) -> Peer {
+        Peer { id, rtc, signal, data }
     }
 }

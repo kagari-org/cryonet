@@ -4,6 +4,4 @@ use thiserror::Error;
 pub(crate) enum CryonetError {
     #[error("connection error")]
     Connection,
-    #[error("bad packet")]
-    BadPacket,
 }
