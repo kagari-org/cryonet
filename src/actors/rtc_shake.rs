@@ -57,7 +57,7 @@ impl Actor for RTCShakeActor {
             let offer = rtc.create_offer(None).await?;
             let mut gather = rtc.gathering_complete_promise().await;
             rtc.set_local_description(offer).await?;
-            gather.recv().await.ok_or(CryonetError::Connection)?;
+            let _ = gather.recv().await;
             Some(rtc.local_description().await.ok_or(CryonetError::Connection)?)
         } else {
             None
@@ -119,7 +119,7 @@ impl Actor for RTCShakeActor {
                         let answer = rtc.create_answer(None).await?;
                         let mut gather = rtc.gathering_complete_promise().await;
                         rtc.set_local_description(answer).await?;
-                        gather.recv().await.ok_or(CryonetError::Connection)?;
+                        let _ = gather.recv().await;
                         let local_desc = rtc.local_description().await.ok_or(CryonetError::Connection)?;
                         state.local_desc = Some(local_desc);
                     }

@@ -31,10 +31,13 @@ pub(crate) async fn connect(id: &String, endpoint: &String) -> Result<Peer> {
 
     // send offer
     let rtc = create_rtc_connection().await?;
+    let signal = rtc.create_data_channel("signal", None).await?;
+    let data = rtc.create_data_channel("data", None).await?;
+
     let offer = rtc.create_offer(None).await?;
     let mut gather = rtc.gathering_complete_promise().await;
     rtc.set_local_description(offer).await?;
-    gather.recv().await.ok_or(CryonetError::Connection)?;
+    let _ = gather.recv().await;
     let local_desc = rtc.local_description().await.ok_or(CryonetError::Connection)?;
     let msg = serde_json::to_vec(&WSPacket::Offer(local_desc))?;
     ws.send(Message::binary(msg)).await?;
@@ -46,8 +49,6 @@ pub(crate) async fn connect(id: &String, endpoint: &String) -> Result<Peer> {
     };
     rtc.set_remote_description(remote_desc).await?;
 
-    let signal = rtc.create_data_channel("signal", None).await?;
-    let data = rtc.create_data_channel("data", None).await?;
     Ok(Peer { remote_id, _rtc: rtc, signal, data })
 }
 
@@ -66,21 +67,6 @@ pub(crate) async fn accept(id: String, stream: TcpStream) -> Result<Peer> {
 
     // recv offer
     let rtc = create_rtc_connection().await?;
-    let msg = ws.next().await.ok_or(CryonetError::Connection)??;
-    let WSPacket::Offer(remote_desc) = serde_json::from_slice(&msg.into_data())? else {
-        Err(CryonetError::Connection)?
-    };
-    rtc.set_remote_description(remote_desc).await?;
-
-    // send answer
-    let answer = rtc.create_answer(None).await?;
-    let mut gather = rtc.gathering_complete_promise().await;
-    rtc.set_local_description(answer).await?;
-    gather.recv().await.ok_or(CryonetError::Connection)?;
-    let local_desc = rtc.local_description().await.ok_or(CryonetError::Connection)?;
-    let msg = serde_json::to_vec(&WSPacket::Answer(local_desc))?;
-    ws.send(Message::binary(msg)).await?;
-
     let (signal_tx, mut signal) = channel(1);
     let (data_tx, mut data) = channel(1);
     rtc.on_data_channel(Box::new(move |channel| {
@@ -94,8 +80,24 @@ pub(crate) async fn accept(id: String, stream: TcpStream) -> Result<Peer> {
             }
         })
     }));
+
+    let msg = ws.next().await.ok_or(CryonetError::Connection)??;
+    let WSPacket::Offer(remote_desc) = serde_json::from_slice(&msg.into_data())? else {
+        Err(CryonetError::Connection)?
+    };
+    rtc.set_remote_description(remote_desc).await?;
+
+    // send answer
+    let answer = rtc.create_answer(None).await?;
+    let mut gather = rtc.gathering_complete_promise().await;
+    rtc.set_local_description(answer).await?;
+    let _ = gather.recv().await;
+    let local_desc = rtc.local_description().await.ok_or(CryonetError::Connection)?;
+    let msg = serde_json::to_vec(&WSPacket::Answer(local_desc))?;
+    ws.send(Message::binary(msg)).await?;
+
+
     let signal = signal.recv().await.unwrap();
     let data = data.recv().await.unwrap();
-    
     Ok(Peer { remote_id, _rtc: rtc, signal, data })
 }

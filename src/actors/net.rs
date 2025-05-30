@@ -1,6 +1,7 @@
 use std::{collections::HashMap, time::SystemTime};
 
 use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef};
+use tracing::info;
 
 use crate::{actors::{peer::PeerActor, ws_connect::WSConnectActorMsg}, CONFIG};
 
@@ -21,7 +22,9 @@ pub(crate) struct NetPeer {
     actor: NetPeerRef,
 }
 
+#[derive(derive_more::Debug)]
 pub(crate) enum NetActorMsg {
+    #[debug("NewPeer")]
     NewPeer(Peer),
     Alive(String, AlivePacket),
     SendAlive,
@@ -46,13 +49,15 @@ impl Actor for NetActor {
         myself: ActorRef<Self::Msg>,
         _: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
+        info!("spawn WSListenActor");
         Actor::spawn_linked(Some("ws_listen".to_string()), WSListenActor, (), myself.get_cell()).await?;
+        info!("spawn WSConnectActor");
         Actor::spawn_linked(Some("ws_connect".to_string()), WSConnectActor, (), myself.get_cell()).await?;
 
         let cfg = CONFIG.get().unwrap();
-        myself.send_interval(cfg.check_interval, || NetActorMsg::Check).await?;
+        myself.send_interval(cfg.check_interval, || NetActorMsg::Check);
         cast!(myself, NetActorMsg::Check)?;
-        myself.send_interval(cfg.send_alive_interval, || NetActorMsg::SendAlive).await?;
+        myself.send_interval(cfg.send_alive_interval, || NetActorMsg::SendAlive);
 
         Ok(NetActorState { peers: HashMap::new() })
     }
@@ -63,6 +68,7 @@ impl Actor for NetActor {
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
+        info!("received event: {message:?}");
         let cfg = CONFIG.get().unwrap();
         match message {
             // new peer from ws, ws_listen or rtc_shake

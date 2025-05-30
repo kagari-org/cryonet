@@ -7,6 +7,7 @@ use clap::Parser;
 use fluent_uri::{encoding::EStr, Uri};
 use ractor::{concurrency::Duration, Actor};
 use tokio::sync::OnceCell;
+use tracing::info;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 
 pub(crate) mod error;
@@ -71,6 +72,10 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
 
     CONFIG.get_or_init(async || Config::parse()).await;
+
+    info!("spawn NetActor");
     Actor::spawn(Some("net".to_string()), NetActor, ()).await?;
+
+    tokio::signal::ctrl_c().await?;
     Ok(())
 }

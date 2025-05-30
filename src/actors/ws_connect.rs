@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef};
-use tracing::error;
+use tracing::{error, info};
 
 use crate::{actors::net::NetActorMsg, models::ws::connect, CONFIG};
 
@@ -48,6 +48,7 @@ impl Actor for WSConnectActor {
                 for addr in diff {
                     let myself = myself.clone();
                     tokio::spawn(async move {
+                        info!("connecting to {addr}");
                         let cfg = CONFIG.get().unwrap();
                         let result: anyhow::Result<()> = try {
                             let peer = connect(&cfg.id, &addr).await?;
@@ -56,7 +57,8 @@ impl Actor for WSConnectActor {
                             cast!(net, NetActorMsg::NewPeer(peer))?;
                         };
                         if let Err(err) = result {
-                            error!("failed to connect ws: {err}");
+                            let trace = err.backtrace();
+                            error!("failed to connect ws: {err}\n{trace}");
                         };
                         if let Err(err) = cast!(myself, WSConnectActorMsg::Connected(addr)) {
                             error!("failed to send connected event: {err}");
