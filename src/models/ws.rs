@@ -2,10 +2,12 @@ use anyhow::{Ok, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::{net::TcpStream, sync::mpsc::channel};
-use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
+use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-use crate::{error::CryonetError, rtc::create_rtc_connection, Config, Peer};
+use crate::{actors::peer::Peer, error::CryonetError};
+
+use super::rtc::create_rtc_connection;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum WSPacket {
@@ -14,11 +16,11 @@ enum WSPacket {
     Answer(RTCSessionDescription),
 }
 
-pub(crate) async fn connect(id: String, endpoint: String, cfg: Config) -> Result<Peer> {
+pub(crate) async fn connect(id: &String, endpoint: &String) -> Result<Peer> {
     let (mut ws, _) = connect_async(endpoint).await?;
 
     // send init
-    let msg = serde_json::to_vec(&WSPacket::Init { id })?;
+    let msg = serde_json::to_vec(&WSPacket::Init { id: id.clone() })?;
     ws.send(Message::binary(msg)).await?;
 
     // recv init
@@ -28,7 +30,7 @@ pub(crate) async fn connect(id: String, endpoint: String, cfg: Config) -> Result
     };
 
     // send offer
-    let rtc = create_rtc_connection(cfg).await?;
+    let rtc = create_rtc_connection().await?;
     let offer = rtc.create_offer(None).await?;
     let mut gather = rtc.gathering_complete_promise().await;
     rtc.set_local_description(offer).await?;
@@ -46,10 +48,12 @@ pub(crate) async fn connect(id: String, endpoint: String, cfg: Config) -> Result
 
     let signal = rtc.create_data_channel("signal", None).await?;
     let data = rtc.create_data_channel("data", None).await?;
-    Ok(Peer::new(remote_id, rtc, signal, data))
+    Ok(Peer { remote_id, _rtc: rtc, signal, data })
 }
 
-pub(crate) async fn accept(id: String, mut ws: WebSocketStream<TcpStream>, cfg: Config) -> Result<Peer> {
+pub(crate) async fn accept(id: String, stream: TcpStream) -> Result<Peer> {
+    let mut ws = accept_async(stream).await?;
+
     // recv init
     let msg = ws.next().await.ok_or(CryonetError::Connection)??;
     let WSPacket::Init { id: remote_id } = serde_json::from_slice(&msg.into_data())? else {
@@ -57,11 +61,11 @@ pub(crate) async fn accept(id: String, mut ws: WebSocketStream<TcpStream>, cfg: 
     };
 
     // send init
-    let msg = serde_json::to_vec(&WSPacket::Init { id })?;
+    let msg = serde_json::to_vec(&WSPacket::Init { id: id.clone() })?;
     ws.send(Message::binary(msg)).await?;
 
     // recv offer
-    let rtc = create_rtc_connection(cfg).await?;
+    let rtc = create_rtc_connection().await?;
     let msg = ws.next().await.ok_or(CryonetError::Connection)??;
     let WSPacket::Offer(remote_desc) = serde_json::from_slice(&msg.into_data())? else {
         Err(CryonetError::Connection)?
@@ -93,5 +97,5 @@ pub(crate) async fn accept(id: String, mut ws: WebSocketStream<TcpStream>, cfg: 
     let signal = signal.recv().await.unwrap();
     let data = data.recv().await.unwrap();
     
-    Ok(Peer::new(remote_id, rtc, signal, data))
+    Ok(Peer { remote_id, _rtc: rtc, signal, data })
 }
