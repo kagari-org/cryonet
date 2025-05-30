@@ -7,7 +7,6 @@ edition = "2024"
 anyhow = { version = "1.0.98", features = ["backtrace"] }
 clap = { version = "4.5.39", features = ["derive"] }
 derive_more = { version = "2.0.1", features = ["debug"] }
-fluent-uri = "0.3.2"
 futures-util = "0.3.31"
 humantime = "2.2.0"
 ractor = { version = "0.15.6", features = ["async-trait"] }

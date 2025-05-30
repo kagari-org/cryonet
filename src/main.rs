@@ -1,11 +1,10 @@
 #![feature(try_blocks)]
 #![feature(let_chains)]
-use std::{collections::HashMap, net::SocketAddr};
+use std::net::SocketAddr;
 
 use actors::net::NetActor;
-use anyhow::Result;
+use anyhow::{anyhow, Ok, Result};
 use clap::Parser;
-use fluent_uri::{encoding::EStr, Uri};
 use ractor::{concurrency::Duration, Actor};
 use tokio::sync::OnceCell;
 use tracing::info;
@@ -40,31 +39,21 @@ pub(crate) struct Config {
 }
 
 fn parse_rtc_ice_server(input: &str) -> anyhow::Result<RTCIceServer> {
-    let (username, credential) = match Uri::parse(input)?.query() {
-        None => ("".to_string(), "".to_string()),
-        Some(query) => {
-            let mut map: HashMap<_, _> = query
-                .split('&')
-                .map(|s| s.split_once('=').unwrap_or((s, EStr::EMPTY)))
-                .map(|(k, v)| (
-                    k.decode().into_string_lossy(),
-                    v.decode().into_string_lossy(),
-                ))
-                .collect();
-            let username = map.remove("username")
-                .map(|x| x.into_owned())
-                .unwrap_or("".to_string());
-            let credential = map.remove("credential")
-                .map(|x| x.into_owned())
-                .unwrap_or("".to_string());
-            (username, credential)
-        },
-    };
-    Ok(RTCIceServer {
-        urls: vec![input.to_string()],
-        username,
-        credential,
-    })
+    let splited: Vec<_> = input.split('|').collect();
+    if splited.len() == 1 {
+        Ok(RTCIceServer {
+            urls: vec![splited[0].to_string()],
+            ..Default::default()
+        })
+    } else if splited.len() == 3 {
+        Ok(RTCIceServer {
+            urls: vec![splited[0].to_string()],
+            username: splited[1].to_string(),
+            credential: splited[2].to_string(),
+        })
+    } else {
+        return Err(anyhow!("unexpected ice server: {input}"));
+    }
 }
 
 #[tokio::main]
