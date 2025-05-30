@@ -1,9 +1,9 @@
 use std::{collections::HashMap, time::SystemTime};
 
-use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
-use tracing::info;
+use ractor::{async_trait, call, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use tracing::{info, error};
 
-use crate::{actors::{peer::PeerActor, ws_connect::WSConnectActorMsg}, CONFIG};
+use crate::{actors::{peer::{DescPacket, PeerActor}, ws_connect::WSConnectActorMsg}, CONFIG};
 
 use super::{peer::{AlivePacket, Peer, PeerActorMsg}, rtc_shake::{RTCShakeActor, RTCShakeActorArgs, RTCShakeActorMsg}, ws_connect::WSConnectActor, ws_listen::WSListenActor};
 
@@ -24,9 +24,13 @@ pub(crate) struct NetPeer {
 
 #[derive(derive_more::Debug)]
 pub(crate) enum NetActorMsg {
+    // events from other actors
     #[debug("NewPeer")]
     NewPeer(Peer),
     Alive(String, AlivePacket),
+    RemoteDesc(DescPacket),
+
+    // events from self
     SendAlive,
     Check,
 }
@@ -114,6 +118,26 @@ impl Actor for NetActor {
                     });
                 }
             },
+            NetActorMsg::RemoteDesc(packet) => {
+                if packet.target_id == cfg.id {
+                    // desc arrived
+                    if let Some(NetPeer {
+                        actor: NetPeerRef::Pending(actor_ref),
+                        ..
+                    }) = state.peers.get(&packet.from_id) {
+                        cast!(actor_ref, RTCShakeActorMsg::PutDesc(packet.desc))?;
+                    }
+                } else {
+                    // forward desc
+                    // only forward once
+                    if let Some(NetPeer {
+                        actor: NetPeerRef::Actor(actor_ref),
+                        ..
+                    }) = state.peers.get(&packet.target_id) {
+                        cast!(actor_ref, PeerActorMsg::SendDesc(packet))?;
+                    }
+                }
+            },
             // send alive at intervals
             NetActorMsg::SendAlive => {
                 let peers: Vec<String> = state.peers.keys()
@@ -128,15 +152,15 @@ impl Actor for NetActor {
             },
             // run check at intervals
             NetActorMsg::Check => {
-                info!("start check");
-                // connect
+                info!("starting check");
+                // ws connect
                 if state.peers.is_empty() {
                     let ws_connect: ActorRef<WSConnectActorMsg> = where_is("ws_connect".to_string())
                         .unwrap().into();
                     cast!(ws_connect, WSConnectActorMsg::Connect)?;
                 }
                 // check alive
-                state.peers.retain(|_remote_id, peer| {
+                state.peers.retain(|remote_id, peer| {
                     let now = SystemTime::now();
                     let dur = now.duration_since(peer.last_shake).unwrap();
                     let timeout = dur > cfg.check_timeout;
@@ -144,11 +168,13 @@ impl Actor for NetActor {
                         (_, false) => true,
                         (NetPeerRef::Added, true) => false,
                         (NetPeerRef::Pending(actor_ref), true) => {
+                            error!("actor `{remote_id}` has benn dropped");
                             actor_ref.stop(Some("shake timeout".to_string()));
                             false
                         }
                         // reconnect
                         (actor@NetPeerRef::Actor(_), true) => {
+                            error!("actor `{remote_id}` disconnected, reconnecting...");
                             let NetPeerRef::Actor(actor_ref) = &actor else { unreachable!() };
                             actor_ref.stop(Some("alive timeout".to_string()));
                             *actor = NetPeerRef::Added;
@@ -165,6 +191,27 @@ impl Actor for NetActor {
                     }, myself.get_cell()).await?;
                     peer.actor = NetPeerRef::Pending(rtc_shake);
                 }
+                // collect desc
+                let mut descs = Vec::<DescPacket>::with_capacity(state.peers.len());
+                for (remote_id, peer) in &state.peers {
+                    if let NetPeerRef::Pending(actor_ref) = &peer.actor {
+                        let desc = call!(actor_ref, RTCShakeActorMsg::GetDesc)?;
+                        if let Some(desc) = desc {
+                            descs.push(DescPacket {
+                                from_id: cfg.id.clone(),
+                                target_id: remote_id.clone(),
+                                desc,
+                            });
+                        }
+                    }
+                }
+                for desc in descs {
+                    for (remote_id, peer) in &state.peers {
+                        if let NetPeerRef::Actor(actor_ref) = &peer.actor && desc.target_id != *remote_id {
+                            cast!(actor_ref, PeerActorMsg::SendDesc(desc.clone()))?;
+                        }
+                    }
+                }
             },
         };
         Ok(())
@@ -178,7 +225,8 @@ impl Actor for NetActor {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             // ignore ActorTerminated
-            SupervisionEvent::ActorFailed(_, _) => {
+            SupervisionEvent::ActorFailed(_, err) => {
+                error!("actor failed: {err}");
                 myself.stop(None);
             },
             _ => {},

@@ -4,9 +4,9 @@ use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, A
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Bytes;
 use tracing::error;
-use webrtc::{data_channel::RTCDataChannel, peer_connection::RTCPeerConnection};
+use webrtc::{data_channel::RTCDataChannel, peer_connection::{sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
 
-use crate::actors::net::NetActorMsg;
+use crate::{actors::net::NetActorMsg, CONFIG};
 
 pub(crate) struct Peer {
     pub(crate) remote_id: String,
@@ -19,11 +19,19 @@ pub(crate) struct Peer {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum Signal {
     Alive(AlivePacket),
+    Desc(DescPacket),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AlivePacket {
     pub(crate) peers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DescPacket {
+    pub(crate) from_id: String,
+    pub(crate) target_id: String,
+    pub(crate) desc: RTCSessionDescription,
 }
 
 
@@ -34,6 +42,7 @@ pub(crate) struct PeerActorState(Peer);
 pub(crate) enum PeerActorMsg {
     Signal(Bytes),
     SendAlive(AlivePacket),
+    SendDesc(DescPacket),
 
     Data(Bytes),
     Send,
@@ -51,6 +60,7 @@ impl Actor for PeerActor {
         peer: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
         // TODO: setup tun here
+        // TODO: disconnect event
         let myself1 = myself.clone();
         peer.signal.on_message(Box::new(move |message| {
             if let Err(err) = cast!(myself1, PeerActorMsg::Signal(message.data)) {
@@ -79,11 +89,14 @@ impl Actor for PeerActor {
         match message {
             PeerActorMsg::Signal(signal) => {
                 let signal: Signal = serde_json::from_slice(&signal)?;
+                let net: ActorRef<NetActorMsg> = where_is("net".to_string())
+                    .unwrap().into();
                 match signal {
                     Signal::Alive(alive) => {
-                        let net: ActorRef<NetActorMsg> = where_is("net".to_string())
-                            .unwrap().into();
                         cast!(net, NetActorMsg::Alive(state.0.remote_id.clone(), alive))?;
+                    },
+                    Signal::Desc(desc) => {
+                        cast!(net, NetActorMsg::RemoteDesc(desc))?;
                     },
                 }
             },
@@ -91,12 +104,17 @@ impl Actor for PeerActor {
                 let packet = serde_json::to_vec(&Signal::Alive(alive))?;
                 state.0.signal.send(&Bytes::from(packet)).await?;
             },
+            PeerActorMsg::SendDesc(desc) => {
+                let packet = serde_json::to_vec(&Signal::Desc(desc))?;
+                state.0.signal.send(&Bytes::from(packet)).await?;
+            },
             PeerActorMsg::Data(data) => {
                 let x = String::from_utf8_lossy(&data);
                 println!("{x}");
             },
             PeerActorMsg::Send => {
-                state.0.data.send_text("test").await?;
+                let id = &CONFIG.get().unwrap().id;
+                state.0.data.send_text(format!("test from {id}")).await?;
             },
         }
         Ok(())

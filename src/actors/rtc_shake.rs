@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
-use tracing::error;
+use tracing::{error, info};
 use webrtc::{data_channel::RTCDataChannel, peer_connection::{peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
 
 use crate::{error::CryonetError, models::rtc::{create_rtc_connection, is_master}, CONFIG};
@@ -48,20 +48,12 @@ impl Actor for RTCShakeActor {
         myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
+        info!("starting shake via peer");
+
         let cfg = CONFIG.get().unwrap();
 
         let master = is_master(&cfg.id, &args.remote_id)?;
         let rtc = create_rtc_connection().await?;
-
-        let local_desc = if master {
-            let offer = rtc.create_offer(None).await?;
-            let mut gather = rtc.gathering_complete_promise().await;
-            rtc.set_local_description(offer).await?;
-            let _ = gather.recv().await;
-            Some(rtc.local_description().await.ok_or(CryonetError::Connection)?)
-        } else {
-            None
-        };
 
         let myself1 = myself.clone();
         rtc.on_data_channel(Box::new(move |channel| {
@@ -88,6 +80,16 @@ impl Actor for RTCShakeActor {
             )
         } else {
             (None, None)
+        };
+
+        let local_desc = if master {
+            let offer = rtc.create_offer(None).await?;
+            let mut gather = rtc.gathering_complete_promise().await;
+            rtc.set_local_description(offer).await?;
+            let _ = gather.recv().await;
+            Some(rtc.local_description().await.ok_or(CryonetError::Connection)?)
+        } else {
+            None
         };
 
         Ok(RTCShakeActorState {
