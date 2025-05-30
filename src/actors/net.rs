@@ -1,6 +1,6 @@
 use std::{collections::HashMap, time::SystemTime};
 
-use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef};
+use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use tracing::info;
 
 use crate::{actors::{peer::PeerActor, ws_connect::WSConnectActorMsg}, CONFIG};
@@ -128,6 +128,7 @@ impl Actor for NetActor {
             },
             // run check at intervals
             NetActorMsg::Check => {
+                info!("start check");
                 // connect
                 if state.peers.is_empty() {
                     let ws_connect: ActorRef<WSConnectActorMsg> = where_is("ws_connect".to_string())
@@ -166,6 +167,22 @@ impl Actor for NetActor {
                 }
             },
         };
+        Ok(())
+    }
+
+    async fn handle_supervisor_evt(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        message: SupervisionEvent,
+        _: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        match message {
+            // ignore ActorTerminated
+            SupervisionEvent::ActorFailed(_, _) => {
+                myself.stop(None);
+            },
+            _ => {},
+        }
         Ok(())
     }
 }
