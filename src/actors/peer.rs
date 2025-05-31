@@ -82,7 +82,7 @@ impl Actor for PeerActor {
         }));
 
         // setup tun
-        info!("setup tun");
+        info!("setup tun for {}", peer.remote_id);
         let tun = Arc::new(DeviceBuilder::new()
             .packet_information(true)
             .build_async()?);

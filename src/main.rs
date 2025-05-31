@@ -30,11 +30,11 @@ pub(crate) struct Config {
     #[clap(long, value_parser = parse_rtc_ice_server)]
     ice_servers: Vec<RTCIceServer>,
 
-    #[clap(long, value_parser = humantime::parse_duration)]
+    #[clap(long, value_parser = humantime::parse_duration, default_value = "10s")]
     check_interval: Duration,
-    #[clap(long, value_parser = humantime::parse_duration)]
+    #[clap(long, value_parser = humantime::parse_duration, default_value = "1m")]
     check_timeout: Duration,
-    #[clap(long, value_parser = humantime::parse_duration)]
+    #[clap(long, value_parser = humantime::parse_duration, default_value = "20s")]
     send_alive_interval: Duration,
 
     #[clap(long, default_value = "1500")]
@@ -63,7 +63,7 @@ fn parse_rtc_ice_server(input: &str) -> anyhow::Result<RTCIceServer> {
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
-        .with(tracing_subscriber::EnvFilter::new("cryonet=trace"))
+        .with(tracing_subscriber::EnvFilter::new("cryonet=info"))
         .init();
 
     CONFIG.get_or_init(async || Config::parse()).await;

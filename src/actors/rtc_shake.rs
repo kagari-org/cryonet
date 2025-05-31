@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
-use tracing::{error, info};
+use tracing::error;
 use webrtc::{data_channel::RTCDataChannel, peer_connection::{peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
 
 use crate::{error::CryonetError, models::rtc::{create_rtc_connection, is_master}, CONFIG};
@@ -48,8 +48,6 @@ impl Actor for RTCShakeActor {
         myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        info!("starting shake via peer");
-
         let cfg = CONFIG.get().unwrap();
 
         let master = is_master(&cfg.id, &args.remote_id)?;

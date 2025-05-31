@@ -1,7 +1,7 @@
 use std::{collections::HashMap, time::SystemTime};
 
 use ractor::{async_trait, call, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
-use tracing::{info, error};
+use tracing::{debug, error, info};
 
 use crate::{actors::{peer::{DescPacket, PeerActor}, ws_connect::WSConnectActorMsg}, CONFIG};
 
@@ -73,7 +73,7 @@ impl Actor for NetActor {
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        info!("received event: {message:?}");
+        debug!("received event: {message:?}");
         let cfg = CONFIG.get().unwrap();
         match message {
             // new peer from ws, ws_listen or rtc_shake
@@ -90,6 +90,7 @@ impl Actor for NetActor {
                     }
                 }
                 let remote_id = peer.remote_id.clone();
+                info!("spawn PeerActor for {remote_id}");
                 let (actor, _) = Actor::spawn_linked(None, PeerActor, peer, myself.get_cell()).await?;
                 let net_peer = NetPeer {
                     remote_id: remote_id.clone(),
@@ -164,7 +165,7 @@ impl Actor for NetActor {
             },
             // run check at intervals
             NetActorMsg::Check => {
-                info!("starting check");
+                debug!("starting check");
                 // ws connect
                 if state.peers.is_empty() {
                     let ws_connect: ActorRef<WSConnectActorMsg> = where_is("ws_connect".to_string())
@@ -198,6 +199,7 @@ impl Actor for NetActor {
                 // spawn rtc_shake
                 for (remote_id, peer) in &mut state.peers {
                     if !matches!(peer.actor, NetPeerRef::Added) { continue; }
+                    info!("spawn RTCShakeActor for {remote_id}");
                     let (rtc_shake, _) = Actor::spawn_linked(None, RTCShakeActor, RTCShakeActorArgs {
                         remote_id: remote_id.clone(),
                     }, myself.get_cell()).await?;

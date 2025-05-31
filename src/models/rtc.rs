@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tracing::info;
+use tracing::debug;
 use webrtc::{api::{interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder}, interceptor::registry::Registry, peer_connection::{configuration::RTCConfiguration, RTCPeerConnection}};
 
 use crate::{error::CryonetError, CONFIG};
@@ -14,7 +14,7 @@ pub(crate) async fn create_rtc_connection() -> Result<RTCPeerConnection> {
         .with_media_engine(media_engine)
         .with_interceptor_registry(registry)
         .build();
-    info!("ice servers: {:?}", cfg.ice_servers);
+    debug!("ice servers: {:?}", cfg.ice_servers);
     let config = RTCConfiguration {
         ice_servers: cfg.ice_servers.clone(),
         ..Default::default()
