@@ -37,6 +37,12 @@ pub(crate) struct Config {
     #[clap(long, value_parser = humantime::parse_duration, default_value = "20s")]
     send_alive_interval: Duration,
 
+    #[clap(long, default_value = "cn")]
+    interface_prefix: String,
+    #[clap(long, default_value = "false")]
+    auto_interface_name: bool,
+    #[clap(long, default_value = "true")]
+    enable_packet_information: bool,
     #[clap(long, default_value = "1500")]
     buf_size: usize,
 }

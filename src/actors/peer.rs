@@ -3,7 +3,7 @@ use std::{os::fd::AsRawFd, sync::Arc};
 use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, ActorStatus};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Bytes;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 use webrtc::{data_channel::RTCDataChannel, peer_connection::{peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
 
@@ -57,6 +57,7 @@ impl Actor for PeerActor {
         myself: ActorRef<Self::Msg>,
         peer: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
+        let cfg = CONFIG.get().unwrap();
         // send disconnect event to net
         let remote_id = peer.remote_id.clone();
         let myself1 = myself.clone();
@@ -83,9 +84,14 @@ impl Actor for PeerActor {
 
         // setup tun
         info!("setup tun for {}", peer.remote_id);
-        let tun = Arc::new(DeviceBuilder::new()
-            .packet_information(true)
-            .build_async()?);
+        let mut tun = DeviceBuilder::new();
+        if !cfg.auto_interface_name {
+            tun = tun.name(format!("{}{}", cfg.interface_prefix, peer.remote_id));
+        }
+        if cfg.enable_packet_information {
+            tun = tun.packet_information(true);
+        }
+        let tun = Arc::new(tun.build_async()?);
         let send = tun.clone();
         let recv = send.clone();
 
@@ -93,7 +99,7 @@ impl Actor for PeerActor {
             let tun = send.clone();
             Box::pin(async move {
                 if let Err(err) = tun.send(&message.data).await {
-                    error!("failed to send data to tun: {err}");
+                    warn!("failed to send data to tun: {err}");
                 }
             })
         }));
@@ -109,7 +115,7 @@ impl Actor for PeerActor {
                 let len = match recv.recv(&mut buf).await {
                     Ok(len) => len,
                     Err(err) => {
-                        error!("failed to recv data from tun: {err}");
+                        warn!("failed to recv data from tun: {err}");
                         continue;
                     },
                 };
