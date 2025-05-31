@@ -57,8 +57,6 @@ impl Actor for PeerActor {
         myself: ActorRef<Self::Msg>,
         peer: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        // TODO: setup tun here
-
         // send disconnect event to net
         let remote_id = peer.remote_id.clone();
         let myself1 = myself.clone();
@@ -85,7 +83,9 @@ impl Actor for PeerActor {
 
         // setup tun
         info!("setup tun");
-        let tun = Arc::new(DeviceBuilder::new().build_async()?);
+        let tun = Arc::new(DeviceBuilder::new()
+            .packet_information(true)
+            .build_async()?);
         let send = tun.clone();
         let recv = send.clone();
 
