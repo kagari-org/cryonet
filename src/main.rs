@@ -44,7 +44,7 @@ pub(crate) struct Config {
     auto_interface_name: bool,
     #[clap(long, default_value = "true")]
     enable_packet_information: bool,
-    #[clap(long, default_value = "1500")]
+    #[clap(long, default_value = "1504")]
     buf_size: usize,
 }
 
