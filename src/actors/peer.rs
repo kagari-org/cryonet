@@ -1,9 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
-use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef};
+use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, ActorStatus};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Bytes;
-use tracing::error;
+use tracing::{error, info};
+use tun_rs::DeviceBuilder;
 use webrtc::{data_channel::RTCDataChannel, peer_connection::{peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
 
 use crate::{actors::net::NetActorMsg, CONFIG};
@@ -43,9 +44,6 @@ pub(crate) enum PeerActorMsg {
     Signal(Bytes),
     SendAlive(AlivePacket),
     SendDesc(DescPacket),
-
-    Data(Bytes),
-    Send,
 }
 
 #[async_trait]
@@ -85,15 +83,42 @@ impl Actor for PeerActor {
             Box::pin(async {})
         }));
 
-        let myself3 = myself.clone();
+        // setup tun
+        info!("setup tun");
+        let send = Arc::new(DeviceBuilder::new().build_async()?);
+        let recv = send.clone();
+
         peer.data.on_message(Box::new(move |message| {
-            // TODO: may send data to tun directly.
-            if let Err(err) = cast!(myself3, PeerActorMsg::Data(message.data)) {
-                error!("failed to send on_channel event: {err}");
-            };
-            Box::pin(async {})
+            let tun = send.clone();
+            Box::pin(async move {
+                if let Err(err) = tun.send(&message.data).await {
+                    error!("failed to send data to tun: {err}");
+                }
+            })
         }));
-        myself.send_interval(Duration::from_secs(3), || PeerActorMsg::Send);
+
+        let data_channel = peer.data.clone();
+        tokio::spawn(async move {
+            let cfg = CONFIG.get().unwrap();
+            loop {
+                if let ActorStatus::Stopped = myself.get_status() {
+                    break;
+                }
+                let mut buf = vec![0u8; cfg.buf_size];
+                let len = match recv.recv(&mut buf).await {
+                    Ok(len) => len,
+                    Err(err) => {
+                        error!("failed to recv data from tun: {err}");
+                        continue;
+                    },
+                };
+                let result = data_channel.send(&Bytes::from(buf[0..len].to_vec())).await;
+                if let Err(err) = result {
+                    error!("failed to send data to peer: {err}");
+                }
+            }
+        });
+
         Ok(PeerActorState(peer))
     }
 
@@ -124,14 +149,6 @@ impl Actor for PeerActor {
             PeerActorMsg::SendDesc(desc) => {
                 let packet = serde_json::to_vec(&Signal::Desc(desc))?;
                 state.0.signal.send(&Bytes::from(packet)).await?;
-            },
-            PeerActorMsg::Data(data) => {
-                let x = String::from_utf8_lossy(&data);
-                println!("{x}");
-            },
-            PeerActorMsg::Send => {
-                let id = &CONFIG.get().unwrap().id;
-                state.0.data.send_text(format!("test from {id}")).await?;
             },
         }
         Ok(())

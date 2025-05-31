@@ -36,6 +36,9 @@ pub(crate) struct Config {
     check_timeout: Duration,
     #[clap(long, value_parser = humantime::parse_duration)]
     send_alive_interval: Duration,
+
+    #[clap(long, default_value = "1500")]
+    buf_size: usize,
 }
 
 fn parse_rtc_ice_server(input: &str) -> anyhow::Result<RTCIceServer> {
