@@ -2,7 +2,7 @@
 #![feature(let_chains)]
 use std::net::SocketAddr;
 
-use actors::net::NetActor;
+use actors::{net::NetActor, supervisor::SupervisorActor};
 use anyhow::{anyhow, Ok, Result};
 use clap::Parser;
 use ractor::{concurrency::Duration, Actor};
@@ -68,9 +68,8 @@ async fn main() -> Result<()> {
 
     CONFIG.get_or_init(async || Config::parse()).await;
 
-    info!("spawn NetActor");
-    let (_, join) = Actor::spawn(Some("net".to_string()), NetActor, ()).await?;
-
+    info!("spawn SupervisorActor");
+    let (_, join) = Actor::spawn(None, SupervisorActor, ()).await?;
     join.await?;
     Ok(())
 }
