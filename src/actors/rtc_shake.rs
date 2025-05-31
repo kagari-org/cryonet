@@ -134,7 +134,7 @@ impl Actor for RTCShakeActor {
                         .unwrap().into();
                     let peer = Peer {
                         remote_id: state.remote_id.clone(),
-                        _rtc: state.rtc.take().unwrap(),
+                        rtc: state.rtc.take().unwrap(),
                         signal: state.signal_channel.take().unwrap(),
                         data: state.data_channel.take().unwrap(),
                     };
@@ -153,7 +153,7 @@ impl Actor for RTCShakeActor {
                         .unwrap().into();
                     let peer = Peer {
                         remote_id: state.remote_id.clone(),
-                        _rtc: state.rtc.take().unwrap(),
+                        rtc: state.rtc.take().unwrap(),
                         signal: state.signal_channel.take().unwrap(),
                         data: state.data_channel.take().unwrap(),
                     };

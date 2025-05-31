@@ -49,7 +49,7 @@ pub(crate) async fn connect(id: &String, endpoint: &String) -> Result<Peer> {
     };
     rtc.set_remote_description(remote_desc).await?;
 
-    Ok(Peer { remote_id, _rtc: rtc, signal, data })
+    Ok(Peer { remote_id, rtc, signal, data })
 }
 
 pub(crate) async fn accept(id: String, stream: TcpStream) -> Result<Peer> {
@@ -99,5 +99,5 @@ pub(crate) async fn accept(id: String, stream: TcpStream) -> Result<Peer> {
 
     let signal = signal.recv().await.unwrap();
     let data = data.recv().await.unwrap();
-    Ok(Peer { remote_id, _rtc: rtc, signal, data })
+    Ok(Peer { remote_id, rtc, signal, data })
 }

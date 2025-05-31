@@ -4,14 +4,14 @@ use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, A
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Bytes;
 use tracing::error;
-use webrtc::{data_channel::RTCDataChannel, peer_connection::{sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
+use webrtc::{data_channel::RTCDataChannel, peer_connection::{peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
 
 use crate::{actors::net::NetActorMsg, CONFIG};
 
 pub(crate) struct Peer {
     pub(crate) remote_id: String,
 
-    pub(crate) _rtc: RTCPeerConnection,
+    pub(crate) rtc: RTCPeerConnection,
     pub(crate) signal: Arc<RTCDataChannel>,
     pub(crate) data: Arc<RTCDataChannel>,
 }
@@ -60,18 +60,35 @@ impl Actor for PeerActor {
         peer: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
         // TODO: setup tun here
-        // TODO: disconnect event
+
+        // send disconnect event to net
+        let remote_id = peer.remote_id.clone();
         let myself1 = myself.clone();
+        peer.rtc.on_peer_connection_state_change(Box::new(move |state| {
+            if let RTCPeerConnectionState::Disconnected = state {
+                let net: ActorRef<NetActorMsg> = where_is("net".to_string())
+                    .unwrap().into();
+                if let Err(err) = cast!(net, NetActorMsg::PeerDisconnected(remote_id.clone())) {
+                    error!("failed to send disconnected event: {err}");
+                };
+                myself1.stop(Some("peer disconnected".to_string()));
+            }
+            Box::pin(async {})
+        }));
+
+        // receive messages
+        let myself2 = myself.clone();
         peer.signal.on_message(Box::new(move |message| {
-            if let Err(err) = cast!(myself1, PeerActorMsg::Signal(message.data)) {
+            if let Err(err) = cast!(myself2, PeerActorMsg::Signal(message.data)) {
                 error!("failed to send on_channel event: {err}");
             };
             Box::pin(async {})
         }));
-        let myself2 = myself.clone();
+
+        let myself3 = myself.clone();
         peer.data.on_message(Box::new(move |message| {
             // TODO: may send data to tun directly.
-            if let Err(err) = cast!(myself2, PeerActorMsg::Data(message.data)) {
+            if let Err(err) = cast!(myself3, PeerActorMsg::Data(message.data)) {
                 error!("failed to send on_channel event: {err}");
             };
             Box::pin(async {})

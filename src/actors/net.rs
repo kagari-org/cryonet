@@ -29,6 +29,7 @@ pub(crate) enum NetActorMsg {
     NewPeer(Peer),
     Alive(String, AlivePacket),
     RemoteDesc(DescPacket),
+    PeerDisconnected(String),
 
     // events from self
     SendAlive,
@@ -138,6 +139,17 @@ impl Actor for NetActor {
                     }
                 }
             },
+            NetActorMsg::PeerDisconnected(remote_id) => {
+                let peer = state.peers.get_mut(&remote_id);
+                if let Some(NetPeer { remote_id, last_shake, actor }) = peer {
+                    if let NetPeerRef::Actor(actor_ref) = actor {
+                        error!("peer `{remote_id}` disconnected, reconnecting...");
+                        actor_ref.stop(Some("peer disconnected".to_string()));
+                        *actor = NetPeerRef::Added;
+                        *last_shake = SystemTime::now();
+                    }
+                }
+            },
             // send alive at intervals
             NetActorMsg::SendAlive => {
                 let peers: Vec<String> = state.peers.keys()
@@ -168,7 +180,7 @@ impl Actor for NetActor {
                         (_, false) => true,
                         (NetPeerRef::Added, true) => false,
                         (NetPeerRef::Pending(actor_ref), true) => {
-                            error!("actor `{remote_id}` has benn dropped");
+                            error!("peer `{remote_id}` has benn dropped");
                             actor_ref.stop(Some("shake timeout".to_string()));
                             false
                         }
