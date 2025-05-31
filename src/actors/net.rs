@@ -286,13 +286,10 @@ impl Actor for NetActor {
         message: SupervisionEvent,
         _: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        match message {
-            // ignore ActorTerminated
-            SupervisionEvent::ActorFailed(_, err) => {
-                error!("actor failed: {err}");
-                myself.stop(None);
-            }
-            _ => {}
+        // ignore ActorTerminated
+        if let SupervisionEvent::ActorFailed(_, err) = message {
+            error!("actor failed: {err}");
+            myself.stop(None);
         }
         Ok(())
     }

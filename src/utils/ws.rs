@@ -14,8 +14,8 @@ use super::rtc::create_rtc_connection;
 #[derive(Debug, Serialize, Deserialize)]
 enum WSPacket {
     Init { id: String, token: String },
-    Offer(RTCSessionDescription),
-    Answer(RTCSessionDescription),
+    Offer(Box<RTCSessionDescription>),
+    Answer(Box<RTCSessionDescription>),
 }
 
 pub(crate) async fn connect(endpoint: &String) -> Result<Peer> {
@@ -56,7 +56,7 @@ pub(crate) async fn connect(endpoint: &String) -> Result<Peer> {
         .local_description()
         .await
         .ok_or(CryonetError::Connection)?;
-    let msg = serde_json::to_vec(&WSPacket::Offer(local_desc))?;
+    let msg = serde_json::to_vec(&WSPacket::Offer(Box::new(local_desc)))?;
     ws.send(Message::binary(msg)).await?;
 
     // recv answer
@@ -64,7 +64,7 @@ pub(crate) async fn connect(endpoint: &String) -> Result<Peer> {
     let WSPacket::Answer(remote_desc) = serde_json::from_slice(&msg.into_data())? else {
         Err(CryonetError::Connection)?
     };
-    rtc.set_remote_description(remote_desc).await?;
+    rtc.set_remote_description(*remote_desc).await?;
 
     Ok(Peer {
         remote_id,
@@ -119,7 +119,7 @@ pub(crate) async fn accept(stream: TcpStream, addr: SocketAddr) -> Result<Peer> 
     let WSPacket::Offer(remote_desc) = serde_json::from_slice(&msg.into_data())? else {
         Err(CryonetError::Connection)?
     };
-    rtc.set_remote_description(remote_desc).await?;
+    rtc.set_remote_description(*remote_desc).await?;
 
     // send answer
     let answer = rtc.create_answer(None).await?;
@@ -130,7 +130,7 @@ pub(crate) async fn accept(stream: TcpStream, addr: SocketAddr) -> Result<Peer> 
         .local_description()
         .await
         .ok_or(CryonetError::Connection)?;
-    let msg = serde_json::to_vec(&WSPacket::Answer(local_desc))?;
+    let msg = serde_json::to_vec(&WSPacket::Answer(Box::new(local_desc)))?;
     ws.send(Message::binary(msg)).await?;
 
     let signal = signal.recv().await.unwrap();

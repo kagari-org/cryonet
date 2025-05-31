@@ -21,8 +21,8 @@ use crate::{
 use super::{net::NetActorMsg, peer::Peer};
 
 pub(crate) enum RTCShakeActorMsg {
-    GetDesc(RpcReplyPort<Option<RTCSessionDescription>>),
-    PutDesc(RTCSessionDescription),
+    GetDesc(RpcReplyPort<Option<Box<RTCSessionDescription>>>),
+    PutDesc(Box<RTCSessionDescription>),
     Connected,
     OnChannel(Arc<RTCDataChannel>),
 }
@@ -32,7 +32,7 @@ pub(crate) struct RTCShakeActorState {
 
     master: bool,
     rtc: Option<RTCPeerConnection>,
-    local_desc: Option<RTCSessionDescription>,
+    local_desc: Option<Box<RTCSessionDescription>>,
     remote_desc_set: bool,
 
     signal_channel: Option<Arc<RTCDataChannel>>,
@@ -110,7 +110,7 @@ impl Actor for RTCShakeActor {
             remote_id: args.remote_id.clone(),
             master,
             rtc: Some(rtc),
-            local_desc,
+            local_desc: local_desc.map(Box::new),
             remote_desc_set: false,
             signal_channel,
             data_channel,
@@ -130,7 +130,7 @@ impl Actor for RTCShakeActor {
             RTCShakeActorMsg::PutDesc(desc) => {
                 if !state.remote_desc_set {
                     let rtc = state.rtc.as_ref().unwrap();
-                    rtc.set_remote_description(desc).await?;
+                    rtc.set_remote_description(*desc).await?;
                     if !state.master {
                         let answer = rtc.create_answer(None).await?;
                         let mut gather = rtc.gathering_complete_promise().await;
@@ -140,7 +140,7 @@ impl Actor for RTCShakeActor {
                             .local_description()
                             .await
                             .ok_or(CryonetError::Connection)?;
-                        state.local_desc = Some(local_desc);
+                        state.local_desc = Some(Box::new(local_desc));
                     }
                     state.remote_desc_set = true;
                 }

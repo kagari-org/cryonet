@@ -40,7 +40,7 @@ pub(crate) struct AlivePacket {
 pub(crate) struct DescPacket {
     pub(crate) from_id: String,
     pub(crate) target_id: String,
-    pub(crate) desc: RTCSessionDescription,
+    pub(crate) desc: Box<RTCSessionDescription>,
 }
 
 pub(crate) struct PeerActor;
