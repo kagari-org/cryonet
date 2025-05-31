@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef};
 use tracing::{error, info};
 
-use crate::{actors::net::NetActorMsg, models::ws::connect, CONFIG};
+use crate::{actors::net::NetActorMsg, utils::ws::connect, CONFIG};
 
 #[derive(Debug)]
 pub(crate) enum WSConnectActorMsg {

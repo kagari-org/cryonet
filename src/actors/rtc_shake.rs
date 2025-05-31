@@ -4,7 +4,7 @@ use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, A
 use tracing::error;
 use webrtc::{data_channel::RTCDataChannel, peer_connection::{peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
 
-use crate::{error::CryonetError, models::rtc::{create_rtc_connection, is_master}, CONFIG};
+use crate::{error::CryonetError, utils::rtc::{create_rtc_connection, is_master}, CONFIG};
 
 use super::{net::NetActorMsg, peer::Peer};
 

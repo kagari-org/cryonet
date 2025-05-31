@@ -13,7 +13,7 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 
 pub(crate) mod error;
 pub(crate) mod actors;
-pub(crate) mod models;
+pub(crate) mod utils;
 
 static CONFIG: OnceCell<Config> = OnceCell::const_new();
 

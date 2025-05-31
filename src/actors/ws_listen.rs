@@ -2,7 +2,7 @@ use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, A
 use tokio::net::TcpListener;
 use tracing::error;
 
-use crate::{models::ws::accept, CONFIG};
+use crate::{utils::ws::accept, CONFIG};
 
 use super::net::NetActorMsg;
 
