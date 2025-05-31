@@ -9,6 +9,7 @@ clap = { version = "4.5.39", features = ["derive"] }
 derive_more = { version = "2.0.1", features = ["debug"] }
 futures-util = "0.3.31"
 humantime = "2.2.0"
+libc = "0.2.172"
 ractor = { version = "0.15.6", features = ["async-trait"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"

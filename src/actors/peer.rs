@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::{os::fd::AsRawFd, sync::Arc};
 
 use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, ActorStatus};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Bytes;
 use tracing::{error, info};
-use tun_rs::DeviceBuilder;
+use tun_rs::{AsyncDevice, DeviceBuilder};
 use webrtc::{data_channel::RTCDataChannel, peer_connection::{peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
 
 use crate::{actors::net::NetActorMsg, CONFIG};
@@ -38,7 +38,7 @@ pub(crate) struct DescPacket {
 
 
 pub(crate) struct PeerActor;
-pub(crate) struct PeerActorState(Peer);
+pub(crate) struct PeerActorState(Peer, Arc<AsyncDevice>);
 #[derive(Debug)]
 pub(crate) enum PeerActorMsg {
     Signal(Bytes),
@@ -85,7 +85,8 @@ impl Actor for PeerActor {
 
         // setup tun
         info!("setup tun");
-        let send = Arc::new(DeviceBuilder::new().build_async()?);
+        let tun = Arc::new(DeviceBuilder::new().build_async()?);
+        let send = tun.clone();
         let recv = send.clone();
 
         peer.data.on_message(Box::new(move |message| {
@@ -119,7 +120,16 @@ impl Actor for PeerActor {
             }
         });
 
-        Ok(PeerActorState(peer))
+        Ok(PeerActorState(peer, tun))
+    }
+
+    async fn post_stop(
+        &self,
+        _: ActorRef<Self::Msg>,
+        state: &mut Self::State
+    ) -> Result<(), ActorProcessingErr> {
+        unsafe { libc::close(state.1.as_raw_fd()) };
+        Ok(())
     }
 
     async fn handle(
@@ -144,11 +154,15 @@ impl Actor for PeerActor {
             },
             PeerActorMsg::SendAlive(alive) => {
                 let packet = serde_json::to_vec(&Signal::Alive(alive))?;
-                state.0.signal.send(&Bytes::from(packet)).await?;
+                if let Err(err) = state.0.signal.send(&Bytes::from(packet)).await {
+                    error!("failed to send alive: {err}");
+                }
             },
             PeerActorMsg::SendDesc(desc) => {
                 let packet = serde_json::to_vec(&Signal::Desc(desc))?;
-                state.0.signal.send(&Bytes::from(packet)).await?;
+                if let Err(err) = state.0.signal.send(&Bytes::from(packet)).await {
+                    error!("failed to send desc: {err}");
+                }
             },
         }
         Ok(())
