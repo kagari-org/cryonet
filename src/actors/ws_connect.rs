@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
-use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef};
+use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait, cast, registry::where_is};
 use tracing::{error, info};
 
-use crate::{actors::net::NetActorMsg, utils::ws::connect, CONFIG};
+use crate::{CONFIG, actors::net::NetActorMsg, utils::ws::connect};
 
 #[derive(Debug)]
 pub(crate) enum WSConnectActorMsg {
@@ -51,8 +51,8 @@ impl Actor for WSConnectActor {
                         info!("connecting to {addr}");
                         let result: anyhow::Result<()> = try {
                             let peer = connect(&addr).await?;
-                            let net: ActorRef<NetActorMsg> = where_is("net".to_string())
-                                .unwrap().into();
+                            let net: ActorRef<NetActorMsg> =
+                                where_is("net".to_string()).unwrap().into();
                             cast!(net, NetActorMsg::NewPeer(peer))?;
                         };
                         if let Err(err) = result {
@@ -65,10 +65,10 @@ impl Actor for WSConnectActor {
                     });
                 }
                 state.connecting = ws_servers;
-            },
+            }
             WSConnectActorMsg::Connected(addr) => {
                 state.connecting.remove(&addr);
-            },
+            }
         };
         Ok(())
     }

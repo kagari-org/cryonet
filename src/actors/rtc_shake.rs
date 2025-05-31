@@ -1,10 +1,22 @@
 use std::sync::Arc;
 
-use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
+use ractor::{
+    Actor, ActorProcessingErr, ActorRef, RpcReplyPort, async_trait, cast, registry::where_is,
+};
 use tracing::error;
-use webrtc::{data_channel::RTCDataChannel, peer_connection::{peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
+use webrtc::{
+    data_channel::RTCDataChannel,
+    peer_connection::{
+        RTCPeerConnection, peer_connection_state::RTCPeerConnectionState,
+        sdp::session_description::RTCSessionDescription,
+    },
+};
 
-use crate::{error::CryonetError, utils::rtc::{create_rtc_connection, is_master}, CONFIG};
+use crate::{
+    CONFIG,
+    error::CryonetError,
+    utils::rtc::{create_rtc_connection, is_master},
+};
 
 use super::{net::NetActorMsg, peer::Peer};
 
@@ -85,7 +97,11 @@ impl Actor for RTCShakeActor {
             let mut gather = rtc.gathering_complete_promise().await;
             rtc.set_local_description(offer).await?;
             let _ = gather.recv().await;
-            Some(rtc.local_description().await.ok_or(CryonetError::Connection)?)
+            Some(
+                rtc.local_description()
+                    .await
+                    .ok_or(CryonetError::Connection)?,
+            )
         } else {
             None
         };
@@ -110,7 +126,7 @@ impl Actor for RTCShakeActor {
         match msg {
             RTCShakeActorMsg::GetDesc(reply) => {
                 reply.send(state.local_desc.clone())?;
-            },
+            }
             RTCShakeActorMsg::PutDesc(desc) => {
                 if !state.remote_desc_set {
                     let rtc = state.rtc.as_ref().unwrap();
@@ -120,16 +136,18 @@ impl Actor for RTCShakeActor {
                         let mut gather = rtc.gathering_complete_promise().await;
                         rtc.set_local_description(answer).await?;
                         let _ = gather.recv().await;
-                        let local_desc = rtc.local_description().await.ok_or(CryonetError::Connection)?;
+                        let local_desc = rtc
+                            .local_description()
+                            .await
+                            .ok_or(CryonetError::Connection)?;
                         state.local_desc = Some(local_desc);
                     }
                     state.remote_desc_set = true;
                 }
-            },
+            }
             RTCShakeActorMsg::Connected => {
                 if state.master {
-                    let net: ActorRef<NetActorMsg> = where_is("net".to_string())
-                        .unwrap().into();
+                    let net: ActorRef<NetActorMsg> = where_is("net".to_string()).unwrap().into();
                     let peer = Peer {
                         remote_id: state.remote_id.clone(),
                         rtc: state.rtc.take().unwrap(),
@@ -139,7 +157,7 @@ impl Actor for RTCShakeActor {
                     cast!(net, NetActorMsg::NewPeer(peer))?;
                     myself.stop(Some("created new peer".to_string()));
                 }
-            },
+            }
             RTCShakeActorMsg::OnChannel(channel) => {
                 match channel.label() {
                     "shake" => state.signal_channel = Some(channel),
@@ -147,8 +165,7 @@ impl Actor for RTCShakeActor {
                     _ => Err(CryonetError::Connection)?,
                 }
                 if state.signal_channel.is_some() && state.data_channel.is_some() {
-                    let net: ActorRef<NetActorMsg> = where_is("net".to_string())
-                        .unwrap().into();
+                    let net: ActorRef<NetActorMsg> = where_is("net".to_string()).unwrap().into();
                     let peer = Peer {
                         remote_id: state.remote_id.clone(),
                         rtc: state.rtc.take().unwrap(),
@@ -158,7 +175,7 @@ impl Actor for RTCShakeActor {
                     cast!(net, NetActorMsg::NewPeer(peer))?;
                     myself.stop(Some("created new peer".to_string()));
                 }
-            },
+            }
         }
         Ok(())
     }

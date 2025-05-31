@@ -1,8 +1,8 @@
-use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef};
+use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait, cast, registry::where_is};
 use tokio::net::TcpListener;
 use tracing::error;
 
-use crate::{utils::ws::accept, CONFIG};
+use crate::{CONFIG, utils::ws::accept};
 
 use super::net::NetActorMsg;
 
@@ -46,15 +46,15 @@ impl Actor for WSListenActor {
                 tokio::spawn(async move {
                     let result: anyhow::Result<()> = try {
                         let peer = accept(stream, addr).await?;
-                        let net: ActorRef<NetActorMsg> = where_is("net".to_string())
-                            .unwrap().into();
+                        let net: ActorRef<NetActorMsg> =
+                            where_is("net".to_string()).unwrap().into();
                         cast!(net, NetActorMsg::NewPeer(peer))?;
                     };
                     if let Err(err) = result {
                         error!("failed to shake with peer: {err}");
                     }
                 });
-            },
+            }
         }
 
         assert!(matches!(msg, WSListenActorMsg::Accept));

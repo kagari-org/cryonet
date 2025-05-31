@@ -1,4 +1,4 @@
-use ractor::{async_trait, Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
+use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use tracing::{error, info};
 
 use crate::NetActor;
@@ -31,12 +31,12 @@ impl Actor for SupervisorActor {
             SupervisionEvent::ActorTerminated(_, _, reason) => {
                 error!("actor terminated: {reason:?}");
                 myself.stop(None);
-            },
+            }
             SupervisionEvent::ActorFailed(_, err) => {
                 error!("actor failed: {err}");
                 myself.stop(None);
-            },
-            _ => {},
+            }
+            _ => {}
         }
         Ok(())
     }

@@ -3,16 +3,16 @@
 use std::net::SocketAddr;
 
 use actors::{net::NetActor, supervisor::SupervisorActor};
-use anyhow::{anyhow, Ok, Result};
+use anyhow::{Ok, Result, anyhow};
 use clap::Parser;
-use ractor::{concurrency::Duration, Actor};
+use ractor::{Actor, concurrency::Duration};
 use tokio::sync::OnceCell;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use webrtc::ice_transport::ice_server::RTCIceServer;
 
-pub(crate) mod error;
 pub(crate) mod actors;
+pub(crate) mod error;
 pub(crate) mod utils;
 
 static CONFIG: OnceCell<Config> = OnceCell::const_new();

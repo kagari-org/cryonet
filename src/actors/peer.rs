@@ -1,13 +1,21 @@
 use std::{os::fd::AsRawFd, sync::Arc};
 
-use ractor::{async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, ActorStatus};
+use ractor::{
+    Actor, ActorProcessingErr, ActorRef, ActorStatus, async_trait, cast, registry::where_is,
+};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Bytes;
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
-use webrtc::{data_channel::RTCDataChannel, peer_connection::{peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
+use webrtc::{
+    data_channel::RTCDataChannel,
+    peer_connection::{
+        RTCPeerConnection, peer_connection_state::RTCPeerConnectionState,
+        sdp::session_description::RTCSessionDescription,
+    },
+};
 
-use crate::{actors::net::NetActorMsg, CONFIG};
+use crate::{CONFIG, actors::net::NetActorMsg};
 
 pub(crate) struct Peer {
     pub(crate) remote_id: String,
@@ -35,8 +43,6 @@ pub(crate) struct DescPacket {
     pub(crate) desc: RTCSessionDescription,
 }
 
-
-
 pub(crate) struct PeerActor;
 pub(crate) struct PeerActorState(Peer, Arc<AsyncDevice>);
 #[derive(Debug)]
@@ -61,17 +67,17 @@ impl Actor for PeerActor {
         // send disconnect event to net
         let remote_id = peer.remote_id.clone();
         let myself1 = myself.clone();
-        peer.rtc.on_peer_connection_state_change(Box::new(move |state| {
-            if let RTCPeerConnectionState::Disconnected = state {
-                let net: ActorRef<NetActorMsg> = where_is("net".to_string())
-                    .unwrap().into();
-                if let Err(err) = cast!(net, NetActorMsg::PeerDisconnected(remote_id.clone())) {
-                    error!("failed to send disconnected event: {err}");
-                };
-                myself1.stop(Some("peer disconnected".to_string()));
-            }
-            Box::pin(async {})
-        }));
+        peer.rtc
+            .on_peer_connection_state_change(Box::new(move |state| {
+                if let RTCPeerConnectionState::Disconnected = state {
+                    let net: ActorRef<NetActorMsg> = where_is("net".to_string()).unwrap().into();
+                    if let Err(err) = cast!(net, NetActorMsg::PeerDisconnected(remote_id.clone())) {
+                        error!("failed to send disconnected event: {err}");
+                    };
+                    myself1.stop(Some("peer disconnected".to_string()));
+                }
+                Box::pin(async {})
+            }));
 
         // receive messages
         let myself2 = myself.clone();
@@ -117,7 +123,7 @@ impl Actor for PeerActor {
                     Err(err) => {
                         warn!("failed to recv data from tun: {err}");
                         continue;
-                    },
+                    }
                 };
                 let result = data_channel.send(&Bytes::from(buf[0..len].to_vec())).await;
                 if let Err(err) = result {
@@ -132,7 +138,7 @@ impl Actor for PeerActor {
     async fn post_stop(
         &self,
         _: ActorRef<Self::Msg>,
-        state: &mut Self::State
+        state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         unsafe { libc::close(state.1.as_raw_fd()) };
         Ok(())
@@ -147,29 +153,28 @@ impl Actor for PeerActor {
         match message {
             PeerActorMsg::Signal(signal) => {
                 let signal: Signal = serde_json::from_slice(&signal)?;
-                let net: ActorRef<NetActorMsg> = where_is("net".to_string())
-                    .unwrap().into();
+                let net: ActorRef<NetActorMsg> = where_is("net".to_string()).unwrap().into();
                 match signal {
                     Signal::Alive(alive) => {
                         cast!(net, NetActorMsg::Alive(state.0.remote_id.clone(), alive))?;
-                    },
+                    }
                     Signal::Desc(desc) => {
                         cast!(net, NetActorMsg::RemoteDesc(desc))?;
-                    },
+                    }
                 }
-            },
+            }
             PeerActorMsg::SendAlive(alive) => {
                 let packet = serde_json::to_vec(&Signal::Alive(alive))?;
                 if let Err(err) = state.0.signal.send(&Bytes::from(packet)).await {
                     error!("failed to send alive: {err}");
                 }
-            },
+            }
             PeerActorMsg::SendDesc(desc) => {
                 let packet = serde_json::to_vec(&Signal::Desc(desc))?;
                 if let Err(err) = state.0.signal.send(&Bytes::from(packet)).await {
                     error!("failed to send desc: {err}");
                 }
-            },
+            }
         }
         Ok(())
     }

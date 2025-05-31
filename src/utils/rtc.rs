@@ -1,8 +1,14 @@
 use anyhow::Result;
 use tracing::debug;
-use webrtc::{api::{interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder}, interceptor::registry::Registry, peer_connection::{configuration::RTCConfiguration, RTCPeerConnection}};
+use webrtc::{
+    api::{
+        APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
+    },
+    interceptor::registry::Registry,
+    peer_connection::{RTCPeerConnection, configuration::RTCConfiguration},
+};
 
-use crate::{error::CryonetError, CONFIG};
+use crate::{CONFIG, error::CryonetError};
 
 pub(crate) async fn create_rtc_connection() -> Result<RTCPeerConnection> {
     let cfg = CONFIG.get().unwrap();
@@ -23,12 +29,16 @@ pub(crate) async fn create_rtc_connection() -> Result<RTCPeerConnection> {
 }
 
 pub(crate) fn is_master(id: &String, remote_id: &String) -> Result<bool> {
-    if id.len() > remote_id.len() { return Ok(true); }
+    if id.len() > remote_id.len() {
+        return Ok(true);
+    }
     let id = id.as_bytes();
     let remote_id = remote_id.as_bytes();
     for (x, y) in id.iter().zip(remote_id) {
-        if x == y { continue; }
-        return Ok(x > y)
+        if x == y {
+            continue;
+        }
+        return Ok(x > y);
     }
     Err(CryonetError::SameId)?
 }
