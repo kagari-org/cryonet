@@ -6,4 +6,6 @@ pub(crate) enum CryonetError {
     Connection,
     #[error("same id exists in network")]
     SameId,
+    #[error("failed to verify token: {0}")]
+    Token(String),
 }

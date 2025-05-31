@@ -23,9 +23,10 @@ pub(crate) struct Config {
 
     #[clap(long, default_value = "127.0.0.1:2333")]
     listen: SocketAddr,
-
     #[clap(long)]
     ws_servers: Vec<String>,
+    #[clap(long)]
+    token: String,
 
     #[clap(long, value_parser = parse_rtc_ice_server)]
     ice_servers: Vec<RTCIceServer>,

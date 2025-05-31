@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use anyhow::{Ok, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -5,29 +7,37 @@ use tokio::{net::TcpStream, sync::mpsc::channel};
 use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-use crate::{actors::peer::Peer, error::CryonetError};
+use crate::{actors::peer::Peer, error::CryonetError, CONFIG};
 
 use super::rtc::create_rtc_connection;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum WSPacket {
-    Init { id: String },
+    Init { id: String, token: String },
     Offer(RTCSessionDescription),
     Answer(RTCSessionDescription),
 }
 
-pub(crate) async fn connect(id: &String, endpoint: &String) -> Result<Peer> {
+pub(crate) async fn connect(endpoint: &String) -> Result<Peer> {
+    let cfg = CONFIG.get().unwrap();
+
     let (mut ws, _) = connect_async(endpoint).await?;
 
     // send init
-    let msg = serde_json::to_vec(&WSPacket::Init { id: id.clone() })?;
+    let msg = serde_json::to_vec(&WSPacket::Init {
+        id: cfg.id.clone(),
+        token: cfg.token.clone(),
+    })?;
     ws.send(Message::binary(msg)).await?;
 
     // recv init
     let msg = ws.next().await.ok_or(CryonetError::Connection)??;
-    let WSPacket::Init { id: remote_id } = serde_json::from_slice(&msg.into_data())? else {
+    let WSPacket::Init { id: remote_id, token } = serde_json::from_slice(&msg.into_data())? else {
         Err(CryonetError::Connection)?
     };
+    if token != cfg.token {
+        Err(CryonetError::Token(endpoint.clone()))?
+    }
 
     // send offer
     let rtc = create_rtc_connection().await?;
@@ -52,17 +62,25 @@ pub(crate) async fn connect(id: &String, endpoint: &String) -> Result<Peer> {
     Ok(Peer { remote_id, rtc, signal, data })
 }
 
-pub(crate) async fn accept(id: String, stream: TcpStream) -> Result<Peer> {
+pub(crate) async fn accept(stream: TcpStream, addr: SocketAddr) -> Result<Peer> {
+    let cfg = CONFIG.get().unwrap();
+
     let mut ws = accept_async(stream).await?;
 
     // recv init
     let msg = ws.next().await.ok_or(CryonetError::Connection)??;
-    let WSPacket::Init { id: remote_id } = serde_json::from_slice(&msg.into_data())? else {
+    let WSPacket::Init { id: remote_id, token } = serde_json::from_slice(&msg.into_data())? else {
         Err(CryonetError::Connection)?
     };
+    if token != cfg.token {
+        Err(CryonetError::Token(addr.to_string()))?
+    }
 
     // send init
-    let msg = serde_json::to_vec(&WSPacket::Init { id: id.clone() })?;
+    let msg = serde_json::to_vec(&WSPacket::Init {
+        id: cfg.id.clone(),
+        token: cfg.token.clone(),
+    })?;
     ws.send(Message::binary(msg)).await?;
 
     // recv offer

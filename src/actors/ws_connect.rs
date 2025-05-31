@@ -49,9 +49,8 @@ impl Actor for WSConnectActor {
                     let myself = myself.clone();
                     tokio::spawn(async move {
                         info!("connecting to {addr}");
-                        let cfg = CONFIG.get().unwrap();
                         let result: anyhow::Result<()> = try {
-                            let peer = connect(&cfg.id, &addr).await?;
+                            let peer = connect(&addr).await?;
                             let net: ActorRef<NetActorMsg> = where_is("net".to_string())
                                 .unwrap().into();
                             cast!(net, NetActorMsg::NewPeer(peer))?;

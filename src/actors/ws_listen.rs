@@ -40,13 +40,12 @@ impl Actor for WSListenActor {
         msg: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        let id = CONFIG.get().unwrap().id.clone();
         match state.listener.accept().await {
             Err(err) => error!("failed to accept {err}"),
-            Ok((stream, _addr)) => {
-                tokio::spawn(async {
+            Ok((stream, addr)) => {
+                tokio::spawn(async move {
                     let result: anyhow::Result<()> = try {
-                        let peer = accept(id, stream).await?;
+                        let peer = accept(stream, addr).await?;
                         let net: ActorRef<NetActorMsg> = where_is("net".to_string())
                             .unwrap().into();
                         cast!(net, NetActorMsg::NewPeer(peer))?;
