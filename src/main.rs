@@ -21,30 +21,30 @@ static CONFIG: OnceCell<Config> = OnceCell::const_new();
 pub(crate) struct Config {
     id: String,
 
-    #[clap(long, default_value = "127.0.0.1:2333")]
+    #[clap(long, env, default_value = "127.0.0.1:2333")]
     listen: SocketAddr,
-    #[clap(long)]
+    #[clap(long, env, value_delimiter = ',')]
     ws_servers: Vec<String>,
-    #[clap(long)]
+    #[clap(long, env)]
     token: String,
 
-    #[clap(long, value_parser = parse_rtc_ice_server)]
+    #[clap(long, env, value_parser = parse_rtc_ice_server, value_delimiter = ',')]
     ice_servers: Vec<RTCIceServer>,
 
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "10s")]
+    #[clap(long, env, value_parser = humantime::parse_duration, default_value = "10s")]
     check_interval: Duration,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "1m")]
+    #[clap(long, env, value_parser = humantime::parse_duration, default_value = "1m")]
     check_timeout: Duration,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "20s")]
+    #[clap(long, env, value_parser = humantime::parse_duration, default_value = "20s")]
     send_alive_interval: Duration,
 
-    #[clap(long, default_value = "cn")]
+    #[clap(long, env, default_value = "cn")]
     interface_prefix: String,
-    #[clap(long, default_value = "false")]
+    #[clap(long, env, default_value = "false")]
     auto_interface_name: bool,
-    #[clap(long, default_value = "true")]
+    #[clap(long, env, default_value = "true")]
     enable_packet_information: bool,
-    #[clap(long, default_value = "1504")]
+    #[clap(long, env, default_value = "1504")]
     buf_size: usize,
 }
 
