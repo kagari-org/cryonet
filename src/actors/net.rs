@@ -113,7 +113,7 @@ impl Actor for NetActor {
                             actor_ref.stop(Some("established connection with peer".to_string()));
                         }
                         NetPeerRef::Actor(actor_ref) => {
-                            actor_ref.stop(Some("replaced by new connection".to_string()));
+                            call!(actor_ref, PeerActorMsg::Stop)?;
                         }
                         NetPeerRef::Added => {}
                     }
@@ -184,7 +184,7 @@ impl Actor for NetActor {
                 {
                     if let NetPeerRef::Actor(actor_ref) = actor {
                         error!("peer `{remote_id}` disconnected, reconnecting...");
-                        actor_ref.stop(Some("peer disconnected".to_string()));
+                        call!(actor_ref, PeerActorMsg::Stop)?;
                         *actor = NetPeerRef::Added;
                         *last_shake = SystemTime::now();
                     }
@@ -210,15 +210,16 @@ impl Actor for NetActor {
                     cast!(ws_connect, WSConnectActorMsg::Connect)?;
                 }
                 // check alive
-                state.peers.retain(|remote_id, peer| {
+                let mut to_remove = Vec::new();
+                for (remote_id, peer) in &mut state.peers {
                     let now = SystemTime::now();
                     let dur = now.duration_since(peer.last_shake).unwrap();
                     let timeout = dur > cfg.check_timeout;
-                    match (&mut peer.actor, timeout) {
+                    let retain = match (&mut peer.actor, timeout) {
                         (_, false) => true,
                         (NetPeerRef::Added, true) => false,
                         (NetPeerRef::Pending(actor_ref), true) => {
-                            error!("peer `{remote_id}` has benn dropped");
+                            error!("peer `{remote_id}` has been dropped");
                             actor_ref.stop(Some("shake timeout".to_string()));
                             false
                         }
@@ -228,13 +229,19 @@ impl Actor for NetActor {
                             let NetPeerRef::Actor(actor_ref) = &actor else {
                                 unreachable!()
                             };
-                            actor_ref.stop(Some("alive timeout".to_string()));
+                            call!(actor_ref, PeerActorMsg::Stop)?;
                             *actor = NetPeerRef::Added;
                             peer.last_shake = SystemTime::now();
                             true
                         }
+                    };
+                    if !retain {
+                        to_remove.push(remote_id.clone());
                     }
-                });
+                }
+                for to_remove in to_remove {
+                    state.peers.remove(&to_remove);
+                }
                 // spawn rtc_shake
                 for (remote_id, peer) in &mut state.peers {
                     if !matches!(peer.actor, NetPeerRef::Added) {

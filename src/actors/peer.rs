@@ -1,7 +1,7 @@
 use std::{os::fd::AsRawFd, sync::Arc};
 
 use ractor::{
-    Actor, ActorProcessingErr, ActorRef, ActorStatus, async_trait, cast, registry::where_is,
+    async_trait, cast, registry::where_is, Actor, ActorProcessingErr, ActorRef, ActorStatus, RpcReplyPort
 };
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Bytes;
@@ -50,6 +50,7 @@ pub(crate) enum PeerActorMsg {
     Signal(Bytes),
     SendAlive(AlivePacket),
     SendDesc(DescPacket),
+    Stop(RpcReplyPort<()>),
 }
 
 #[async_trait]
@@ -66,7 +67,6 @@ impl Actor for PeerActor {
         let cfg = CONFIG.get().unwrap();
         // send disconnect event to net
         let remote_id = peer.remote_id.clone();
-        let myself1 = myself.clone();
         peer.rtc
             .on_peer_connection_state_change(Box::new(move |state| {
                 if let RTCPeerConnectionState::Disconnected = state {
@@ -74,15 +74,15 @@ impl Actor for PeerActor {
                     if let Err(err) = cast!(net, NetActorMsg::PeerDisconnected(remote_id.clone())) {
                         error!("failed to send disconnected event: {err}");
                     };
-                    myself1.stop(Some("peer disconnected".to_string()));
+                    // stop by NetActor
                 }
                 Box::pin(async {})
             }));
 
         // receive messages
-        let myself2 = myself.clone();
+        let myself1 = myself.clone();
         peer.signal.on_message(Box::new(move |message| {
-            if let Err(err) = cast!(myself2, PeerActorMsg::Signal(message.data)) {
+            if let Err(err) = cast!(myself1, PeerActorMsg::Signal(message.data)) {
                 error!("failed to send on_channel event: {err}");
             };
             Box::pin(async {})
@@ -135,18 +135,9 @@ impl Actor for PeerActor {
         Ok(PeerActorState(peer, tun))
     }
 
-    async fn post_stop(
-        &self,
-        _: ActorRef<Self::Msg>,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        unsafe { libc::close(state.1.as_raw_fd()) };
-        Ok(())
-    }
-
     async fn handle(
         &self,
-        _: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
@@ -174,6 +165,13 @@ impl Actor for PeerActor {
                 if let Err(err) = state.0.signal.send(&Bytes::from(packet)).await {
                     error!("failed to send desc: {err}");
                 }
+            }
+            PeerActorMsg::Stop(reply) => {
+                // tun devices are still existing after dropping them, so we manually close it
+                // very dirty
+                unsafe { libc::close(state.1.as_raw_fd()) };
+                reply.send(())?;
+                myself.stop(Some("closing".to_string()));
             }
         }
         Ok(())
