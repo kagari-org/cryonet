@@ -1,8 +1,7 @@
 use std::{collections::HashMap, time::SystemTime};
 
 use ractor::{
-    Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait, call, cast,
-    registry::where_is,
+    async_trait, call, cast, registry::where_is, Actor, ActorId, ActorProcessingErr, ActorRef, SupervisionEvent
 };
 use tracing::{debug, error, info};
 
@@ -43,7 +42,7 @@ pub(crate) enum NetActorMsg {
     NewPeer(Peer),
     Alive(String, AlivePacket),
     RemoteDesc(DescPacket),
-    PeerDisconnected(String),
+    PeerDisconnected(String, ActorId),
 
     // events from self
     SendAlive,
@@ -174,7 +173,7 @@ impl Actor for NetActor {
                     }
                 }
             }
-            NetActorMsg::PeerDisconnected(remote_id) => {
+            NetActorMsg::PeerDisconnected(remote_id, actor_id) => {
                 let peer = state.peers.get_mut(&remote_id);
                 if let Some(NetPeer {
                     remote_id,
@@ -182,7 +181,8 @@ impl Actor for NetActor {
                     actor,
                 }) = peer
                 {
-                    if let NetPeerRef::Actor(actor_ref) = actor {
+                    // actor_ref.get_id() == actor_id means the actor has been dropped, but not stopped yet.
+                    if let NetPeerRef::Actor(actor_ref) = actor && actor_ref.get_id() == actor_id {
                         error!("peer `{remote_id}` disconnected, reconnecting...");
                         call!(actor_ref, PeerActorMsg::Stop)?;
                         *actor = NetPeerRef::Added;

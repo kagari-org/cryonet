@@ -66,12 +66,13 @@ impl Actor for PeerActor {
     ) -> Result<Self::State, ActorProcessingErr> {
         let cfg = CONFIG.get().unwrap();
         // send disconnect event to net
+        let myself1 = myself.clone();
         let remote_id = peer.remote_id.clone();
         peer.rtc
             .on_peer_connection_state_change(Box::new(move |state| {
                 if let RTCPeerConnectionState::Disconnected = state {
                     let net: ActorRef<NetActorMsg> = where_is("net".to_string()).unwrap().into();
-                    if let Err(err) = cast!(net, NetActorMsg::PeerDisconnected(remote_id.clone())) {
+                    if let Err(err) = cast!(net, NetActorMsg::PeerDisconnected(remote_id.clone(), myself1.get_id())) {
                         error!("failed to send disconnected event: {err}");
                     };
                     // stop by NetActor
@@ -80,9 +81,9 @@ impl Actor for PeerActor {
             }));
 
         // receive messages
-        let myself1 = myself.clone();
+        let myself2 = myself.clone();
         peer.signal.on_message(Box::new(move |message| {
-            if let Err(err) = cast!(myself1, PeerActorMsg::Signal(message.data)) {
+            if let Err(err) = cast!(myself2, PeerActorMsg::Signal(message.data)) {
                 error!("failed to send on_channel event: {err}");
             };
             Box::pin(async {})
