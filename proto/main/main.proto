@@ -1,0 +1,5 @@
+syntax = "proto3";
+package hellopb;
+option go_package = "github.com/kagari-org/cryonet/gen/main";
+
+message Hello {}
