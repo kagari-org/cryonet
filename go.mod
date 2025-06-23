@@ -11,6 +11,7 @@ require (
 	connectrpc.com/connect v1.18.1 // indirect
 	github.com/RoaringBitmap/roaring v1.9.4 // indirect
 	github.com/Workiva/go-datastructures v1.1.5 // indirect
+	github.com/alecthomas/kong v1.11.0 // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/bits-and-blooms/bitset v1.22.0 // indirect
 	github.com/buraksezer/consistent v0.10.0 // indirect
