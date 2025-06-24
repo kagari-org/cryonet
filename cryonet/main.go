@@ -1,4 +1,4 @@
-package main
+package cryonet
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	goakt "github.com/tochemey/goakt/v3/actor"
 )
 
-var config struct {
+var Config struct {
 	Id string `arg:""`
 
 	Listen    string   `env:"LISTEN" default:"127.0.0.1:2333"`
@@ -26,8 +26,8 @@ var config struct {
 	BufSize                 int    `env:"BUF_SIZE" default:"1504"`
 }
 
-func main() {
-	kong.Parse(&config)
+func Main() {
+	kong.Parse(&Config)
 
 	ctx := context.Background()
 

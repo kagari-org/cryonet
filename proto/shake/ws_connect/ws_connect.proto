@@ -1,3 +1,9 @@
 syntax = "proto3";
 package ws_connect;
 option go_package = "github.com/kagari-org/cryonet/gen/ws_connect";
+
+message Connect {}
+
+message Connected {
+  string address = 1;
+}
