@@ -1,0 +1,16 @@
+syntax = "proto3";
+package ws_packet;
+option go_package = "github.com/kagari-org/cryonet/gen/ws_packet";
+
+message Init {
+  string id = 1;
+  string token = 2;
+}
+
+message Offer {
+  bytes description = 1;
+}
+
+message Answer {
+  bytes description = 1;
+}

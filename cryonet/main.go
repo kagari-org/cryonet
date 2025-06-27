@@ -2,9 +2,11 @@ package cryonet
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 )
 
@@ -40,4 +42,26 @@ func Main() {
 	if err := system.Start(ctx); err != nil {
 		panic(err)
 	}
+}
+
+func GetICEServers() []webrtc.ICEServer {
+	ice_servers := []webrtc.ICEServer{}
+	for _, server := range Config.ice_servers {
+		splited := strings.Split(server, "|")
+		if len(splited) == 1 {
+			ice_servers = append(ice_servers, webrtc.ICEServer{
+				URLs: []string{server},
+			})
+		} else if len(splited) == 3 {
+			ice_servers = append(ice_servers, webrtc.ICEServer{
+				URLs:           []string{splited[0]},
+				Username:       splited[1],
+				Credential:     splited[2],
+				CredentialType: webrtc.ICECredentialTypePassword,
+			})
+		} else {
+			panic("Invalid ICE server format: " + server)
+		}
+	}
+	return ice_servers
 }
