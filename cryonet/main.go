@@ -22,8 +22,8 @@ var Config struct {
 	CheckInterval     time.Duration `env:"CHECK_INTERVAL" default:"10s"`
 	SendAliveInterval time.Duration `env:"SEND_ALIVE_INTERVAL" default:"1m"`
 
-	InterfacePrefix         string `env:"INTERFACE_PREFIX" default:"cn"`
-	AutoInterfaceName       bool   `env:"AUTO_INTERFACE_NAME" default:"false"`
+	InterfacePrefixWS       string `env:"INTERFACE_PREFIX" default:"cnw"`
+	InterfacePrefixRTC      string `env:"INTERFACE_PREFIX" default:"cnr"`
 	EnablePacketInformation bool   `env:"ENABLE_PACKET_INFORMATION" default:"true"`
 	BufSize                 int    `env:"BUF_SIZE" default:"1504"`
 }
