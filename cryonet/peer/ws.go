@@ -1,7 +1,6 @@
 package peer
 
 import (
-	"context"
 	"os"
 
 	"github.com/coder/websocket"
@@ -46,8 +45,8 @@ func (w *WSPeer) PostStop(ctx *goakt.Context) error {
 func (w *WSPeer) Receive(ctx *goakt.ReceiveContext) {
 	switch ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		go w.wsRead(ctx.Context(), ctx.Self())
-		go w.tunRead(ctx.Context(), ctx.Self())
+		go w.wsRead(ctx, ctx.Self())
+		go w.tunRead(ctx, ctx.Self())
 	default:
 		ctx.Unhandled()
 	}
@@ -62,12 +61,16 @@ func (w *WSPeer) close() {
 	}
 }
 
-func (w *WSPeer) wsRead(ctx context.Context, pid *goakt.PID) {
+func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext, pid *goakt.PID) {
 	for {
 		if !pid.IsRunning() {
 			break
 		}
-		_, data, err := w.ws.Read(ctx)
+		_, data, err := w.ws.Read(ctx.Context())
+		if _, close := err.(*websocket.CloseError); close {
+			ctx.Stop(pid)
+			break
+		}
 		if err != nil {
 			continue
 		}
@@ -100,7 +103,7 @@ func (w *WSPeer) wsRead(ctx context.Context, pid *goakt.PID) {
 	}
 }
 
-func (w *WSPeer) tunRead(ctx context.Context, pid *goakt.PID) {
+func (w *WSPeer) tunRead(ctx *goakt.ReceiveContext, pid *goakt.PID) {
 	data := make([]byte, cryonet.Config.BufSize)
 	for {
 		if !pid.IsRunning() {
@@ -125,7 +128,7 @@ func (w *WSPeer) tunRead(ctx context.Context, pid *goakt.PID) {
 		if err != nil {
 			continue
 		}
-		err = w.ws.Write(ctx, websocket.MessageBinary, data)
+		err = w.ws.Write(ctx.Context(), websocket.MessageBinary, data)
 		if err != nil {
 			continue
 		}
