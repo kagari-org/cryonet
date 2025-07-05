@@ -2,11 +2,11 @@ PROTO_FILES := $(wildcard proto/**/*.proto)
 
 .PHONY: all
 all: proto
-	go build -o build/cryonet cryonet/main.go
+	go build -o build/cryonet main.go
 
 .PHONY: run
 run: proto
-	go run cryonet/main.go
+	go run main.go
 
 proto/.proto-codegen: $(PROTO_FILES)
 	cd proto && buf generate

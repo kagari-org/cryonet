@@ -2,12 +2,15 @@ package cryonet
 
 import (
 	"context"
+	"os"
+	"os/signal"
 	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
+	"github.com/tochemey/goakt/v3/log"
 )
 
 var Config struct {
@@ -33,15 +36,36 @@ func Main() {
 
 	ctx := context.Background()
 
-	system, err := goakt.NewActorSystem("HelloWorldSystem")
-
+	system, err := goakt.NewActorSystem("HelloWorldSystem",
+		goakt.WithLogger(log.New(log.DebugLevel, os.Stderr)))
 	if err != nil {
-		panic(err)
+		system.Logger().Fatal(err)
+		return
 	}
+	defer system.Stop(ctx)
 
 	if err := system.Start(ctx); err != nil {
-		panic(err)
+		system.Logger().Fatal(err)
+		return
 	}
+
+	_, err = system.Spawn(ctx, "ws-listen", NewWSListen())
+	if err != nil {
+		system.Logger().Fatal(err)
+		return
+	}
+
+	_, err = system.Spawn(ctx, "ws-connect", NewWSConnect())
+	if err != nil {
+		system.Logger().Fatal(err)
+		return
+	}
+
+	system.Logger().Info("Cryonet started.")
+
+	sigint := make(chan os.Signal, 1)
+	signal.Notify(sigint, os.Interrupt)
+	<-sigint
 }
 
 func GetICEServers() []webrtc.ICEServer {
