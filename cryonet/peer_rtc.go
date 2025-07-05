@@ -1,6 +1,7 @@
 package cryonet
 
 import (
+	"errors"
 	"os"
 
 	"github.com/kagari-org/cryonet/gen/channels/common"
@@ -91,6 +92,10 @@ func (r *RTCPeer) rtcRead(ctx *goakt.ReceiveContext) {
 			panic("unreachable")
 		}
 	})
+	r.dc.OnClose(func() {
+		logger.Debug("data channel closed")
+		ctx.Stop(self)
+	})
 }
 
 func (r *RTCPeer) tunRead(ctx *goakt.ReceiveContext) {
@@ -102,6 +107,11 @@ func (r *RTCPeer) tunRead(ctx *goakt.ReceiveContext) {
 			break
 		}
 		n, err := r.tun.Read(data)
+		if errors.Is(err, os.ErrClosed) || errors.Is(err, os.ErrInvalid) {
+			logger.Error(err)
+			ctx.Stop(self)
+			break
+		}
 		if err != nil {
 			logger.Error(err)
 			continue
