@@ -46,7 +46,7 @@ func (w *WSConnect) Receive(ctx *goakt.ReceiveContext) {
 	case *goaktpb.PostStart:
 		err := ctx.ActorSystem().Schedule(ctx.Context(), &ws_connect.Connect{}, ctx.Self(), Config.CheckInterval)
 		if err != nil {
-			// TODO: log error
+			panic(err)
 		}
 	case *ws_connect.Connect:
 		for _, peer := range w.peers {

@@ -48,7 +48,8 @@ func (w *WSListen) Receive(ctx *goakt.ReceiveContext) {
 			w.postStartCtx = ctx
 			err := w.server.Serve(w.listener)
 			if err != nil {
-				// TODO: log err
+				ctx.Logger().Error(err)
+				return
 			}
 		}()
 	default:
