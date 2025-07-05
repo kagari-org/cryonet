@@ -29,9 +29,10 @@ func NewRTCPeer(id string, peer *webrtc.PeerConnection, dc *webrtc.DataChannel) 
 var _ goakt.Actor = (*RTCPeer)(nil)
 
 func (r *RTCPeer) PreStart(ctx *goakt.Context) error {
-	tun, err := CreateTun(Config.InterfacePrefixRTC + r.id)
+	tun, err := CreateTun(ctx, Config.InterfacePrefixRTC+r.id)
 	if err != nil {
 		r.close()
+		ctx.ActorSystem().Logger().Error(err)
 		return err
 	}
 	r.tun = tun
@@ -46,8 +47,8 @@ func (r *RTCPeer) PostStop(ctx *goakt.Context) error {
 func (r *RTCPeer) Receive(ctx *goakt.ReceiveContext) {
 	switch ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		r.rtcRead(ctx.Self())
-		go r.tunRead(ctx.Self())
+		r.rtcRead(ctx)
+		go r.tunRead(ctx)
 	default:
 		ctx.Unhandled()
 	}
@@ -62,14 +63,16 @@ func (r *RTCPeer) close() {
 	}
 }
 
-func (r *RTCPeer) rtcRead(pid *goakt.PID) {
+func (r *RTCPeer) rtcRead(ctx *goakt.ReceiveContext) {
+	self := ctx.Self()
 	r.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		if !pid.IsRunning() {
+		if !self.IsRunning() {
 			return
 		}
 		packet := &rtc.Packet{}
 		err := proto.Unmarshal(msg.Data, packet)
 		if err != nil {
+			ctx.Logger().Error(err)
 			return
 		}
 		switch packet := packet.Packet.Packet.(type) {
@@ -80,6 +83,7 @@ func (r *RTCPeer) rtcRead(pid *goakt.PID) {
 		case *common.Packet_Data:
 			_, err := r.tun.Write(packet.Data.GetData())
 			if err != nil {
+				ctx.Logger().Error(err)
 				return
 			}
 		default:
@@ -88,14 +92,16 @@ func (r *RTCPeer) rtcRead(pid *goakt.PID) {
 	})
 }
 
-func (r *RTCPeer) tunRead(pid *goakt.PID) {
+func (r *RTCPeer) tunRead(ctx *goakt.ReceiveContext) {
+	self := ctx.Self()
 	data := make([]byte, Config.BufSize)
 	for {
-		if !pid.IsRunning() {
+		if !self.IsRunning() {
 			break
 		}
 		n, err := r.tun.Read(data)
 		if err != nil {
+			ctx.Logger().Error(err)
 			continue
 		}
 		packet := &rtc.Packet{
@@ -109,10 +115,12 @@ func (r *RTCPeer) tunRead(pid *goakt.PID) {
 		}
 		data, err := proto.Marshal(packet)
 		if err != nil {
+			ctx.Logger().Error(err)
 			continue
 		}
 		err = r.dc.Send(data)
 		if err != nil {
+			ctx.Logger().Error(err)
 			continue
 		}
 	}

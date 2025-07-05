@@ -27,9 +27,10 @@ func NewWSPeer(id string, ws *websocket.Conn) *WSPeer {
 var _ goakt.Actor = (*WSPeer)(nil)
 
 func (w *WSPeer) PreStart(ctx *goakt.Context) error {
-	tun, err := CreateTun(Config.InterfacePrefixWS + w.id)
+	tun, err := CreateTun(ctx, Config.InterfacePrefixWS+w.id)
 	if err != nil {
 		w.close()
+		ctx.ActorSystem().Logger().Error(err)
 		return err
 	}
 	w.tun = tun
@@ -44,8 +45,8 @@ func (w *WSPeer) PostStop(ctx *goakt.Context) error {
 func (w *WSPeer) Receive(ctx *goakt.ReceiveContext) {
 	switch ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		go w.wsRead(ctx, ctx.Self())
-		go w.tunRead(ctx, ctx.Self())
+		go w.wsRead(ctx)
+		go w.tunRead(ctx)
 	default:
 		ctx.Unhandled()
 	}
@@ -60,22 +61,26 @@ func (w *WSPeer) close() {
 	}
 }
 
-func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext, pid *goakt.PID) {
+func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext) {
+	self := ctx.Self()
 	for {
-		if !pid.IsRunning() {
+		if !self.IsRunning() {
 			break
 		}
 		_, data, err := w.ws.Read(ctx.Context())
-		if _, close := err.(*websocket.CloseError); close {
-			ctx.Stop(pid)
+		if err, close := err.(*websocket.CloseError); close {
+			ctx.Stop(self)
+			ctx.Logger().Error(err)
 			break
 		}
 		if err != nil {
+			ctx.Logger().Error(err)
 			continue
 		}
 		packet := &ws.Packet{}
 		err = proto.Unmarshal(data, packet)
 		if err != nil {
+			ctx.Logger().Error(err)
 			continue
 		}
 		switch packet := packet.P.(type) {
@@ -91,6 +96,7 @@ func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext, pid *goakt.PID) {
 				data := packet.Data.GetData()
 				_, err := w.tun.Write(data)
 				if err != nil {
+					ctx.Logger().Error(err)
 					continue
 				}
 			default:
@@ -102,14 +108,16 @@ func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext, pid *goakt.PID) {
 	}
 }
 
-func (w *WSPeer) tunRead(ctx *goakt.ReceiveContext, pid *goakt.PID) {
+func (w *WSPeer) tunRead(ctx *goakt.ReceiveContext) {
+	self := ctx.Self()
 	data := make([]byte, Config.BufSize)
 	for {
-		if !pid.IsRunning() {
+		if !self.IsRunning() {
 			break
 		}
 		n, err := w.tun.Read(data)
 		if err != nil {
+			ctx.Logger().Error(err)
 			continue
 		}
 		packet := &ws.Packet{
@@ -125,10 +133,12 @@ func (w *WSPeer) tunRead(ctx *goakt.ReceiveContext, pid *goakt.PID) {
 		}
 		data, err := proto.Marshal(packet)
 		if err != nil {
+			ctx.Logger().Error(err)
 			continue
 		}
 		err = w.ws.Write(ctx.Context(), websocket.MessageBinary, data)
 		if err != nil {
+			ctx.Logger().Error(err)
 			continue
 		}
 	}

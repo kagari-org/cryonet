@@ -22,11 +22,13 @@ func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (*goakt.PID
 	data, err := proto.Marshal(sendInit)
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "failed to marshal init packet")
+		ctx.Logger().Error(err)
 		return nil, err
 	}
 	err = conn.Write(ctx.Context(), websocket.MessageBinary, data)
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "failed to send init packet")
+		ctx.Logger().Error(err)
 		return nil, err
 	}
 
@@ -34,24 +36,29 @@ func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (*goakt.PID
 	_, data, err = conn.Read(ctx.Context())
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "failed to read init packet")
+		ctx.Logger().Error(err)
 		return nil, err
 	}
 	recvInit := &ws.Packet{}
 	err = proto.Unmarshal(data, recvInit)
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "failed to unmarshal init packet")
+		ctx.Logger().Error(err)
 		return nil, err
 	}
 	if recvInit.GetInit() == nil {
 		conn.Close(websocket.StatusProtocolError, "received invalid init packet")
+		ctx.Logger().Error(err)
 		return nil, err
 	}
 	if recvInit.GetInit().GetId() == Config.Id {
 		conn.Close(websocket.StatusProtocolError, "received init packet with same ID")
+		ctx.Logger().Error(err)
 		return nil, err
 	}
 	if recvInit.GetInit().GetToken() != Config.Token {
 		conn.Close(websocket.StatusProtocolError, "received init packet with invalid token")
+		ctx.Logger().Error(err)
 		return nil, err
 	}
 
@@ -61,6 +68,7 @@ func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (*goakt.PID
 	pid, err := ctx.ActorSystem().Spawn(ctx.Context(), fmt.Sprintf("ws-peer-%s", id), ws, goakt.WithLongLived())
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "failed to spawn ws peer")
+		ctx.Logger().Error(err)
 		return nil, err
 	}
 

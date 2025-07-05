@@ -24,6 +24,7 @@ func NewWSListen() *WSListen {
 func (w *WSListen) PreStart(ctx *goakt.Context) error {
 	listener, err := net.Listen("tcp", Config.Listen)
 	if err != nil {
+		ctx.ActorSystem().Logger().Error(err)
 		return err
 	}
 	server := &http.Server{

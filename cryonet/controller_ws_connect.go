@@ -70,11 +70,13 @@ func (w *WSConnect) connect(ctx *goakt.ReceiveContext, p *Peer) error {
 
 	conn, _, err := websocket.Dial(ctx.Context(), p.server, nil)
 	if err != nil {
+		ctx.Logger().Error(err)
 		return err
 	}
 
 	pid, err := WSShakeOrClose(ctx, conn)
 	if err != nil {
+		ctx.Logger().Error(err)
 		return err
 	}
 

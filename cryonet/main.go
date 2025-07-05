@@ -28,7 +28,7 @@ var Config struct {
 	InterfacePrefixWS       string `env:"INTERFACE_PREFIX" default:"cnw"`
 	InterfacePrefixRTC      string `env:"INTERFACE_PREFIX" default:"cnr"`
 	EnablePacketInformation bool   `env:"ENABLE_PACKET_INFORMATION" default:"true"`
-	BufSize                 int    `env:"BUF_SIZE" default:"65539"`
+	BufSize                 int    `env:"BUF_SIZE" default:"1504"`
 }
 
 func Main() {
