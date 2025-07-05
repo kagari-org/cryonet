@@ -62,6 +62,8 @@ func (w *WSListen) ServeHTTP(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 
+	conn.SetReadLimit(-1)
+
 	_, err = WSShakeOrClose(w.postStartCtx, conn)
 	if err != nil {
 		return

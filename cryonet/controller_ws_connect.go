@@ -74,6 +74,8 @@ func (w *WSConnect) connect(ctx *goakt.ReceiveContext, p *Peer) error {
 		return err
 	}
 
+	conn.SetReadLimit(-1)
+
 	pid, err := WSShakeOrClose(ctx, conn)
 	if err != nil {
 		ctx.Logger().Error(err)
