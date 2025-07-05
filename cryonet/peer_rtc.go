@@ -1,9 +1,8 @@
-package peer
+package cryonet
 
 import (
 	"os"
 
-	"github.com/kagari-org/cryonet/cryonet"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/kagari-org/cryonet/gen/channels/rtc"
 	"github.com/pion/webrtc/v4"
@@ -30,7 +29,7 @@ func NewRTCPeer(id string, peer *webrtc.PeerConnection, dc *webrtc.DataChannel) 
 var _ goakt.Actor = (*RTCPeer)(nil)
 
 func (r *RTCPeer) PreStart(ctx *goakt.Context) error {
-	tun, err := cryonet.CreateTun(cryonet.Config.InterfacePrefixRTC + r.id)
+	tun, err := CreateTun(Config.InterfacePrefixRTC + r.id)
 	if err != nil {
 		r.close()
 		return err
@@ -90,7 +89,7 @@ func (r *RTCPeer) rtcRead(pid *goakt.PID) {
 }
 
 func (r *RTCPeer) tunRead(pid *goakt.PID) {
-	data := make([]byte, cryonet.Config.BufSize)
+	data := make([]byte, Config.BufSize)
 	for {
 		if !pid.IsRunning() {
 			break

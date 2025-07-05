@@ -1,11 +1,9 @@
-package controller
+package cryonet
 
 import (
 	"sync"
 
 	"github.com/coder/websocket"
-	"github.com/kagari-org/cryonet/cryonet"
-	"github.com/kagari-org/cryonet/cryonet/utils"
 	"github.com/kagari-org/cryonet/gen/actors/controller/ws_connect"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
@@ -29,7 +27,7 @@ func NewWSConnect() *WSConnect {
 
 func (w *WSConnect) PreStart(ctx *goakt.Context) error {
 	w.peers = make(map[string]*Peer)
-	for _, server := range cryonet.Config.WSServers {
+	for _, server := range Config.WSServers {
 		w.peers[server] = &Peer{
 			server: server,
 			lock:   sync.Mutex{},
@@ -46,7 +44,7 @@ func (w *WSConnect) PostStop(ctx *goakt.Context) error {
 func (w *WSConnect) Receive(ctx *goakt.ReceiveContext) {
 	switch ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		err := ctx.ActorSystem().Schedule(ctx.Context(), &ws_connect.Connect{}, ctx.Self(), cryonet.Config.CheckInterval)
+		err := ctx.ActorSystem().Schedule(ctx.Context(), &ws_connect.Connect{}, ctx.Self(), Config.CheckInterval)
 		if err != nil {
 			// TODO: log error
 		}
@@ -75,7 +73,7 @@ func (w *WSConnect) connect(ctx *goakt.ReceiveContext, p *Peer) error {
 		return err
 	}
 
-	pid, err := utils.WSShakeOrClose(ctx, conn)
+	pid, err := WSShakeOrClose(ctx, conn)
 	if err != nil {
 		return err
 	}

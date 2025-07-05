@@ -1,10 +1,9 @@
-package peer
+package cryonet
 
 import (
 	"os"
 
 	"github.com/coder/websocket"
-	"github.com/kagari-org/cryonet/cryonet"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/kagari-org/cryonet/gen/channels/ws"
 	goakt "github.com/tochemey/goakt/v3/actor"
@@ -28,7 +27,7 @@ func NewWSPeer(id string, ws *websocket.Conn) *WSPeer {
 var _ goakt.Actor = (*WSPeer)(nil)
 
 func (w *WSPeer) PreStart(ctx *goakt.Context) error {
-	tun, err := cryonet.CreateTun(cryonet.Config.InterfacePrefixWS + w.id)
+	tun, err := CreateTun(Config.InterfacePrefixWS + w.id)
 	if err != nil {
 		w.close()
 		return err
@@ -104,7 +103,7 @@ func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext, pid *goakt.PID) {
 }
 
 func (w *WSPeer) tunRead(ctx *goakt.ReceiveContext, pid *goakt.PID) {
-	data := make([]byte, cryonet.Config.BufSize)
+	data := make([]byte, Config.BufSize)
 	for {
 		if !pid.IsRunning() {
 			break

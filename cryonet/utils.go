@@ -1,11 +1,9 @@
-package utils
+package cryonet
 
 import (
 	"fmt"
 
 	"github.com/coder/websocket"
-	"github.com/kagari-org/cryonet/cryonet"
-	"github.com/kagari-org/cryonet/cryonet/peer"
 	"github.com/kagari-org/cryonet/gen/channels/ws"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"google.golang.org/protobuf/proto"
@@ -16,8 +14,8 @@ func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (*goakt.PID
 	sendInit := &ws.Packet{
 		P: &ws.Packet_Init{
 			Init: &ws.Init{
-				Id:    cryonet.Config.Id,
-				Token: cryonet.Config.Token,
+				Id:    Config.Id,
+				Token: Config.Token,
 			},
 		},
 	}
@@ -48,18 +46,18 @@ func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (*goakt.PID
 		conn.Close(websocket.StatusProtocolError, "received invalid init packet")
 		return nil, err
 	}
-	if recvInit.GetInit().GetId() == cryonet.Config.Id {
+	if recvInit.GetInit().GetId() == Config.Id {
 		conn.Close(websocket.StatusProtocolError, "received init packet with same ID")
 		return nil, err
 	}
-	if recvInit.GetInit().GetToken() != cryonet.Config.Token {
+	if recvInit.GetInit().GetToken() != Config.Token {
 		conn.Close(websocket.StatusProtocolError, "received init packet with invalid token")
 		return nil, err
 	}
 
 	// spawn peer
 	id := recvInit.GetInit().GetId()
-	ws := peer.NewWSPeer(id, conn)
+	ws := NewWSPeer(id, conn)
 	pid, err := ctx.ActorSystem().Spawn(ctx.Context(), fmt.Sprintf("ws-connect-%s", id), ws)
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "failed to spawn ws peer")

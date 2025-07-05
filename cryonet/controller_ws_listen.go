@@ -1,12 +1,10 @@
-package controller
+package cryonet
 
 import (
 	"net"
 	"net/http"
 
 	"github.com/coder/websocket"
-	"github.com/kagari-org/cryonet/cryonet"
-	"github.com/kagari-org/cryonet/cryonet/utils"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 )
@@ -24,7 +22,7 @@ func NewWSListen() *WSListen {
 }
 
 func (w *WSListen) PreStart(ctx *goakt.Context) error {
-	listener, err := net.Listen("tcp", cryonet.Config.Listen)
+	listener, err := net.Listen("tcp", Config.Listen)
 	if err != nil {
 		return err
 	}
@@ -63,7 +61,7 @@ func (w *WSListen) ServeHTTP(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 
-	_, err = utils.WSShakeOrClose(w.postStartCtx, conn)
+	_, err = WSShakeOrClose(w.postStartCtx, conn)
 	if err != nil {
 		return
 	}
