@@ -28,7 +28,7 @@ var Config struct {
 	InterfacePrefixWS       string `env:"INTERFACE_PREFIX" default:"cnw"`
 	InterfacePrefixRTC      string `env:"INTERFACE_PREFIX" default:"cnr"`
 	EnablePacketInformation bool   `env:"ENABLE_PACKET_INFORMATION" default:"true"`
-	BufSize                 int    `env:"BUF_SIZE" default:"1504"`
+	BufSize                 int    `env:"BUF_SIZE" default:"65539"`
 }
 
 func Main() {
@@ -36,7 +36,7 @@ func Main() {
 
 	ctx := context.Background()
 
-	system, err := goakt.NewActorSystem("HelloWorldSystem",
+	system, err := goakt.NewActorSystem("CryonetSystem",
 		goakt.WithLogger(log.New(log.DebugLevel, os.Stderr)))
 	if err != nil {
 		system.Logger().Fatal(err)
@@ -49,13 +49,13 @@ func Main() {
 		return
 	}
 
-	_, err = system.Spawn(ctx, "ws-listen", NewWSListen())
+	_, err = system.Spawn(ctx, "ws-listen", NewWSListen(), goakt.WithLongLived())
 	if err != nil {
 		system.Logger().Fatal(err)
 		return
 	}
 
-	_, err = system.Spawn(ctx, "ws-connect", NewWSConnect())
+	_, err = system.Spawn(ctx, "ws-connect", NewWSConnect(), goakt.WithLongLived())
 	if err != nil {
 		system.Logger().Fatal(err)
 		return
