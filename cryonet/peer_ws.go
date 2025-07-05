@@ -1,6 +1,8 @@
 package cryonet
 
 import (
+	"errors"
+	"net"
 	"os"
 
 	"github.com/coder/websocket"
@@ -68,7 +70,7 @@ func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext) {
 			break
 		}
 		_, data, err := w.ws.Read(ctx.Context())
-		if err, close := err.(*websocket.CloseError); close {
+		if errors.Is(err, net.ErrClosed) {
 			ctx.Stop(self)
 			ctx.Logger().Error(err)
 			break
