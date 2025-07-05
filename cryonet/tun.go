@@ -29,6 +29,33 @@ func CreateTun(ctx *goakt.Context, name string) (*os.File, error) {
 		ctx.ActorSystem().Logger().Error(err)
 		return nil, err
 	}
+
+	// configure the interface
+	socket, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		unix.Close(device)
+		ctx.ActorSystem().Logger().Error(err)
+		return nil, err
+	}
+	defer unix.Close(socket)
+
+	ifreq.SetUint16(unix.IFF_UP | unix.IFF_RUNNING)
+	if err := unix.IoctlIfreq(socket, unix.SIOCSIFFLAGS, ifreq); err != nil {
+		unix.Close(device)
+		ctx.ActorSystem().Logger().Error(err)
+		return nil, err
+	}
+	mtu := Config.BufSize
+	if Config.EnablePacketInformation {
+		mtu -= 4
+	}
+	ifreq.SetUint32(uint32(mtu))
+	if err := unix.IoctlIfreq(socket, unix.SIOCSIFMTU, ifreq); err != nil {
+		unix.Close(device)
+		ctx.ActorSystem().Logger().Error(err)
+		return nil, err
+	}
+
 	// https://github.com/vishvananda/netlink/blob/e1e260214862392fb28ff72c9b11adc84df73e2c/link_tuntap_linux.go#L77
 	if err := unix.SetNonblock(device, true); err != nil {
 		unix.Close(device)
