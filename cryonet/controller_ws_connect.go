@@ -44,6 +44,7 @@ func (w *WSConnect) PostStop(ctx *goakt.Context) error {
 func (w *WSConnect) Receive(ctx *goakt.ReceiveContext) {
 	switch ctx.Message().(type) {
 	case *goaktpb.PostStart:
+		ctx.Tell(ctx.Self(), &ws_connect.Connect{})
 		err := ctx.ActorSystem().Schedule(ctx.Context(), &ws_connect.Connect{}, ctx.Self(), Config.CheckInterval)
 		if err != nil {
 			panic(err)
