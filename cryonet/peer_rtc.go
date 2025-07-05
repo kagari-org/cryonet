@@ -12,24 +12,24 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type RTCPeer struct {
+type PeerRTC struct {
 	id   string
 	peer *webrtc.PeerConnection
 	dc   *webrtc.DataChannel
 	tun  *os.File
 }
 
-func NewRTCPeer(id string, peer *webrtc.PeerConnection, dc *webrtc.DataChannel) *RTCPeer {
-	return &RTCPeer{
+func NewRTCPeer(id string, peer *webrtc.PeerConnection, dc *webrtc.DataChannel) *PeerRTC {
+	return &PeerRTC{
 		id:   id,
 		peer: peer,
 		dc:   dc,
 	}
 }
 
-var _ goakt.Actor = (*RTCPeer)(nil)
+var _ goakt.Actor = (*PeerRTC)(nil)
 
-func (r *RTCPeer) PreStart(ctx *goakt.Context) error {
+func (r *PeerRTC) PreStart(ctx *goakt.Context) error {
 	tun, err := CreateTun(ctx, Config.InterfacePrefixRTC+r.id)
 	if err != nil {
 		r.close()
@@ -40,12 +40,12 @@ func (r *RTCPeer) PreStart(ctx *goakt.Context) error {
 	return nil
 }
 
-func (r *RTCPeer) PostStop(ctx *goakt.Context) error {
+func (r *PeerRTC) PostStop(ctx *goakt.Context) error {
 	r.close()
 	return nil
 }
 
-func (r *RTCPeer) Receive(ctx *goakt.ReceiveContext) {
+func (r *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 	switch ctx.Message().(type) {
 	case *goaktpb.PostStart:
 		r.rtcRead(ctx)
@@ -55,7 +55,7 @@ func (r *RTCPeer) Receive(ctx *goakt.ReceiveContext) {
 	}
 }
 
-func (r *RTCPeer) close() {
+func (r *PeerRTC) close() {
 	if r.dc != nil {
 		r.dc.Close()
 	}
@@ -64,7 +64,7 @@ func (r *RTCPeer) close() {
 	}
 }
 
-func (r *RTCPeer) rtcRead(ctx *goakt.ReceiveContext) {
+func (r *PeerRTC) rtcRead(ctx *goakt.ReceiveContext) {
 	logger := ctx.Logger()
 	self := ctx.Self()
 	r.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -98,7 +98,7 @@ func (r *RTCPeer) rtcRead(ctx *goakt.ReceiveContext) {
 	})
 }
 
-func (r *RTCPeer) tunRead(ctx *goakt.ReceiveContext) {
+func (r *PeerRTC) tunRead(ctx *goakt.ReceiveContext) {
 	logger := ctx.Logger()
 	self := ctx.Self()
 	data := make([]byte, Config.BufSize)

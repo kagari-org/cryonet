@@ -14,22 +14,22 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type WSPeer struct {
+type PeerWS struct {
 	id  string
 	ws  *websocket.Conn
 	tun *os.File
 }
 
-func NewWSPeer(id string, ws *websocket.Conn) *WSPeer {
-	return &WSPeer{
+func NewWSPeer(id string, ws *websocket.Conn) *PeerWS {
+	return &PeerWS{
 		id: id,
 		ws: ws,
 	}
 }
 
-var _ goakt.Actor = (*WSPeer)(nil)
+var _ goakt.Actor = (*PeerWS)(nil)
 
-func (w *WSPeer) PreStart(ctx *goakt.Context) error {
+func (w *PeerWS) PreStart(ctx *goakt.Context) error {
 	tun, err := CreateTun(ctx, Config.InterfacePrefixWS+w.id)
 	if err != nil {
 		w.close()
@@ -40,12 +40,12 @@ func (w *WSPeer) PreStart(ctx *goakt.Context) error {
 	return nil
 }
 
-func (w *WSPeer) PostStop(ctx *goakt.Context) error {
+func (w *PeerWS) PostStop(ctx *goakt.Context) error {
 	w.close()
 	return nil
 }
 
-func (w *WSPeer) Receive(ctx *goakt.ReceiveContext) {
+func (w *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 	switch ctx.Message().(type) {
 	case *goaktpb.PostStart:
 		go w.wsRead(ctx)
@@ -55,7 +55,7 @@ func (w *WSPeer) Receive(ctx *goakt.ReceiveContext) {
 	}
 }
 
-func (w *WSPeer) close() {
+func (w *PeerWS) close() {
 	if w.ws != nil {
 		w.ws.Close(websocket.StatusNormalClosure, "stop")
 	}
@@ -64,7 +64,7 @@ func (w *WSPeer) close() {
 	}
 }
 
-func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext) {
+func (w *PeerWS) wsRead(ctx *goakt.ReceiveContext) {
 	logger := ctx.Logger()
 	self := ctx.Self()
 	for {
@@ -112,7 +112,7 @@ func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext) {
 	}
 }
 
-func (w *WSPeer) tunRead(ctx *goakt.ReceiveContext) {
+func (w *PeerWS) tunRead(ctx *goakt.ReceiveContext) {
 	logger := ctx.Logger()
 	self := ctx.Self()
 	data := make([]byte, Config.BufSize)

@@ -10,10 +10,10 @@ import (
 )
 
 type WSConnect struct {
-	peers map[string]*Peer
+	peers map[string]*WSConnectPeer
 }
 
-type Peer struct {
+type WSConnectPeer struct {
 	server string
 	lock   sync.Mutex
 	pid    *goakt.PID
@@ -26,9 +26,9 @@ func NewWSConnect() *WSConnect {
 }
 
 func (w *WSConnect) PreStart(ctx *goakt.Context) error {
-	w.peers = make(map[string]*Peer)
+	w.peers = make(map[string]*WSConnectPeer)
 	for _, server := range Config.WSServers {
-		w.peers[server] = &Peer{
+		w.peers[server] = &WSConnectPeer{
 			server: server,
 			lock:   sync.Mutex{},
 			pid:    nil,
@@ -58,7 +58,7 @@ func (w *WSConnect) Receive(ctx *goakt.ReceiveContext) {
 	}
 }
 
-func (w *WSConnect) connect(ctx *goakt.ReceiveContext, p *Peer) error {
+func (w *WSConnect) connect(ctx *goakt.ReceiveContext, p *WSConnectPeer) error {
 	logger := ctx.Logger()
 
 	if !p.lock.TryLock() {
