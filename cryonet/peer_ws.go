@@ -2,6 +2,7 @@ package cryonet
 
 import (
 	"errors"
+	"io"
 	"net"
 	"os"
 
@@ -64,25 +65,26 @@ func (w *WSPeer) close() {
 }
 
 func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext) {
+	logger := ctx.Logger()
 	self := ctx.Self()
 	for {
 		if !self.IsRunning() {
 			break
 		}
 		_, data, err := w.ws.Read(ctx.Context())
-		if errors.Is(err, net.ErrClosed) {
+		if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
+			logger.Error(err)
 			ctx.Stop(self)
-			ctx.Logger().Error(err)
 			break
 		}
 		if err != nil {
-			ctx.Logger().Error(err)
+			logger.Error(err)
 			continue
 		}
 		packet := &ws.Packet{}
 		err = proto.Unmarshal(data, packet)
 		if err != nil {
-			ctx.Logger().Error(err)
+			logger.Error(err)
 			continue
 		}
 		switch packet := packet.P.(type) {
@@ -98,7 +100,7 @@ func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext) {
 				data := packet.Data.GetData()
 				_, err := w.tun.Write(data)
 				if err != nil {
-					ctx.Logger().Error(err)
+					logger.Error(err)
 					continue
 				}
 			default:
@@ -111,6 +113,7 @@ func (w *WSPeer) wsRead(ctx *goakt.ReceiveContext) {
 }
 
 func (w *WSPeer) tunRead(ctx *goakt.ReceiveContext) {
+	logger := ctx.Logger()
 	self := ctx.Self()
 	data := make([]byte, Config.BufSize)
 	for {
@@ -118,8 +121,13 @@ func (w *WSPeer) tunRead(ctx *goakt.ReceiveContext) {
 			break
 		}
 		n, err := w.tun.Read(data)
+		if errors.Is(err, os.ErrClosed) || errors.Is(err, io.EOF) {
+			logger.Error(err)
+			ctx.Stop(self)
+			break
+		}
 		if err != nil {
-			ctx.Logger().Error(err)
+			logger.Error(err)
 			continue
 		}
 		packet := &ws.Packet{
@@ -135,12 +143,12 @@ func (w *WSPeer) tunRead(ctx *goakt.ReceiveContext) {
 		}
 		data, err := proto.Marshal(packet)
 		if err != nil {
-			ctx.Logger().Error(err)
+			logger.Error(err)
 			continue
 		}
 		err = w.ws.Write(ctx.Context(), websocket.MessageBinary, data)
 		if err != nil {
-			ctx.Logger().Error(err)
+			logger.Error(err)
 			continue
 		}
 	}

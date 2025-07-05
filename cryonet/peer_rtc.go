@@ -64,6 +64,7 @@ func (r *RTCPeer) close() {
 }
 
 func (r *RTCPeer) rtcRead(ctx *goakt.ReceiveContext) {
+	logger := ctx.Logger()
 	self := ctx.Self()
 	r.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		if !self.IsRunning() {
@@ -72,7 +73,7 @@ func (r *RTCPeer) rtcRead(ctx *goakt.ReceiveContext) {
 		packet := &rtc.Packet{}
 		err := proto.Unmarshal(msg.Data, packet)
 		if err != nil {
-			ctx.Logger().Error(err)
+			logger.Error(err)
 			return
 		}
 		switch packet := packet.Packet.Packet.(type) {
@@ -83,7 +84,7 @@ func (r *RTCPeer) rtcRead(ctx *goakt.ReceiveContext) {
 		case *common.Packet_Data:
 			_, err := r.tun.Write(packet.Data.GetData())
 			if err != nil {
-				ctx.Logger().Error(err)
+				logger.Error(err)
 				return
 			}
 		default:
@@ -93,6 +94,7 @@ func (r *RTCPeer) rtcRead(ctx *goakt.ReceiveContext) {
 }
 
 func (r *RTCPeer) tunRead(ctx *goakt.ReceiveContext) {
+	logger := ctx.Logger()
 	self := ctx.Self()
 	data := make([]byte, Config.BufSize)
 	for {
@@ -101,7 +103,7 @@ func (r *RTCPeer) tunRead(ctx *goakt.ReceiveContext) {
 		}
 		n, err := r.tun.Read(data)
 		if err != nil {
-			ctx.Logger().Error(err)
+			logger.Error(err)
 			continue
 		}
 		packet := &rtc.Packet{
@@ -115,12 +117,12 @@ func (r *RTCPeer) tunRead(ctx *goakt.ReceiveContext) {
 		}
 		data, err := proto.Marshal(packet)
 		if err != nil {
-			ctx.Logger().Error(err)
+			logger.Error(err)
 			continue
 		}
 		err = r.dc.Send(data)
 		if err != nil {
-			ctx.Logger().Error(err)
+			logger.Error(err)
 			continue
 		}
 	}

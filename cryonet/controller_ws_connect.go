@@ -59,6 +59,8 @@ func (w *WSConnect) Receive(ctx *goakt.ReceiveContext) {
 }
 
 func (w *WSConnect) connect(ctx *goakt.ReceiveContext, p *Peer) error {
+	logger := ctx.Logger()
+
 	if !p.lock.TryLock() {
 		return nil
 	}
@@ -71,7 +73,7 @@ func (w *WSConnect) connect(ctx *goakt.ReceiveContext, p *Peer) error {
 
 	conn, _, err := websocket.Dial(ctx.Context(), p.server, nil)
 	if err != nil {
-		ctx.Logger().Error(err)
+		logger.Error(err)
 		return err
 	}
 
@@ -79,7 +81,7 @@ func (w *WSConnect) connect(ctx *goakt.ReceiveContext, p *Peer) error {
 
 	pid, err := WSShakeOrClose(ctx, conn)
 	if err != nil {
-		ctx.Logger().Error(err)
+		logger.Error(err)
 		return err
 	}
 

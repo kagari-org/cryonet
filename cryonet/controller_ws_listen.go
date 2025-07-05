@@ -42,13 +42,14 @@ func (w *WSListen) PostStop(ctx *goakt.Context) error {
 }
 
 func (w *WSListen) Receive(ctx *goakt.ReceiveContext) {
+	logger := ctx.Logger()
 	switch ctx.Message().(type) {
 	case *goaktpb.PostStart:
 		go func() {
 			w.postStartCtx = ctx
 			err := w.server.Serve(w.listener)
 			if err != nil {
-				ctx.Logger().Error(err)
+				logger.Error(err)
 				return
 			}
 		}()
