@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kagari-org/cryonet/gen/actors/controller/rtc"
+	"github.com/kagari-org/cryonet/gen/actors/controller_rtc"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
@@ -43,7 +43,7 @@ func (r *RTC) PostStop(ctx *goakt.Context) error {
 
 func (r *RTC) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
-	case *rtc.Alive:
+	case *controller_rtc.Alive:
 	default:
 		ctx.Unhandled()
 	}
@@ -106,7 +106,7 @@ func (r *RTC) shake(ctx *goakt.ReceiveContext, p *RTCPeer) error {
 			return err
 		}
 
-		ctx.ActorSystem().Schedule(ctx.Context(), &rtc.EmitDesc{
+		ctx.ActorSystem().Schedule(ctx.Context(), &controller_rtc.EmitDesc{
 			Desc: &common.Desc{
 				From:   Config.Id,
 				To:     p.peerId,
@@ -193,7 +193,7 @@ func (r *RTC) shake(ctx *goakt.ReceiveContext, p *RTCPeer) error {
 				peer.Close()
 				return err
 			}
-			ctx.ActorSystem().Schedule(ctx.Context(), &rtc.EmitDesc{
+			ctx.ActorSystem().Schedule(ctx.Context(), &controller_rtc.EmitDesc{
 				Desc: &common.Desc{
 					From:   Config.Id,
 					To:     p.peerId,

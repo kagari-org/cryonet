@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/coder/websocket"
-	"github.com/kagari-org/cryonet/gen/actors/controller/ws_connect"
+	"github.com/kagari-org/cryonet/gen/actors/controller_ws_connect"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 )
@@ -44,12 +44,12 @@ func (w *WSConnect) PostStop(ctx *goakt.Context) error {
 func (w *WSConnect) Receive(ctx *goakt.ReceiveContext) {
 	switch ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		ctx.Tell(ctx.Self(), &ws_connect.Connect{})
-		err := ctx.ActorSystem().Schedule(ctx.Context(), &ws_connect.Connect{}, ctx.Self(), Config.CheckInterval)
+		ctx.Tell(ctx.Self(), &controller_ws_connect.Connect{})
+		err := ctx.ActorSystem().Schedule(ctx.Context(), &controller_ws_connect.Connect{}, ctx.Self(), Config.CheckInterval)
 		if err != nil {
 			panic(err)
 		}
-	case *ws_connect.Connect:
+	case *controller_ws_connect.Connect:
 		for _, peer := range w.peers {
 			go w.connect(ctx, peer)
 		}

@@ -1,6 +1,6 @@
 syntax = "proto3";
-package actors.controller.rtc;
-option go_package = "github.com/kagari-org/cryonet/gen/actors/controller/rtc";
+package actors.controller_rtc;
+option go_package = "github.com/kagari-org/cryonet/gen/actors/controller_rtc";
 
 import "channels/common/common.proto";
 
