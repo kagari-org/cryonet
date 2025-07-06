@@ -218,13 +218,14 @@ func (r *RTC) shake(ctx *goakt.ReceiveContext, p *RTCPeer) error {
 	}
 
 	rtc := NewRTCPeer(p.peerId, peer, dc)
-	_, err = ctx.ActorSystem().Spawn(ctx.Context(), "rtc-peer-"+p.peerId, rtc, goakt.WithLongLived())
+	pid, err := ctx.ActorSystem().Spawn(ctx.Context(), "rtc-peer-"+p.peerId, rtc, goakt.WithLongLived())
 	if err != nil {
 		dc.Close()
 		peer.Close()
 		logger.Error(err)
 		return err
 	}
+	p.pid = pid
 
 	return nil
 }
