@@ -76,3 +76,20 @@ func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (*goakt.PID
 
 	return pid, nil
 }
+
+func IsMaster(peerId string) bool {
+	if len(Config.Id) > len(peerId) {
+		return true
+	}
+	if len(Config.Id) < len(peerId) {
+		return false
+	}
+	for i := 0; i < len(Config.Id); i++ {
+		if Config.Id[i] < peerId[i] {
+			return false
+		} else if Config.Id[i] > peerId[i] {
+			return true
+		}
+	}
+	panic("id should not be equal")
+}

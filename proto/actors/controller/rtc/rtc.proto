@@ -1,0 +1,13 @@
+syntax = "proto3";
+package actors.controller.rtc;
+option go_package = "github.com/kagari-org/cryonet/gen/actors/controller/rtc";
+
+import "channels/common/common.proto";
+
+message Alive {
+	channels.common.Alive alive = 1;
+}
+
+message EmitDesc {
+	channels.common.Desc desc = 1;
+}

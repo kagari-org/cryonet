@@ -10,7 +10,8 @@ message Alive {
 message Desc {
   string from = 1;
   string to = 2;
-  bytes desc = 3;
+  string desc_id = 3;
+  bytes desc = 4;
 }
 
 message Data {

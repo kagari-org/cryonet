@@ -5,6 +5,7 @@ go 1.24.1
 require (
 	github.com/alecthomas/kong v1.11.0
 	github.com/coder/websocket v1.8.13
+	github.com/google/uuid v1.6.0
 	github.com/pion/webrtc/v4 v4.1.2
 	github.com/tochemey/goakt/v3 v3.6.3
 	golang.org/x/sys v0.33.0
@@ -29,7 +30,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
 	github.com/hashicorp/go-metrics v0.5.4 // indirect

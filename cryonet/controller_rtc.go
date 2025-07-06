@@ -1,0 +1,230 @@
+package cryonet
+
+import (
+	"encoding/json"
+	"errors"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/kagari-org/cryonet/gen/actors/controller/rtc"
+	"github.com/kagari-org/cryonet/gen/channels/common"
+	"github.com/pion/webrtc/v4"
+	goakt "github.com/tochemey/goakt/v3/actor"
+)
+
+type RTC struct {
+	peers map[string]*RTCPeer
+}
+
+type RTCPeer struct {
+	desc <-chan *common.Desc
+
+	lock   sync.Mutex
+	peerId string
+	pid    *goakt.PID
+}
+
+func NewRTC() *RTC {
+	return &RTC{
+		peers: make(map[string]*RTCPeer),
+	}
+}
+
+var _ goakt.Actor = (*RTC)(nil)
+
+func (r *RTC) PreStart(ctx *goakt.Context) error {
+	return nil
+}
+
+func (r *RTC) PostStop(ctx *goakt.Context) error {
+	return nil
+}
+
+func (r *RTC) Receive(ctx *goakt.ReceiveContext) {
+	switch msg := ctx.Message().(type) {
+	case *rtc.Alive:
+	default:
+		ctx.Unhandled()
+	}
+}
+
+func (r *RTC) shake(ctx *goakt.ReceiveContext, p *RTCPeer) error {
+	logger := ctx.Logger()
+
+	if !p.lock.TryLock() {
+		return nil
+	}
+	defer p.lock.Unlock()
+
+	if p.pid != nil && p.pid.IsRunning() {
+		// already connected
+		return nil
+	}
+
+	master := IsMaster(p.peerId)
+
+	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{
+		ICEServers: GetICEServers(),
+	})
+	if err != nil {
+		logger.Error(err)
+		return err
+	}
+
+	var dc *webrtc.DataChannel
+	if master {
+		descId := uuid.NewString()
+
+		channel, err := peer.CreateDataChannel("data", nil)
+		if err != nil {
+			logger.Error(err)
+			peer.Close()
+			return err
+		}
+		dc = channel
+
+		offer, err := peer.CreateOffer(nil)
+		if err != nil {
+			logger.Error(err)
+			peer.Close()
+			return err
+		}
+		gather := webrtc.GatheringCompletePromise(peer)
+		err = peer.SetLocalDescription(offer)
+		if err != nil {
+			logger.Error(err)
+			peer.Close()
+			return err
+		}
+		<-gather
+		offer = *peer.LocalDescription()
+		offerBytes, err := json.Marshal(offer)
+		if err != nil {
+			logger.Error(err)
+			peer.Close()
+			return err
+		}
+
+		ctx.ActorSystem().Schedule(ctx.Context(), &rtc.EmitDesc{
+			Desc: &common.Desc{
+				From:   Config.Id,
+				To:     p.peerId,
+				DescId: descId,
+				Desc:   offerBytes,
+			},
+			// TODO: configure interval
+		}, ctx.Self(), time.Second*5, goakt.WithReference(descId))
+		defer ctx.ActorSystem().CancelSchedule(descId)
+
+		for {
+			// TODO: add timeout
+			answer := <-p.desc
+			if !(answer.From == p.peerId && answer.To == Config.Id) {
+				continue
+			}
+			if answer.DescId != descId {
+				// ignore old desc
+				continue
+			}
+			ctx.ActorSystem().CancelSchedule(descId)
+			answerDesc := &webrtc.SessionDescription{}
+			err := json.Unmarshal(answer.Desc, answerDesc)
+			if err != nil {
+				logger.Error(err)
+				peer.Close()
+				return err
+			}
+			err = peer.SetRemoteDescription(*answerDesc)
+			if err != nil {
+				logger.Error(err)
+				peer.Close()
+				return err
+			}
+			break
+		}
+	} else {
+		for {
+			// TODO: add timeout
+			offer := <-p.desc
+			if !(offer.From == p.peerId && offer.To == Config.Id) {
+				continue
+			}
+
+			channelChan := make(chan *webrtc.DataChannel, 1)
+			peer.OnDataChannel(func(d *webrtc.DataChannel) {
+				channelChan <- d
+			})
+			defer peer.OnDataChannel(nil)
+
+			offerDesc := &webrtc.SessionDescription{}
+			err := json.Unmarshal(offer.Desc, offerDesc)
+			if err != nil {
+				logger.Error(err)
+				peer.Close()
+				return err
+			}
+			err = peer.SetRemoteDescription(*offerDesc)
+			if err != nil {
+				logger.Error(err)
+				peer.Close()
+				return err
+			}
+
+			answer, err := peer.CreateAnswer(nil)
+			if err != nil {
+				logger.Error(err)
+				peer.Close()
+				return err
+			}
+			gather := webrtc.GatheringCompletePromise(peer)
+			err = peer.SetLocalDescription(answer)
+			if err != nil {
+				logger.Error(err)
+				peer.Close()
+				return err
+			}
+			<-gather
+			answerDesc := *peer.LocalDescription()
+
+			answerBytes, err := json.Marshal(answerDesc)
+			if err != nil {
+				logger.Error(err)
+				peer.Close()
+				return err
+			}
+			ctx.ActorSystem().Schedule(ctx.Context(), &rtc.EmitDesc{
+				Desc: &common.Desc{
+					From:   Config.Id,
+					To:     p.peerId,
+					DescId: offer.DescId,
+					Desc:   answerBytes,
+				},
+				// TODO: configure interval
+			}, ctx.Self(), time.Second*5, goakt.WithReference(offer.DescId))
+			defer ctx.ActorSystem().CancelSchedule(offer.DescId)
+
+			// TODO: add timeout
+			channel, ok := <-channelChan
+			if !ok {
+				err := errors.New("channelChan closed")
+				logger.Error(err)
+				peer.Close()
+				return err
+			}
+			dc = channel
+			break
+		}
+	}
+
+	rtc := NewRTCPeer(p.peerId, peer, dc)
+	_, err = ctx.ActorSystem().Spawn(ctx.Context(), "rtc-peer-"+p.peerId, rtc, goakt.WithLongLived())
+	if err != nil {
+		dc.Close()
+		peer.Close()
+		logger.Error(err)
+		return err
+	}
+
+	return nil
+}
