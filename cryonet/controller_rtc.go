@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller"
@@ -114,6 +113,7 @@ func (r *RTC) shake(ctx *goakt.ReceiveContext, p *RTCPeer) error {
 		return nil
 	}
 
+	shakeFailed := make(chan struct{}, 1)
 	master := IsMaster(p.peerId)
 
 	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{
@@ -123,6 +123,12 @@ func (r *RTC) shake(ctx *goakt.ReceiveContext, p *RTCPeer) error {
 		logger.Error(err)
 		return err
 	}
+	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+			shakeFailed <- struct{}{}
+		}
+	})
+	defer peer.OnConnectionStateChange(nil)
 
 	var dc *webrtc.DataChannel
 	if master {
@@ -165,119 +171,137 @@ func (r *RTC) shake(ctx *goakt.ReceiveContext, p *RTCPeer) error {
 				DescId: descId,
 				Desc:   offerBytes,
 			},
-			// TODO: configure interval
-		}, ctx.Self(), time.Second*5, goakt.WithReference(descId))
+		}, ctx.Self(), Config.CheckInterval, goakt.WithReference(descId))
 		defer ctx.ActorSystem().CancelSchedule(descId)
 
+	loopMaster:
 		for {
-			// TODO: add timeout
-			answer, ok := <-p.desc
-			if !ok {
-				err := errors.New("desc channel closed")
+			select {
+			case <-shakeFailed:
+				err := errors.New("peer connection failed")
 				logger.Error(err)
 				peer.Close()
 				return err
+			case answer, ok := <-p.desc:
+				if !ok {
+					err := errors.New("desc channel closed")
+					logger.Error(err)
+					peer.Close()
+					return err
+				}
+				if !(answer.From == p.peerId && answer.To == Config.Id) {
+					continue
+				}
+				if answer.DescId != descId {
+					// ignore old desc
+					continue
+				}
+				ctx.ActorSystem().CancelSchedule(descId)
+				answerDesc := &webrtc.SessionDescription{}
+				err := json.Unmarshal(answer.Desc, answerDesc)
+				if err != nil {
+					logger.Error(err)
+					peer.Close()
+					return err
+				}
+				err = peer.SetRemoteDescription(*answerDesc)
+				if err != nil {
+					logger.Error(err)
+					peer.Close()
+					return err
+				}
+				break loopMaster
 			}
-			if !(answer.From == p.peerId && answer.To == Config.Id) {
-				continue
-			}
-			if answer.DescId != descId {
-				// ignore old desc
-				continue
-			}
-			ctx.ActorSystem().CancelSchedule(descId)
-			answerDesc := &webrtc.SessionDescription{}
-			err := json.Unmarshal(answer.Desc, answerDesc)
-			if err != nil {
-				logger.Error(err)
-				peer.Close()
-				return err
-			}
-			err = peer.SetRemoteDescription(*answerDesc)
-			if err != nil {
-				logger.Error(err)
-				peer.Close()
-				return err
-			}
-			break
 		}
 	} else {
+	loopSlave:
 		for {
-			// TODO: add timeout
-			offer, ok := <-p.desc
-			if !ok {
-				err := errors.New("desc channel closed")
+			select {
+			case <-shakeFailed:
+				err := errors.New("peer connection failed")
 				logger.Error(err)
 				peer.Close()
 				return err
-			}
-			if !(offer.From == p.peerId && offer.To == Config.Id) {
-				continue
-			}
+			case offer, ok := <-p.desc:
+				if !ok {
+					err := errors.New("desc channel closed")
+					logger.Error(err)
+					peer.Close()
+					return err
+				}
+				if !(offer.From == p.peerId && offer.To == Config.Id) {
+					continue
+				}
 
-			channelChan := make(chan *webrtc.DataChannel, 1)
-			peer.OnDataChannel(func(d *webrtc.DataChannel) {
-				channelChan <- d
-			})
-			defer peer.OnDataChannel(nil)
+				channelChan := make(chan *webrtc.DataChannel, 1)
+				peer.OnDataChannel(func(d *webrtc.DataChannel) {
+					channelChan <- d
+				})
+				defer peer.OnDataChannel(nil)
 
-			offerDesc := &webrtc.SessionDescription{}
-			err := json.Unmarshal(offer.Desc, offerDesc)
-			if err != nil {
-				logger.Error(err)
-				peer.Close()
-				return err
-			}
-			err = peer.SetRemoteDescription(*offerDesc)
-			if err != nil {
-				logger.Error(err)
-				peer.Close()
-				return err
-			}
+				offerDesc := &webrtc.SessionDescription{}
+				err := json.Unmarshal(offer.Desc, offerDesc)
+				if err != nil {
+					logger.Error(err)
+					peer.Close()
+					return err
+				}
+				err = peer.SetRemoteDescription(*offerDesc)
+				if err != nil {
+					logger.Error(err)
+					peer.Close()
+					return err
+				}
 
-			answer, err := peer.CreateAnswer(nil)
-			if err != nil {
-				logger.Error(err)
-				peer.Close()
-				return err
-			}
-			gather := webrtc.GatheringCompletePromise(peer)
-			err = peer.SetLocalDescription(answer)
-			if err != nil {
-				logger.Error(err)
-				peer.Close()
-				return err
-			}
-			<-gather
-			answerDesc := *peer.LocalDescription()
+				answer, err := peer.CreateAnswer(nil)
+				if err != nil {
+					logger.Error(err)
+					peer.Close()
+					return err
+				}
+				gather := webrtc.GatheringCompletePromise(peer)
+				err = peer.SetLocalDescription(answer)
+				if err != nil {
+					logger.Error(err)
+					peer.Close()
+					return err
+				}
+				<-gather
+				answerDesc := *peer.LocalDescription()
 
-			answerBytes, err := json.Marshal(answerDesc)
-			if err != nil {
-				logger.Error(err)
-				peer.Close()
-				return err
-			}
-			ctx.ActorSystem().Schedule(ctx.Context(), &controller_rtc.EmitDesc{
-				Desc: &common.Desc{
-					From:   Config.Id,
-					To:     p.peerId,
-					DescId: offer.DescId,
-					Desc:   answerBytes,
-				},
-				// TODO: configure interval
-			}, ctx.Self(), time.Second*5, goakt.WithReference(offer.DescId))
-			defer ctx.ActorSystem().CancelSchedule(offer.DescId)
+				answerBytes, err := json.Marshal(answerDesc)
+				if err != nil {
+					logger.Error(err)
+					peer.Close()
+					return err
+				}
+				ctx.ActorSystem().Schedule(ctx.Context(), &controller_rtc.EmitDesc{
+					Desc: &common.Desc{
+						From:   Config.Id,
+						To:     p.peerId,
+						DescId: offer.DescId,
+						Desc:   answerBytes,
+					},
+				}, ctx.Self(), Config.CheckInterval, goakt.WithReference(offer.DescId))
+				defer ctx.ActorSystem().CancelSchedule(offer.DescId)
 
-			// TODO: add timeout
-			channel, ok := <-channelChan
-			if !ok {
-				err := errors.New("channelChan closed")
-				logger.Error(err)
-				peer.Close()
-				return err
+				select {
+				case <-shakeFailed:
+					err := errors.New("peer connection failed")
+					logger.Error(err)
+					peer.Close()
+					return err
+				case channel, ok := <-channelChan:
+					if !ok {
+						err := errors.New("channelChan closed")
+						logger.Error(err)
+						peer.Close()
+						return err
+					}
+					dc = channel
+					break loopSlave
+				}
 			}
-			dc = channel
-			break
 		}
 	}
 

@@ -94,7 +94,6 @@ func (w *WSListen) ServeHTTP(writer http.ResponseWriter, request *http.Request) 
 	w.peersLock.Lock()
 	defer w.peersLock.Unlock()
 
-	// TODO: check peers with same id
 	peerId, conn, err := WSShakeOrClose(w.postStartCtx, conn)
 	if err != nil {
 		return
