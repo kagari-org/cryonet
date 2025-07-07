@@ -10,6 +10,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller"
+	"github.com/kagari-org/cryonet/gen/actors/controller_rtc"
 	"github.com/kagari-org/cryonet/gen/actors/cryonet"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/channels/common"
@@ -73,12 +74,11 @@ func (c *Cryonet) Receive(ctx *goakt.ReceiveContext) {
 		peers3 := ctx.Ask(c.rtc, &controller.GetPeers{}, time.Second*5).(*controller.GetPeersResponse)
 		peers := append(peers1.Peers, peers2.Peers...)
 		peers = append(peers, peers3.Peers...)
-		alive, err := anypb.New(&peer.CastAlive{
-			Alive: &common.Alive{
-				Id:    Config.Id,
-				Peers: peers,
-			},
-		})
+		alive := &common.Alive{
+			Id:    Config.Id,
+			Peers: peers,
+		}
+		aliveAny, err := anypb.New(&peer.CastAlive{Alive: alive})
 		if err != nil {
 			logger.Error(err)
 			return
@@ -87,8 +87,10 @@ func (c *Cryonet) Receive(ctx *goakt.ReceiveContext) {
 		ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Publish{
 			Id:      uuid.NewString(),
 			Topic:   "peers",
-			Message: alive,
+			Message: aliveAny,
 		})
+		// send alive to self, so that it will create rtc from ws peer
+		ctx.Tell(c.rtc, &controller_rtc.Alive{Alive: alive})
 	default:
 		ctx.Unhandled()
 	}
