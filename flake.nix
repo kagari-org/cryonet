@@ -17,13 +17,19 @@
           fileset = unions [
             ./cryonet
             ./proto
+            ./main.go
             ./go.mod
             ./go.sum
             ./Makefile
           ];
         };
         nativeBuildInputs = [ buf protoc-gen-go protoc-gen-connect-go ];
-        vendorHash = "sha256-J9XiibkzJCz+Q+LuRe+hEgBbtSRs4wiiZmE9Zq6G1uw=";
+        vendorHash = "sha256-wwRLqF7frpD0D/386W4+D4hrqaunjMgIlGvdyJSqrh0=";
+        overrideModAttrs.preBuild = ''
+          export HOME=$(pwd)/.home
+          mkdir -p $HOME
+          make proto
+        '';
         buildPhase = ''
           export HOME=$(pwd)/.home
           mkdir -p $HOME
