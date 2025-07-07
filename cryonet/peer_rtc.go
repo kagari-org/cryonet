@@ -50,8 +50,20 @@ func (r *PeerRTC) PostStop(ctx *goakt.Context) error {
 }
 
 func (r *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
+	logger := ctx.Logger()
+	self := ctx.Self()
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
+		r.dc.OnClose(func() {
+			logger.Debug("data channel closed")
+			ctx.Stop(self)
+		})
+		r.peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+			if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+				logger.Error("peer connection state: ", state)
+				ctx.Stop(self)
+			}
+		})
 		r.rtcRead(ctx)
 		go r.tunRead(ctx)
 		ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Subscribe{Topic: "peers"})
@@ -125,6 +137,7 @@ func (r *PeerRTC) close() {
 	if r.peer != nil {
 		r.peer.Close()
 	}
+	r.tun.Close()
 }
 
 func (r *PeerRTC) rtcRead(ctx *goakt.ReceiveContext) {
@@ -175,10 +188,6 @@ func (r *PeerRTC) rtcRead(ctx *goakt.ReceiveContext) {
 		default:
 			panic("unreachable")
 		}
-	})
-	r.dc.OnClose(func() {
-		logger.Debug("data channel closed")
-		ctx.Stop(self)
 	})
 }
 
