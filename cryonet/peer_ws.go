@@ -167,6 +167,7 @@ func (w *PeerWS) wsRead(ctx *goakt.ReceiveContext) {
 		case *ws.Packet_Packet:
 			switch packet := packet.Packet.Packet.(type) {
 			case *common.Packet_Alive:
+				logger.Info("Received alive packet: ", packet.Alive)
 				ctx.Tell(rtcCtrl, &controller_rtc.Alive{Alive: packet.Alive})
 			case *common.Packet_Desc:
 				ctx.Tell(rtcCtrl, &controller_rtc.Desc{Desc: packet.Desc})

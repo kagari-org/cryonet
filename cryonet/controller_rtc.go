@@ -52,6 +52,9 @@ func (r *RTC) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *controller_rtc.Alive:
 		for _, peerId := range msg.Alive.GetPeers() {
+			if peerId == Config.Id {
+				continue
+			}
 			if _, ok := r.peers[peerId]; !ok {
 				r.peers[peerId] = &RTCPeer{
 					desc: make(chan *common.Desc),

@@ -160,13 +160,10 @@ func (r *PeerRTC) rtcRead(ctx *goakt.ReceiveContext) {
 		}
 		switch packet := packet.Packet.Packet.(type) {
 		case *common.Packet_Alive:
-			ctx.Tell(rtcCtrl, &controller_rtc.Alive{
-				Alive: packet.Alive,
-			})
+			logger.Info("Received alive packet: ", packet.Alive)
+			ctx.Tell(rtcCtrl, &controller_rtc.Alive{Alive: packet.Alive})
 		case *common.Packet_Desc:
-			ctx.Tell(rtcCtrl, &controller_rtc.Desc{
-				Desc: packet.Desc,
-			})
+			ctx.Tell(rtcCtrl, &controller_rtc.Desc{Desc: packet.Desc})
 			desc, err := anypb.New(&peer.SendDesc{
 				Desc: packet.Desc,
 			})

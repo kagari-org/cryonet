@@ -8,14 +8,16 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller"
-	"github.com/kagari-org/cryonet/gen/actors/controller_rtc"
 	"github.com/kagari-org/cryonet/gen/actors/cryonet"
+	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 	"github.com/tochemey/goakt/v3/log"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 var Config struct {
@@ -71,12 +73,21 @@ func (c *Cryonet) Receive(ctx *goakt.ReceiveContext) {
 		peers3 := ctx.Ask(c.rtc, &controller.GetPeers{}, time.Second*5).(*controller.GetPeersResponse)
 		peers := append(peers1.Peers, peers2.Peers...)
 		peers = append(peers, peers3.Peers...)
-		logger.Info("Sending alive message to controller with peers: ", peers)
-		ctx.Tell(c.rtc, &controller_rtc.Alive{
+		alive, err := anypb.New(&peer.CastAlive{
 			Alive: &common.Alive{
 				Id:    Config.Id,
 				Peers: peers,
 			},
+		})
+		if err != nil {
+			logger.Error(err)
+			return
+		}
+		logger.Info("Sending alive messages: ", alive)
+		ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Publish{
+			Id:      uuid.NewString(),
+			Topic:   "peers",
+			Message: alive,
 		})
 	default:
 		ctx.Unhandled()
