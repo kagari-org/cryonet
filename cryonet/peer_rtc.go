@@ -4,34 +4,37 @@ import (
 	"errors"
 	"os"
 
+	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller_rtc"
+	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/kagari-org/cryonet/gen/channels/rtc"
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 type PeerRTC struct {
-	id   string
-	peer *webrtc.PeerConnection
-	dc   *webrtc.DataChannel
-	tun  *os.File
+	peerId string
+	peer   *webrtc.PeerConnection
+	dc     *webrtc.DataChannel
+	tun    *os.File
 }
 
-func NewRTCPeer(id string, peer *webrtc.PeerConnection, dc *webrtc.DataChannel) *PeerRTC {
+func NewRTCPeer(peerId string, peer *webrtc.PeerConnection, dc *webrtc.DataChannel) *PeerRTC {
 	return &PeerRTC{
-		id:   id,
-		peer: peer,
-		dc:   dc,
+		peerId: peerId,
+		peer:   peer,
+		dc:     dc,
 	}
 }
 
 var _ goakt.Actor = (*PeerRTC)(nil)
 
 func (r *PeerRTC) PreStart(ctx *goakt.Context) error {
-	tun, err := CreateTun(ctx, Config.InterfacePrefixRTC+r.id)
+	tun, err := CreateTun(ctx, Config.InterfacePrefixRTC+r.peerId)
 	if err != nil {
 		r.close()
 		ctx.ActorSystem().Logger().Error(err)
@@ -47,10 +50,69 @@ func (r *PeerRTC) PostStop(ctx *goakt.Context) error {
 }
 
 func (r *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
-	switch ctx.Message().(type) {
+	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
 		r.rtcRead(ctx)
 		go r.tunRead(ctx)
+		ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Subscribe{Topic: "peers"})
+	case *peer.CastAlive:
+		packet := &rtc.Packet{
+			Packet: &common.Packet{
+				Packet: &common.Packet_Alive{
+					Alive: msg.GetAlive(),
+				},
+			},
+		}
+		data, err := proto.Marshal(packet)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		// TODO: this might not thread safe
+		err = r.dc.Send(data)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+	case *peer.CastDesc:
+		packet := &rtc.Packet{
+			Packet: &common.Packet{
+				Packet: &common.Packet_Desc{
+					Desc: msg.GetDesc(),
+				},
+			},
+		}
+		data, err := proto.Marshal(packet)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		err = r.dc.Send(data)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+	case *peer.SendDesc:
+		if msg.GetDesc().GetTo() != r.peerId {
+			return
+		}
+		packet := &rtc.Packet{
+			Packet: &common.Packet{
+				Packet: &common.Packet_Desc{
+					Desc: msg.GetDesc(),
+				},
+			},
+		}
+		data, err := proto.Marshal(packet)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		err = r.dc.Send(data)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
 	default:
 		ctx.Unhandled()
 	}
@@ -91,6 +153,18 @@ func (r *PeerRTC) rtcRead(ctx *goakt.ReceiveContext) {
 		case *common.Packet_Desc:
 			ctx.Tell(rtcCtrl, &controller_rtc.Desc{
 				Desc: packet.Desc,
+			})
+			desc, err := anypb.New(&peer.SendDesc{
+				Desc: packet.Desc,
+			})
+			if err != nil {
+				logger.Error(err)
+				return
+			}
+			ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Publish{
+				Id:      uuid.NewString(),
+				Topic:   "peers",
+				Message: desc,
 			})
 		case *common.Packet_Data:
 			_, err := r.tun.Write(packet.Data.GetData())

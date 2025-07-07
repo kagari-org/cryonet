@@ -37,7 +37,8 @@ func Main() {
 	ctx := context.Background()
 
 	system, err := goakt.NewActorSystem("CryonetSystem",
-		goakt.WithLogger(log.New(log.DebugLevel, os.Stderr)))
+		goakt.WithLogger(log.New(log.DebugLevel, os.Stderr)),
+		goakt.WithPubSub())
 	if err != nil {
 		system.Logger().Fatal(err)
 		return
@@ -56,6 +57,12 @@ func Main() {
 	}
 
 	_, err = system.Spawn(ctx, "ws-connect", NewWSConnect(), goakt.WithLongLived())
+	if err != nil {
+		system.Logger().Fatal(err)
+		return
+	}
+
+	_, err = system.Spawn(ctx, "rtc", NewRTC(), goakt.WithLongLived())
 	if err != nil {
 		system.Logger().Fatal(err)
 		return

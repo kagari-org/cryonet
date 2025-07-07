@@ -8,9 +8,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller_rtc"
+	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
+	"github.com/tochemey/goakt/v3/goaktpb"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 type RTC struct {
@@ -69,6 +72,19 @@ func (r *RTC) Receive(ctx *goakt.ReceiveContext) {
 				// discard desc if receiver is not receiving
 			}
 		}
+	case *controller_rtc.EmitDesc:
+		desc, err := anypb.New(&peer.CastDesc{
+			Desc: msg.GetDesc(),
+		})
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Publish{
+			Id:      uuid.NewString(),
+			Topic:   "peers",
+			Message: desc,
+		})
 	default:
 		ctx.Unhandled()
 	}

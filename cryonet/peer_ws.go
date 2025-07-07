@@ -7,12 +7,15 @@ import (
 	"os"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller_rtc"
+	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/kagari-org/cryonet/gen/channels/ws"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 type PeerWS struct {
@@ -47,10 +50,75 @@ func (w *PeerWS) PostStop(ctx *goakt.Context) error {
 }
 
 func (w *PeerWS) Receive(ctx *goakt.ReceiveContext) {
-	switch ctx.Message().(type) {
+	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
 		go w.wsRead(ctx)
 		go w.tunRead(ctx)
+		ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Subscribe{Topic: "peers"})
+	case *peer.CastAlive:
+		packet := &ws.Packet{
+			P: &ws.Packet_Packet{
+				Packet: &common.Packet{
+					Packet: &common.Packet_Alive{
+						Alive: msg.GetAlive(),
+					},
+				},
+			},
+		}
+		data, err := proto.Marshal(packet)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		// TODO: this might not thread safe
+		err = w.ws.Write(ctx.Context(), websocket.MessageBinary, data)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+	case *peer.CastDesc:
+		packet := &ws.Packet{
+			P: &ws.Packet_Packet{
+				Packet: &common.Packet{
+					Packet: &common.Packet_Desc{
+						Desc: msg.GetDesc(),
+					},
+				},
+			},
+		}
+		data, err := proto.Marshal(packet)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		err = w.ws.Write(ctx.Context(), websocket.MessageBinary, data)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+	case *peer.SendDesc:
+		if msg.GetDesc().GetTo() != w.id {
+			return
+		}
+		packet := &ws.Packet{
+			P: &ws.Packet_Packet{
+				Packet: &common.Packet{
+					Packet: &common.Packet_Desc{
+						Desc: msg.GetDesc(),
+					},
+				},
+			},
+		}
+		data, err := proto.Marshal(packet)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		err = w.ws.Write(ctx.Context(), websocket.MessageBinary, data)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
 	default:
 		ctx.Unhandled()
 	}
@@ -102,6 +170,18 @@ func (w *PeerWS) wsRead(ctx *goakt.ReceiveContext) {
 				ctx.Tell(rtcCtrl, &controller_rtc.Alive{Alive: packet.Alive})
 			case *common.Packet_Desc:
 				ctx.Tell(rtcCtrl, &controller_rtc.Desc{Desc: packet.Desc})
+				desc, err := anypb.New(&peer.SendDesc{
+					Desc: packet.Desc,
+				})
+				if err != nil {
+					logger.Error(err)
+					continue
+				}
+				ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Publish{
+					Id:      uuid.NewString(),
+					Topic:   "peers",
+					Message: desc,
+				})
 			case *common.Packet_Data:
 				data := packet.Data.GetData()
 				_, err := w.tun.Write(data)

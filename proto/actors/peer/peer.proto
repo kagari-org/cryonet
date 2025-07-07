@@ -1,0 +1,17 @@
+syntax = "proto3";
+package actors.peer;
+option go_package = "github.com/kagari-org/cryonet/gen/actors/peer";
+
+import "channels/common/common.proto";
+
+message CastAlive {
+  channels.common.Alive alive = 1;
+}
+
+message CastDesc {
+  channels.common.Desc desc = 1;
+}
+
+message SendDesc {
+  channels.common.Desc desc = 1;
+}
