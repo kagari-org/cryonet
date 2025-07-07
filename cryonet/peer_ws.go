@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/coder/websocket"
+	"github.com/kagari-org/cryonet/gen/actors/controller_rtc"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/kagari-org/cryonet/gen/channels/ws"
 	goakt "github.com/tochemey/goakt/v3/actor"
@@ -67,6 +68,11 @@ func (w *PeerWS) close() {
 func (w *PeerWS) wsRead(ctx *goakt.ReceiveContext) {
 	logger := ctx.Logger()
 	self := ctx.Self()
+	// get controller_rtc
+	_, rtcCtrl, err := ctx.ActorSystem().ActorOf(ctx.Context(), "rtc")
+	if err != nil {
+		panic(err)
+	}
 	for {
 		if !self.IsRunning() {
 			break
@@ -93,9 +99,9 @@ func (w *PeerWS) wsRead(ctx *goakt.ReceiveContext) {
 		case *ws.Packet_Packet:
 			switch packet := packet.Packet.Packet.(type) {
 			case *common.Packet_Alive:
-				// TODO
+				ctx.Tell(rtcCtrl, &controller_rtc.Alive{Alive: packet.Alive})
 			case *common.Packet_Desc:
-				// TODO
+				ctx.Tell(rtcCtrl, &controller_rtc.Desc{Desc: packet.Desc})
 			case *common.Packet_Data:
 				data := packet.Data.GetData()
 				_, err := w.tun.Write(data)

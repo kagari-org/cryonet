@@ -66,6 +66,7 @@ func (w *WSListen) ServeHTTP(writer http.ResponseWriter, request *http.Request) 
 
 	conn.SetReadLimit(-1)
 
+	// TODO: check peers with same id
 	_, err = WSShakeOrClose(w.postStartCtx, conn)
 	if err != nil {
 		return

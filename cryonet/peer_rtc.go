@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 
+	"github.com/kagari-org/cryonet/gen/actors/controller_rtc"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/kagari-org/cryonet/gen/channels/rtc"
 	"github.com/pion/webrtc/v4"
@@ -67,6 +68,11 @@ func (r *PeerRTC) close() {
 func (r *PeerRTC) rtcRead(ctx *goakt.ReceiveContext) {
 	logger := ctx.Logger()
 	self := ctx.Self()
+	// get controller_rtc
+	_, rtcCtrl, err := ctx.ActorSystem().ActorOf(ctx.Context(), "rtc")
+	if err != nil {
+		panic(err)
+	}
 	r.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		if !self.IsRunning() {
 			return
@@ -79,9 +85,13 @@ func (r *PeerRTC) rtcRead(ctx *goakt.ReceiveContext) {
 		}
 		switch packet := packet.Packet.Packet.(type) {
 		case *common.Packet_Alive:
-			// TODO
+			ctx.Tell(rtcCtrl, &controller_rtc.Alive{
+				Alive: packet.Alive,
+			})
 		case *common.Packet_Desc:
-			// TODO
+			ctx.Tell(rtcCtrl, &controller_rtc.Desc{
+				Desc: packet.Desc,
+			})
 		case *common.Packet_Data:
 			_, err := r.tun.Write(packet.Data.GetData())
 			if err != nil {

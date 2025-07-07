@@ -18,7 +18,7 @@ type RTC struct {
 }
 
 type RTCPeer struct {
-	desc <-chan *common.Desc
+	desc chan *common.Desc
 
 	lock   sync.Mutex
 	peerId string
@@ -38,12 +38,37 @@ func (r *RTC) PreStart(ctx *goakt.Context) error {
 }
 
 func (r *RTC) PostStop(ctx *goakt.Context) error {
+	for _, p := range r.peers {
+		close(p.desc)
+	}
+	// children will be stopped automatically
 	return nil
 }
 
 func (r *RTC) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *controller_rtc.Alive:
+		for _, peerId := range msg.Alive.GetPeers() {
+			if _, ok := r.peers[peerId]; !ok {
+				r.peers[peerId] = &RTCPeer{
+					desc: make(chan *common.Desc),
+
+					lock:   sync.Mutex{},
+					peerId: peerId,
+					pid:    nil,
+				}
+			}
+			p := r.peers[peerId]
+			go r.shake(ctx, p)
+		}
+	case *controller_rtc.Desc:
+		for _, peer := range r.peers {
+			select {
+			case peer.desc <- msg.GetDesc():
+			default:
+				// discard desc if receiver is not receiving
+			}
+		}
 	default:
 		ctx.Unhandled()
 	}
@@ -119,7 +144,13 @@ func (r *RTC) shake(ctx *goakt.ReceiveContext, p *RTCPeer) error {
 
 		for {
 			// TODO: add timeout
-			answer := <-p.desc
+			answer, ok := <-p.desc
+			if !ok {
+				err := errors.New("desc channel closed")
+				logger.Error(err)
+				peer.Close()
+				return err
+			}
 			if !(answer.From == p.peerId && answer.To == Config.Id) {
 				continue
 			}
@@ -146,7 +177,13 @@ func (r *RTC) shake(ctx *goakt.ReceiveContext, p *RTCPeer) error {
 	} else {
 		for {
 			// TODO: add timeout
-			offer := <-p.desc
+			offer, ok := <-p.desc
+			if !ok {
+				err := errors.New("desc channel closed")
+				logger.Error(err)
+				peer.Close()
+				return err
+			}
 			if !(offer.From == p.peerId && offer.To == Config.Id) {
 				continue
 			}
