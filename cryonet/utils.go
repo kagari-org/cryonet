@@ -66,13 +66,7 @@ func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (*goakt.PID
 
 	// spawn peer
 	id := recvInit.GetInit().GetId()
-	ws := NewWSPeer(id, conn)
-	pid, err := ctx.ActorSystem().Spawn(ctx.Context(), fmt.Sprintf("ws-peer-%s", id), ws, goakt.WithLongLived())
-	if err != nil {
-		conn.Close(websocket.StatusInternalError, "failed to spawn ws peer")
-		logger.Error(err)
-		return nil, err
-	}
+	pid := ctx.Spawn(fmt.Sprintf("ws-peer-%s", id), NewWSPeer(id, conn), goakt.WithLongLived())
 
 	return pid, nil
 }
