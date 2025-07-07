@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/coder/websocket"
+	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/controller_ws_connect"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
@@ -14,8 +15,9 @@ type WSConnect struct {
 }
 
 type WSConnectPeer struct {
-	server string
 	lock   sync.Mutex
+	server string
+	peerId string
 	pid    *goakt.PID
 }
 
@@ -29,8 +31,9 @@ func (w *WSConnect) PreStart(ctx *goakt.Context) error {
 	w.peers = make(map[string]*WSConnectPeer)
 	for _, server := range Config.WSServers {
 		w.peers[server] = &WSConnectPeer{
-			server: server,
 			lock:   sync.Mutex{},
+			server: server,
+			peerId: "",
 			pid:    nil,
 		}
 	}
@@ -53,6 +56,16 @@ func (w *WSConnect) Receive(ctx *goakt.ReceiveContext) {
 		for _, peer := range w.peers {
 			go w.connect(ctx, peer)
 		}
+	case *controller.GetPeers:
+		peers := make([]string, 0)
+		for _, peer := range w.peers {
+			if peer.pid != nil && peer.pid.IsRunning() {
+				peers = append(peers, peer.peerId)
+			}
+		}
+		ctx.Response(&controller.GetPeersResponse{
+			Peers: peers,
+		})
 	default:
 		ctx.Unhandled()
 	}
@@ -79,12 +92,14 @@ func (w *WSConnect) connect(ctx *goakt.ReceiveContext, p *WSConnectPeer) error {
 
 	conn.SetReadLimit(-1)
 
-	pid, err := WSShakeOrClose(ctx, conn)
+	peerId, conn, err := WSShakeOrClose(ctx, conn)
 	if err != nil {
 		logger.Error(err)
 		return err
 	}
+	pid := ctx.Spawn("ws-peer-"+peerId, NewWSPeer(peerId, conn), goakt.WithLongLived())
 
+	p.peerId = peerId
 	p.pid = pid
 
 	return nil

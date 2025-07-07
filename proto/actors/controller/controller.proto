@@ -1,0 +1,9 @@
+syntax = "proto3";
+package actors.controller;
+option go_package = "github.com/kagari-org/cryonet/gen/actors/controller";
+
+message GetPeers {}
+
+message GetPeersResponse {
+  repeated string peers = 1;
+}

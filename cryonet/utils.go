@@ -1,15 +1,13 @@
 package cryonet
 
 import (
-	"fmt"
-
 	"github.com/coder/websocket"
 	"github.com/kagari-org/cryonet/gen/channels/ws"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"google.golang.org/protobuf/proto"
 )
 
-func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (*goakt.PID, error) {
+func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (string, *websocket.Conn, error) {
 	logger := ctx.Logger()
 
 	// send Init
@@ -25,13 +23,13 @@ func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (*goakt.PID
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "failed to marshal init packet")
 		logger.Error(err)
-		return nil, err
+		return "", nil, err
 	}
 	err = conn.Write(ctx.Context(), websocket.MessageBinary, data)
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "failed to send init packet")
 		logger.Error(err)
-		return nil, err
+		return "", nil, err
 	}
 
 	// recv Init
@@ -39,36 +37,34 @@ func WSShakeOrClose(ctx *goakt.ReceiveContext, conn *websocket.Conn) (*goakt.PID
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "failed to read init packet")
 		logger.Error(err)
-		return nil, err
+		return "", nil, err
 	}
 	recvInit := &ws.Packet{}
 	err = proto.Unmarshal(data, recvInit)
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "failed to unmarshal init packet")
 		logger.Error(err)
-		return nil, err
+		return "", nil, err
 	}
 	if recvInit.GetInit() == nil {
 		conn.Close(websocket.StatusProtocolError, "received invalid init packet")
 		logger.Error(err)
-		return nil, err
+		return "", nil, err
 	}
 	if recvInit.GetInit().GetId() == Config.Id {
 		conn.Close(websocket.StatusProtocolError, "received init packet with same ID")
 		logger.Error(err)
-		return nil, err
+		return "", nil, err
 	}
 	if recvInit.GetInit().GetToken() != Config.Token {
 		conn.Close(websocket.StatusProtocolError, "received init packet with invalid token")
 		logger.Error(err)
-		return nil, err
+		return "", nil, err
 	}
 
-	// spawn peer
-	id := recvInit.GetInit().GetId()
-	pid := ctx.Spawn(fmt.Sprintf("ws-peer-%s", id), NewWSPeer(id, conn), goakt.WithLongLived())
+	// pid := ctx.Spawn(fmt.Sprintf("ws-peer-%s", peerId), NewWSPeer(peerId, conn), goakt.WithLongLived())
 
-	return pid, nil
+	return recvInit.GetInit().GetId(), conn, nil
 }
 
 func IsMaster(peerId string) bool {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/controller_rtc"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/channels/common"
@@ -84,6 +85,16 @@ func (r *RTC) Receive(ctx *goakt.ReceiveContext) {
 			Id:      uuid.NewString(),
 			Topic:   "peers",
 			Message: desc,
+		})
+	case *controller.GetPeers:
+		peers := make([]string, 0)
+		for _, peer := range r.peers {
+			if peer.pid != nil && peer.pid.IsRunning() {
+				peers = append(peers, peer.peerId)
+			}
+		}
+		ctx.Response(&controller.GetPeersResponse{
+			Peers: peers,
 		})
 	default:
 		ctx.Unhandled()
