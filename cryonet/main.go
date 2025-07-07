@@ -25,7 +25,7 @@ var Config struct {
 	WSServers []string `env:"WS_SERVERS"`
 	Token     string   `env:"TOKEN"`
 
-	ice_servers []string `env:"ICE_SERVERS" default:"stun:stun.l.google.com"`
+	IceServers []string `env:"ICE_SERVERS" default:"stun:stun.l.google.com"`
 
 	CheckInterval     time.Duration `env:"CHECK_INTERVAL" default:"10s"`
 	SendAliveInterval time.Duration `env:"SEND_ALIVE_INTERVAL" default:"1m"`
@@ -117,7 +117,7 @@ func Main() {
 
 func GetICEServers() []webrtc.ICEServer {
 	ice_servers := []webrtc.ICEServer{}
-	for _, server := range Config.ice_servers {
+	for _, server := range Config.IceServers {
 		splited := strings.Split(server, "|")
 		if len(splited) == 1 {
 			ice_servers = append(ice_servers, webrtc.ICEServer{
