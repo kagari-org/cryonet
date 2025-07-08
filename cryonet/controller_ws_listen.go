@@ -99,8 +99,8 @@ func (w *WSListen) ServeHTTP(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 	if w.peers[peerId] != nil && w.peers[peerId].pid != nil && w.peers[peerId].pid.IsRunning() {
-		conn.Close(websocket.StatusProtocolError, "peer with same id already exists")
-		return
+		// replace existing peer
+		w.postStartCtx.Stop(w.peers[peerId].pid)
 	}
 	pid := w.postStartCtx.Spawn("ws-peer-"+peerId, NewWSPeer(peerId, conn), goakt.WithLongLived())
 	w.peers[peerId] = &WSListenPeer{
