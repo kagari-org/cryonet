@@ -127,7 +127,7 @@ func (r *RTC) shake(ctx *goakt.ReceiveContext, p *RTCPeer) error {
 		return err
 	}
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateDisconnected {
 			shakeFailed <- struct{}{}
 		}
 	})

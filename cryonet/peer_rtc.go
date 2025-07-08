@@ -59,7 +59,7 @@ func (r *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Stop(self)
 		})
 		r.peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-			if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+			if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateDisconnected {
 				logger.Error("peer connection state: ", state)
 				ctx.Stop(self)
 			}
