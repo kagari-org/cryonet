@@ -10,6 +10,8 @@ message IEmitDesc {
 
 message IShaked {}
 
+message ITimeout {}
+
 message ODesc {
 	channels.common.Desc desc = 1;
 }

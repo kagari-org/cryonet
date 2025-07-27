@@ -3,9 +3,11 @@ package cryonet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller"
+	"github.com/kagari-org/cryonet/gen/actors/shaker"
 	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/pion/webrtc/v4"
@@ -56,10 +58,19 @@ func (s *ShakerRTC) PostStop(ctx *goakt.Context) error {
 func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		// TODO: add timeout event
+		ctx.ActorSystem().ScheduleOnce(
+			context.Background(),
+			&shaker.ITimeout{},
+			ctx.Self(),
+			Config.ShakeTimeout,
+		)
 		if err := s.init(ctx); err != nil {
 			ctx.Err(err)
 			return
+		}
+	case *shaker.ITimeout:
+		if !s.shaked {
+			ctx.Err(errors.New("shake timeout"))
 		}
 	case *shaker_rtc.ODesc:
 		if s.shaked {
@@ -141,7 +152,7 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 			return err
 		}
 
-		ctx.ActorSystem().Schedule(ctx.Context(), &controller.OShakeDesc{
+		ctx.ActorSystem().Schedule(context.Background(), &controller.OShakeDesc{
 			Desc: &common.Desc{
 				From:   Config.Id,
 				To:     s.peerId,
@@ -229,7 +240,7 @@ func (s *ShakerRTC) slaveReceiveDesc(ctx *goakt.ReceiveContext, desc *common.Des
 	if err != nil {
 		return err
 	}
-	ctx.ActorSystem().Schedule(ctx.Context(), &controller.OShakeDesc{
+	ctx.ActorSystem().Schedule(context.Background(), &controller.OShakeDesc{
 		Desc: &common.Desc{
 			From:   Config.Id,
 			To:     s.peerId,

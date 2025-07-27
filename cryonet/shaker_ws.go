@@ -63,6 +63,9 @@ func (s *ShakerWS) Receive(ctx *goakt.ReceiveContext) {
 }
 
 func (s *ShakerWS) shake(ctx *goakt.ReceiveContext) (string, error) {
+	context, cancel := context.WithTimeout(ctx.Context(), Config.ShakeTimeout)
+	defer cancel()
+
 	s.conn.SetReadLimit(-1)
 
 	// send Init
@@ -79,14 +82,14 @@ func (s *ShakerWS) shake(ctx *goakt.ReceiveContext) (string, error) {
 		s.conn.Close(websocket.StatusInternalError, "failed to marshal init packet")
 		return "", err
 	}
-	err = s.conn.Write(ctx.Context(), websocket.MessageBinary, data)
+	err = s.conn.Write(context, websocket.MessageBinary, data)
 	if err != nil {
 		s.conn.Close(websocket.StatusInternalError, "failed to send init packet")
 		return "", err
 	}
 
 	// recv Init
-	_, data, err = s.conn.Read(ctx.Context())
+	_, data, err = s.conn.Read(context)
 	if err != nil {
 		s.conn.Close(websocket.StatusInternalError, "failed to read init packet")
 		return "", err

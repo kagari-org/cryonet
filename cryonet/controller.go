@@ -87,7 +87,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 
 		ctx.Tell(ctx.Self(), &controller.ICheck{})
 		ctx.ActorSystem().Schedule(
-			ctx.Context(),
+			context.Background(),
 			&controller.ICheck{},
 			ctx.Self(),
 			Config.CheckInterval,
@@ -103,7 +103,9 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				conn, _, err := websocket.Dial(ctx.Context(), server, nil)
+				context, cancel := context.WithTimeout(ctx.Context(), Config.ShakeTimeout)
+				defer cancel()
+				conn, _, err := websocket.Dial(context, server, nil)
 				if err != nil {
 					ctx.Logger().Error(err)
 					return
@@ -228,17 +230,4 @@ func (c *Controller) getPeers(ctx *goakt.ReceiveContext) []*goakt.PID {
 		}
 	}
 	return peers
-}
-
-func (c *Controller) getShakers(ctx *goakt.ReceiveContext) []*goakt.PID {
-	actors := ctx.ActorSystem().Actors()
-	shakers := make([]*goakt.PID, 0)
-	for _, actor := range actors {
-		if _, ok := actor.Actor().(*ShakerWS); ok {
-			shakers = append(shakers, actor)
-		} else if _, ok := actor.Actor().(*ShakerRTC); ok {
-			shakers = append(shakers, actor)
-		}
-	}
-	return shakers
 }
