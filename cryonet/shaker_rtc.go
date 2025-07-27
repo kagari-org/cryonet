@@ -88,6 +88,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			return
 		}
 	case *shaker_rtc.IShaked:
+		ctx.ActorSystem().CancelSchedule(s.descId)
 		if s.dc == nil || s.shaked {
 			panic("unreachable")
 		}
