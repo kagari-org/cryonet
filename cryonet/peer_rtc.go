@@ -115,7 +115,6 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		// TODO: this might not thread safe
 		err = p.dc.Send(data)
 		if err != nil {
 			ctx.Err(err)

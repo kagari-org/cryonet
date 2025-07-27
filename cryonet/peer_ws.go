@@ -114,7 +114,6 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		// TODO: this might not thread safe
 		err = p.ws.Write(ctx.Context(), websocket.MessageBinary, data)
 		if err != nil {
 			ctx.Err(err)
