@@ -2,8 +2,22 @@ syntax = "proto3";
 package actors.controller;
 option go_package = "github.com/kagari-org/cryonet/gen/actors/controller";
 
-message GetPeers {}
+import "channels/common/common.proto";
 
-message GetPeersResponse {
-  repeated string peers = 1;
+message ICheck {}
+
+// send alive
+message IAlive {}
+
+// receive alive
+message OAlive {
+  channels.common.Alive alive = 1;
+}
+
+message OShakeDesc {
+  channels.common.Desc desc = 1;
+}
+
+message OForwardDesc {
+  channels.common.Desc desc = 1;
 }

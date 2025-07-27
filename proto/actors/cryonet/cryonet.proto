@@ -1,5 +1,0 @@
-syntax = "proto3";
-package actors.cryonet;
-option go_package = "github.com/kagari-org/cryonet/gen/actors/cryonet";
-
-message SendAlive {}

@@ -4,14 +4,18 @@ option go_package = "github.com/kagari-org/cryonet/gen/actors/peer";
 
 import "channels/common/common.proto";
 
-message CastAlive {
+message IStop {}
+
+message OGetPeerId {}
+
+message OGetPeerIdResponse {
+  string peerId = 1;
+}
+
+message OAlive {
   channels.common.Alive alive = 1;
 }
 
-message CastDesc {
-  channels.common.Desc desc = 1;
-}
-
-message SendDesc {
+message ODesc {
   channels.common.Desc desc = 1;
 }

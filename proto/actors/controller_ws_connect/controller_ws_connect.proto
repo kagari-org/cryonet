@@ -1,5 +1,0 @@
-syntax = "proto3";
-package actors.controller_ws_connect;
-option go_package = "github.com/kagari-org/cryonet/gen/actors/controller_ws_connect";
-
-message Connect {}

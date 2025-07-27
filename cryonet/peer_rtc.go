@@ -1,11 +1,11 @@
 package cryonet
 
 import (
+	"context"
 	"errors"
 	"os"
 
-	"github.com/google/uuid"
-	"github.com/kagari-org/cryonet/gen/actors/controller_rtc"
+	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/kagari-org/cryonet/gen/channels/rtc"
@@ -13,61 +13,69 @@ import (
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/anypb"
 )
 
 type PeerRTC struct {
 	peerId string
-	peer   *webrtc.PeerConnection
 	dc     *webrtc.DataChannel
 	tun    *os.File
 }
 
-func NewRTCPeer(peerId string, peer *webrtc.PeerConnection, dc *webrtc.DataChannel) *PeerRTC {
-	return &PeerRTC{
-		peerId: peerId,
-		peer:   peer,
-		dc:     dc,
-	}
+func SpawnRTCPeer(parent *goakt.PID, peerId string, dc *webrtc.DataChannel) (*goakt.PID, error) {
+	return parent.SpawnChild(
+		context.Background(),
+		"peer-rtc-"+peerId,
+		&PeerRTC{
+			peerId: peerId,
+			dc:     dc,
+		},
+		goakt.WithLongLived(),
+		goakt.WithSupervisor(goakt.NewSupervisor(
+			goakt.WithAnyErrorDirective(goakt.EscalateDirective),
+		)),
+	)
 }
 
 var _ goakt.Actor = (*PeerRTC)(nil)
 
-func (r *PeerRTC) PreStart(ctx *goakt.Context) error {
-	tun, err := CreateTun(ctx, Config.InterfacePrefixRTC+r.peerId)
+func (p *PeerRTC) PreStart(ctx *goakt.Context) error {
+	tun, err := CreateTun(ctx, Config.InterfacePrefixRTC+p.peerId)
 	if err != nil {
-		r.close()
+		p.close()
 		ctx.ActorSystem().Logger().Error(err)
 		return err
 	}
-	r.tun = tun
+	p.tun = tun
 	return nil
 }
 
-func (r *PeerRTC) PostStop(ctx *goakt.Context) error {
-	r.close()
+func (p *PeerRTC) PostStop(ctx *goakt.Context) error {
+	p.close()
 	return nil
 }
 
-func (r *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
-	logger := ctx.Logger()
-	self := ctx.Self()
+func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		r.dc.OnClose(func() {
-			logger.Debug("data channel closed")
-			ctx.Stop(self)
-		})
-		r.peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-			if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateDisconnected {
-				logger.Error("peer connection state: ", state)
-				ctx.Stop(self)
+		self := ctx.Self()
+		p.dc.OnClose(func() {
+			self.Logger().Debug("data channel closed")
+			err := self.Tell(context.Background(), self, &peer.IStop{})
+			if err != nil {
+				self.Logger().Error(err)
 			}
 		})
-		r.rtcRead(ctx)
-		go r.tunRead(ctx)
+		p.rtcRead(ctx.Self())
+		go p.tunRead(ctx.Self())
 		ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Subscribe{Topic: "peers"})
-	case *peer.CastAlive:
+	case *peer.IStop:
+		// stop by parent
+		ctx.Err(errors.New("stop peer"))
+	case *peer.OGetPeerId:
+		ctx.Response(&peer.OGetPeerIdResponse{
+			PeerId: p.peerId,
+		})
+	case *peer.OAlive:
 		packet := &rtc.Packet{
 			Packet: &common.Packet{
 				Packet: &common.Packet_Alive{
@@ -81,12 +89,12 @@ func (r *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 			return
 		}
 		// TODO: this might not thread safe
-		err = r.dc.Send(data)
+		err = p.dc.Send(data)
 		if err != nil {
 			ctx.Err(err)
 			return
 		}
-	case *peer.CastDesc:
+	case *peer.ODesc:
 		packet := &rtc.Packet{
 			Packet: &common.Packet{
 				Packet: &common.Packet_Desc{
@@ -99,28 +107,7 @@ func (r *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		err = r.dc.Send(data)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
-	case *peer.SendDesc:
-		if msg.GetDesc().GetTo() != r.peerId {
-			return
-		}
-		packet := &rtc.Packet{
-			Packet: &common.Packet{
-				Packet: &common.Packet_Desc{
-					Desc: msg.GetDesc(),
-				},
-			},
-		}
-		data, err := proto.Marshal(packet)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
-		err = r.dc.Send(data)
+		err = p.dc.Send(data)
 		if err != nil {
 			ctx.Err(err)
 			return
@@ -130,57 +117,48 @@ func (r *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 	}
 }
 
-func (r *PeerRTC) close() {
-	if r.dc != nil {
-		r.dc.Close()
+func (p *PeerRTC) close() {
+	if p.dc != nil {
+		p.dc.Close()
 	}
-	if r.peer != nil {
-		r.peer.Close()
-	}
-	r.tun.Close()
+	p.tun.Close()
 }
 
-func (r *PeerRTC) rtcRead(ctx *goakt.ReceiveContext) {
-	logger := ctx.Logger()
-	self := ctx.Self()
-	// get controller_rtc
-	_, rtcCtrl, err := ctx.ActorSystem().ActorOf(ctx.Context(), "rtc")
-	if err != nil {
-		panic(err)
-	}
-	r.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+func (p *PeerRTC) rtcRead(self *goakt.PID) {
+	p.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		if !self.IsRunning() {
 			return
 		}
 		packet := &rtc.Packet{}
 		err := proto.Unmarshal(msg.Data, packet)
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			return
 		}
 		switch packet := packet.Packet.Packet.(type) {
 		case *common.Packet_Alive:
-			logger.Info("Received alive packet: ", packet.Alive)
-			ctx.Tell(rtcCtrl, &controller_rtc.Alive{Alive: packet.Alive})
-		case *common.Packet_Desc:
-			ctx.Tell(rtcCtrl, &controller_rtc.Desc{Desc: packet.Desc})
-			desc, err := anypb.New(&peer.SendDesc{
-				Desc: packet.Desc,
-			})
+			self.Logger().Info("Received alive packet: ", packet.Alive)
+			err := self.Tell(
+				context.Background(),
+				self.Parent().Parent(),
+				&controller.OAlive{Alive: packet.Alive},
+			)
 			if err != nil {
-				logger.Error(err)
-				return
+				self.Logger().Error(err)
 			}
-			ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Publish{
-				Id:      uuid.NewString(),
-				Topic:   "peers",
-				Message: desc,
-			})
-		case *common.Packet_Data:
-			_, err := r.tun.Write(packet.Data.GetData())
+		case *common.Packet_Desc:
+			err := self.Tell(
+				context.Background(),
+				self.Parent().Parent(),
+				&controller.OForwardDesc{Desc: packet.Desc},
+			)
 			if err != nil {
-				logger.Error(err)
-				return
+				self.Logger().Error(err)
+			}
+		case *common.Packet_Data:
+			_, err := p.tun.Write(packet.Data.GetData())
+			if err != nil {
+				self.Logger().Error(err)
 			}
 		default:
 			panic("unreachable")
@@ -188,22 +166,23 @@ func (r *PeerRTC) rtcRead(ctx *goakt.ReceiveContext) {
 	})
 }
 
-func (r *PeerRTC) tunRead(ctx *goakt.ReceiveContext) {
-	logger := ctx.Logger()
-	self := ctx.Self()
+func (p *PeerRTC) tunRead(self *goakt.PID) {
 	data := make([]byte, Config.BufSize)
 	for {
 		if !self.IsRunning() {
 			break
 		}
-		n, err := r.tun.Read(data)
+		n, err := p.tun.Read(data)
 		if errors.Is(err, os.ErrClosed) || errors.Is(err, os.ErrInvalid) {
-			logger.Error(err)
-			ctx.Stop(self)
+			self.Logger().Error(err)
+			err := self.Tell(context.Background(), self, &peer.IStop{})
+			if err != nil {
+				self.Logger().Error(err)
+			}
 			break
 		}
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
 		packet := &rtc.Packet{
@@ -217,12 +196,12 @@ func (r *PeerRTC) tunRead(ctx *goakt.ReceiveContext) {
 		}
 		data, err := proto.Marshal(packet)
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
-		err = r.dc.Send(data)
+		err = p.dc.Send(data)
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
 	}
