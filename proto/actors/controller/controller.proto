@@ -6,9 +6,6 @@ import "channels/common/common.proto";
 
 message ICheck {}
 
-// send alive
-message IAlive {}
-
 // receive alive
 message OAlive {
   channels.common.Alive alive = 1;

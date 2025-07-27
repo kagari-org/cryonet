@@ -29,6 +29,7 @@ func SpawnShakerRTC(parent *goakt.PID, peerId string) (*goakt.PID, error) {
 		&ShakerRTC{
 			peerId: peerId,
 			descId: uuid.NewString(),
+			shaked: false,
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
@@ -106,9 +107,10 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 
 	self := ctx.Self()
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		if state == webrtc.PeerConnectionStateConnected ||
+		if state == webrtc.PeerConnectionStateClosed ||
 			state == webrtc.PeerConnectionStateFailed ||
 			state == webrtc.PeerConnectionStateDisconnected {
+			self.Logger().Error("rtc state changed: ", state)
 			err := self.Stop(context.Background(), self)
 			if err != nil {
 				self.Logger().Error(err)
@@ -160,6 +162,9 @@ func (s *ShakerRTC) masterReceiveDesc(ctx *goakt.ReceiveContext, desc *common.De
 		// ignore old desc
 		return nil
 	}
+
+	ctx.Logger().Info("received desc")
+
 	err := ctx.ActorSystem().CancelSchedule(s.descId)
 	if err != nil {
 		ctx.Logger().Error(err)
@@ -184,6 +189,8 @@ func (s *ShakerRTC) slaveReceiveDesc(ctx *goakt.ReceiveContext, desc *common.Des
 	if !(desc.From == s.peerId && desc.To == Config.Id) {
 		return nil
 	}
+
+	ctx.Logger().Info("received desc")
 
 	s.descId = desc.DescId
 
