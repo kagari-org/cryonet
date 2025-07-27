@@ -4,6 +4,10 @@ option go_package = "github.com/kagari-org/cryonet/gen/actors/peer";
 
 import "channels/common/common.proto";
 
+message IAlive {}
+
+message ICheck {}
+
 message IStop {}
 
 message OGetPeerId {}

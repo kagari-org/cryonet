@@ -6,8 +6,10 @@ import (
 	"io"
 	"net"
 	"os"
+	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/channels/common"
@@ -21,6 +23,9 @@ type PeerWS struct {
 	peerId string
 	ws     *websocket.Conn
 	tun    *os.File
+
+	last            time.Time
+	checkScheduleId string
 }
 
 func SpawnWSPeer(parent *goakt.PID, peerId string, ws *websocket.Conn) (*goakt.PID, error) {
@@ -28,8 +33,10 @@ func SpawnWSPeer(parent *goakt.PID, peerId string, ws *websocket.Conn) (*goakt.P
 		context.Background(),
 		"peer-ws-"+peerId,
 		&PeerWS{
-			peerId: peerId,
-			ws:     ws,
+			peerId:          peerId,
+			ws:              ws,
+			last:            time.Now(),
+			checkScheduleId: uuid.NewString(),
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
@@ -52,6 +59,7 @@ func (p *PeerWS) PreStart(ctx *goakt.Context) error {
 }
 
 func (p *PeerWS) PostStop(ctx *goakt.Context) error {
+	ctx.ActorSystem().CancelSchedule(p.checkScheduleId)
 	p.close()
 	return nil
 }
@@ -61,6 +69,19 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 	case *goaktpb.PostStart:
 		go p.wsRead(ctx.Self())
 		go p.tunRead(ctx.Self())
+		ctx.ActorSystem().Schedule(
+			ctx.Context(),
+			&peer.ICheck{},
+			ctx.Self(),
+			Config.CheckInterval,
+			goakt.WithReference(p.checkScheduleId),
+		)
+	case *peer.IAlive:
+		p.last = time.Now()
+	case *peer.ICheck:
+		if time.Since(p.last) > Config.PeerTimeout {
+			ctx.Err(errors.New("peer timeout"))
+		}
 	case *peer.IStop:
 		// stop by parent
 		ctx.Err(errors.New("stop peer " + p.peerId))

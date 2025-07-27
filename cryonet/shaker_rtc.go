@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller"
-	"github.com/kagari-org/cryonet/gen/actors/shaker"
 	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/pion/webrtc/v4"
@@ -60,7 +59,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 	case *goaktpb.PostStart:
 		ctx.ActorSystem().ScheduleOnce(
 			context.Background(),
-			&shaker.ITimeout{},
+			&shaker_rtc.ITimeout{},
 			ctx.Self(),
 			Config.ShakeTimeout,
 		)
@@ -68,7 +67,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-	case *shaker.ITimeout:
+	case *shaker_rtc.ITimeout:
 		if !s.shaked {
 			ctx.Err(errors.New("shake timeout"))
 		}

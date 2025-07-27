@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/channels/common"
@@ -19,6 +21,9 @@ type PeerRTC struct {
 	peerId string
 	dc     *webrtc.DataChannel
 	tun    *os.File
+
+	last            time.Time
+	checkScheduleId string
 }
 
 func SpawnRTCPeer(parent *goakt.PID, peerId string, dc *webrtc.DataChannel) (*goakt.PID, error) {
@@ -26,8 +31,10 @@ func SpawnRTCPeer(parent *goakt.PID, peerId string, dc *webrtc.DataChannel) (*go
 		context.Background(),
 		"peer-rtc-"+peerId,
 		&PeerRTC{
-			peerId: peerId,
-			dc:     dc,
+			peerId:          peerId,
+			dc:              dc,
+			last:            time.Now(),
+			checkScheduleId: uuid.NewString(),
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
@@ -50,6 +57,7 @@ func (p *PeerRTC) PreStart(ctx *goakt.Context) error {
 }
 
 func (p *PeerRTC) PostStop(ctx *goakt.Context) error {
+	ctx.ActorSystem().CancelSchedule(p.checkScheduleId)
 	p.close()
 	return nil
 }
@@ -67,7 +75,19 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 		})
 		p.rtcRead(ctx.Self())
 		go p.tunRead(ctx.Self())
-		ctx.Tell(ctx.ActorSystem().TopicActor(), &goaktpb.Subscribe{Topic: "peers"})
+		ctx.ActorSystem().Schedule(
+			ctx.Context(),
+			&peer.ICheck{},
+			ctx.Self(),
+			Config.CheckInterval,
+			goakt.WithReference(p.checkScheduleId),
+		)
+	case *peer.IAlive:
+		p.last = time.Now()
+	case *peer.ICheck:
+		if time.Since(p.last) > Config.PeerTimeout {
+			ctx.Err(errors.New("peer timeout"))
+		}
 	case *peer.IStop:
 		// stop by parent
 		ctx.Err(errors.New("stop peer"))
