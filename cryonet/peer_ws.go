@@ -114,11 +114,13 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		err = p.ws.Write(ctx.Context(), websocket.MessageBinary, data)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
+		self := ctx.Self()
+		go func() {
+			err = p.ws.Write(ctx.Context(), websocket.MessageBinary, data)
+			if err != nil {
+				self.Logger().Error(err)
+			}
+		}()
 	case *peer.ODesc:
 		packet := &ws.Packet{
 			P: &ws.Packet_Packet{
@@ -134,11 +136,13 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		err = p.ws.Write(ctx.Context(), websocket.MessageBinary, data)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
+		self := ctx.Self()
+		go func() {
+			err = p.ws.Write(ctx.Context(), websocket.MessageBinary, data)
+			if err != nil {
+				self.Logger().Error(err)
+			}
+		}()
 	default:
 		ctx.Unhandled()
 	}

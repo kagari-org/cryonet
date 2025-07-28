@@ -115,11 +115,14 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		err = p.dc.Send(data)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
+
+		self := ctx.Self()
+		go func() {
+			err = p.dc.Send(data)
+			if err != nil {
+				self.Logger().Error(err)
+			}
+		}()
 	case *peer.ODesc:
 		packet := &rtc.Packet{
 			Packet: &common.Packet{
@@ -133,11 +136,13 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		err = p.dc.Send(data)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
+		self := ctx.Self()
+		go func() {
+			err = p.dc.Send(data)
+			if err != nil {
+				self.Logger().Error(err)
+			}
+		}()
 	default:
 		ctx.Unhandled()
 	}
