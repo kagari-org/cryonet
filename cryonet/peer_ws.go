@@ -178,6 +178,14 @@ func (p *PeerWS) wsRead(self *goakt.PID) {
 				logger.Info("Received alive packet: ", packet.Alive)
 				err := self.Tell(
 					context.Background(),
+					self,
+					&peer.IAlive{},
+				)
+				if err != nil {
+					logger.Error(err)
+				}
+				err = self.Tell(
+					context.Background(),
 					self.Parent().Parent(),
 					&controller.OAlive{Alive: packet.Alive},
 				)
