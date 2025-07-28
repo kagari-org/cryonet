@@ -47,7 +47,7 @@ func SpawnController(parent *goakt.PID) (*goakt.PID, error) {
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
-			goakt.WithAnyErrorDirective(goakt.EscalateDirective),
+			goakt.WithAnyErrorDirective(goakt.ResumeDirective),
 		)),
 	)
 }
@@ -127,6 +127,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 		for i, p := range peers {
 			res, err := ctx.Self().Ask(ctx.Context(), p, &peer.OGetPeerId{}, time.Second*5)
 			if err != nil {
+				ctx.Logger().Error("failed to get peer id: ", err)
 				continue
 			}
 			peerIds[i] = res.(*peer.OGetPeerIdResponse).GetPeerId()
@@ -137,7 +138,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 		}
 		ctx.Logger().Info("sending alive message: ", alive)
 		for _, p := range peers {
-			ctx.Self().Tell(ctx.Context(), p, &peer.OAlive{Alive: alive})
+			ctx.Tell(p, &peer.OAlive{Alive: alive})
 		}
 		// send alive to self, so that it will create rtc from ws peer
 		ctx.Tell(ctx.Self(), &controller.OAlive{Alive: alive})
@@ -162,7 +163,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 		ctx.Logger().Info("sending shake desc: ", msg.GetDesc())
 		peers := c.getPeers(ctx)
 		for _, p := range peers {
-			ctx.Self().Tell(ctx.Context(), p, &peer.ODesc{
+			ctx.Tell(p, &peer.ODesc{
 				Desc: msg.GetDesc(),
 			})
 		}
@@ -171,7 +172,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 		if msg.GetDesc().To == Config.Id {
 			shaker := c.rtcShakers[msg.GetDesc().From]
 			if shaker.IsRunning() {
-				ctx.Self().Tell(ctx.Context(), shaker, &shaker_rtc.ODesc{
+				ctx.Tell(shaker, &shaker_rtc.ODesc{
 					Desc: msg.GetDesc(),
 				})
 			}
@@ -180,10 +181,11 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 			for _, p := range peers {
 				res, err := ctx.Self().Ask(ctx.Context(), p, &peer.OGetPeerId{}, time.Second*5)
 				if err != nil {
+					ctx.Logger().Error("failed to get peer id: ", err)
 					continue
 				}
 				if res.(*peer.OGetPeerIdResponse).GetPeerId() == msg.GetDesc().GetTo() {
-					ctx.Self().Tell(ctx.Context(), p, &peer.ODesc{
+					ctx.Tell(p, &peer.ODesc{
 						Desc: msg.GetDesc(),
 					})
 					return
