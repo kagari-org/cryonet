@@ -149,28 +149,27 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 }
 
 func (p *PeerWS) wsRead(self *goakt.PID) {
-	logger := self.Logger()
 	for {
 		if !self.IsRunning() {
 			break
 		}
 		_, data, err := p.ws.Read(p.context)
 		if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
-			logger.Error(err)
+			self.Logger().Error(err)
 			err := self.Tell(context.Background(), self, &peer.IStop{})
 			if err != nil {
-				logger.Error(err)
+				self.Logger().Error(err)
 			}
 			break
 		}
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
 		packet := &ws.Packet{}
 		err = proto.Unmarshal(data, packet)
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
 		switch packet := packet.P.(type) {
@@ -179,14 +178,14 @@ func (p *PeerWS) wsRead(self *goakt.PID) {
 		case *ws.Packet_Packet:
 			switch packet := packet.Packet.Packet.(type) {
 			case *common.Packet_Alive:
-				logger.Info("Received alive packet: ", packet.Alive)
+				self.Logger().Info("Received alive packet: ", packet.Alive)
 				err := self.Tell(
 					context.Background(),
 					self,
 					&peer.IAlive{},
 				)
 				if err != nil {
-					logger.Error(err)
+					self.Logger().Error(err)
 				}
 				err = self.Tell(
 					context.Background(),
@@ -194,7 +193,7 @@ func (p *PeerWS) wsRead(self *goakt.PID) {
 					&controller.OAlive{Alive: packet.Alive},
 				)
 				if err != nil {
-					logger.Error(err)
+					self.Logger().Error(err)
 				}
 			case *common.Packet_Desc:
 				err := self.Tell(
@@ -203,13 +202,13 @@ func (p *PeerWS) wsRead(self *goakt.PID) {
 					&controller.OForwardDesc{Desc: packet.Desc},
 				)
 				if err != nil {
-					logger.Error(err)
+					self.Logger().Error(err)
 				}
 			case *common.Packet_Data:
 				data := packet.Data.GetData()
 				_, err := p.tun.Write(data)
 				if err != nil {
-					logger.Error(err)
+					self.Logger().Error(err)
 					continue
 				}
 			default:
@@ -222,7 +221,6 @@ func (p *PeerWS) wsRead(self *goakt.PID) {
 }
 
 func (p *PeerWS) tunRead(self *goakt.PID) {
-	logger := self.Logger()
 	data := make([]byte, Config.BufSize)
 	for {
 		if !self.IsRunning() {
@@ -230,15 +228,15 @@ func (p *PeerWS) tunRead(self *goakt.PID) {
 		}
 		n, err := p.tun.Read(data)
 		if errors.Is(err, os.ErrClosed) || errors.Is(err, io.EOF) {
-			logger.Error(err)
+			self.Logger().Error(err)
 			err := self.Tell(context.Background(), self, &peer.IStop{})
 			if err != nil {
-				logger.Error(err)
+				self.Logger().Error(err)
 			}
 			break
 		}
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
 		packet := &ws.Packet{
@@ -254,12 +252,12 @@ func (p *PeerWS) tunRead(self *goakt.PID) {
 		}
 		data, err := proto.Marshal(packet)
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
 		err = p.ws.Write(p.context, websocket.MessageBinary, data)
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
 	}

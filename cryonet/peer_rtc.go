@@ -70,12 +70,11 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 		}
 		p.tun = tun
 
-		logger := ctx.Logger()
 		p.dc.OnClose(func() {
-			logger.Debug("data channel closed")
+			self.Logger().Debug("data channel closed")
 			err := self.Tell(context.Background(), self, &peer.IStop{})
 			if err != nil {
-				logger.Error(err)
+				self.Logger().Error(err)
 			}
 		})
 
@@ -149,7 +148,6 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 }
 
 func (p *PeerRTC) rtcRead(self *goakt.PID) {
-	logger := self.Logger()
 	p.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		if !self.IsRunning() {
 			return
@@ -157,19 +155,19 @@ func (p *PeerRTC) rtcRead(self *goakt.PID) {
 		packet := &rtc.Packet{}
 		err := proto.Unmarshal(msg.Data, packet)
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			return
 		}
 		switch packet := packet.Packet.Packet.(type) {
 		case *common.Packet_Alive:
-			logger.Info("Received alive packet: ", packet.Alive)
+			self.Logger().Info("Received alive packet: ", packet.Alive)
 			err := self.Tell(
 				context.Background(),
 				self,
 				&peer.IAlive{},
 			)
 			if err != nil {
-				logger.Error(err)
+				self.Logger().Error(err)
 			}
 			err = self.Tell(
 				context.Background(),
@@ -177,7 +175,7 @@ func (p *PeerRTC) rtcRead(self *goakt.PID) {
 				&controller.OAlive{Alive: packet.Alive},
 			)
 			if err != nil {
-				logger.Error(err)
+				self.Logger().Error(err)
 			}
 		case *common.Packet_Desc:
 			err := self.Tell(
@@ -186,12 +184,12 @@ func (p *PeerRTC) rtcRead(self *goakt.PID) {
 				&controller.OForwardDesc{Desc: packet.Desc},
 			)
 			if err != nil {
-				logger.Error(err)
+				self.Logger().Error(err)
 			}
 		case *common.Packet_Data:
 			_, err := p.tun.Write(packet.Data.GetData())
 			if err != nil {
-				logger.Error(err)
+				self.Logger().Error(err)
 			}
 		default:
 			panic("unreachable")
@@ -200,7 +198,6 @@ func (p *PeerRTC) rtcRead(self *goakt.PID) {
 }
 
 func (p *PeerRTC) tunRead(self *goakt.PID) {
-	logger := self.Logger()
 	data := make([]byte, Config.BufSize)
 	for {
 		if !self.IsRunning() {
@@ -208,15 +205,15 @@ func (p *PeerRTC) tunRead(self *goakt.PID) {
 		}
 		n, err := p.tun.Read(data)
 		if errors.Is(err, os.ErrClosed) || errors.Is(err, os.ErrInvalid) {
-			logger.Error(err)
+			self.Logger().Error(err)
 			err := self.Tell(context.Background(), self, &peer.IStop{})
 			if err != nil {
-				logger.Error(err)
+				self.Logger().Error(err)
 			}
 			break
 		}
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
 		packet := &rtc.Packet{
@@ -230,12 +227,12 @@ func (p *PeerRTC) tunRead(self *goakt.PID) {
 		}
 		data, err := proto.Marshal(packet)
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
 		err = p.dc.Send(data)
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 			continue
 		}
 	}

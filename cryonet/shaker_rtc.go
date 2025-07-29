@@ -117,15 +117,14 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 	s.peer = peer
 
 	self := ctx.Self()
-	logger := ctx.Logger()
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		if state == webrtc.PeerConnectionStateClosed ||
 			state == webrtc.PeerConnectionStateFailed ||
 			state == webrtc.PeerConnectionStateDisconnected {
-			logger.Error("rtc state changed: ", state)
+			self.Logger().Error("rtc state changed: ", state)
 			err := self.Stop(context.Background(), self)
 			if err != nil {
-				logger.Error(err)
+				self.Logger().Error(err)
 			}
 		}
 	})
@@ -207,12 +206,11 @@ func (s *ShakerRTC) slaveReceiveDesc(ctx *goakt.ReceiveContext, desc *common.Des
 	s.descId = desc.DescId
 
 	self := ctx.Self()
-	logger := ctx.Logger()
 	s.peer.OnDataChannel(func(dc *webrtc.DataChannel) {
 		s.dc = dc
 		err := self.Tell(context.Background(), self, &shaker_rtc.IShaked{})
 		if err != nil {
-			logger.Error(err)
+			self.Logger().Error(err)
 		}
 	})
 
