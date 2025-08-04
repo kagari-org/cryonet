@@ -100,8 +100,9 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 		}
 	case *goaktpb.Mayday:
 		ctx.Logger().Error("peer "+ctx.Sender().Name()+"failed: ", msg.GetMessage())
+		ctx.Reinstate(ctx.Sender())
 		ctx.Stop(ctx.Sender())
-		ctx.Stop(ctx.Self())
+		go ctx.Stop(ctx.Self())
 	default:
 		ctx.Unhandled()
 	}
