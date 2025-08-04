@@ -178,7 +178,6 @@ func (p *PeerWS) wsRead(self *goakt.PID) {
 		case *ws.Packet_Packet:
 			switch packet := packet.Packet.Packet.(type) {
 			case *common.Packet_Alive:
-				self.Logger().Info("Received alive packet: ", packet.Alive)
 				err := self.Tell(
 					context.Background(),
 					self,

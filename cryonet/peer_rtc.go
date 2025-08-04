@@ -160,7 +160,6 @@ func (p *PeerRTC) rtcRead(self *goakt.PID) {
 		}
 		switch packet := packet.Packet.Packet.(type) {
 		case *common.Packet_Alive:
-			self.Logger().Info("Received alive packet: ", packet.Alive)
 			err := self.Tell(
 				context.Background(),
 				self,

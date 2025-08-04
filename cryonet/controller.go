@@ -123,14 +123,14 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 		wg.Wait()
 
 		peers := c.getPeers(ctx)
-		peerIds := make([]string, len(peers))
-		for i, p := range peers {
+		peerIds := make([]string, 0)
+		for _, p := range peers {
 			res, err := ctx.Self().Ask(ctx.Context(), p, &peer.OGetPeerId{}, time.Second*5)
 			if err != nil {
-				ctx.Logger().Error("failed to get peer id: ", err)
+				ctx.Logger().Error(err)
 				continue
 			}
-			peerIds[i] = res.(*peer.OGetPeerIdResponse).GetPeerId()
+			peerIds = append(peerIds, res.(*peer.OGetPeerIdResponse).GetPeerId())
 		}
 		alive := &common.Alive{
 			Id:    Config.Id,
@@ -143,8 +143,8 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 		// send alive to self, so that it will create rtc from ws peer
 		ctx.Tell(ctx.Self(), &controller.OAlive{Alive: alive})
 	case *controller.OAlive:
-		// rtc
 		ctx.Logger().Info("received alive message: ", msg.GetAlive())
+		// rtc
 		for _, peerId := range msg.GetAlive().GetPeers() {
 			if peerId == Config.Id {
 				continue
@@ -160,7 +160,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 			c.rtcShakers[peerId] = pid
 		}
 	case *controller.OShakeDesc:
-		ctx.Logger().Info("sending shake desc: ", msg.GetDesc())
+		ctx.Logger().Info("sending shake desc from ", msg.GetDesc().GetFrom(), " to: ", msg.GetDesc().GetTo())
 		peers := c.getPeers(ctx)
 		for _, p := range peers {
 			ctx.Tell(p, &peer.ODesc{
@@ -168,7 +168,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 			})
 		}
 	case *controller.OForwardDesc:
-		ctx.Logger().Info("received shake desc: ", msg.GetDesc())
+		ctx.Logger().Info("received shake desc from: ", msg.GetDesc().GetFrom(), " to: ", msg.GetDesc().GetTo())
 		if msg.GetDesc().To == Config.Id {
 			shaker := c.rtcShakers[msg.GetDesc().From]
 			if shaker.IsRunning() {
