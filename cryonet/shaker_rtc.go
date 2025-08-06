@@ -130,7 +130,10 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 	})
 
 	if IsMaster(s.peerId) {
-		dc, err := peer.CreateDataChannel("data", nil)
+		order := false
+		dc, err := peer.CreateDataChannel("data", &webrtc.DataChannelInit{
+			Ordered: &order,
+		})
 		if err != nil {
 			return err
 		}
