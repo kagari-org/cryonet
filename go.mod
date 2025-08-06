@@ -7,7 +7,7 @@ require (
 	github.com/coder/websocket v1.8.13
 	github.com/google/uuid v1.6.0
 	github.com/pion/webrtc/v4 v4.1.2
-	github.com/tochemey/goakt/v3 v3.8.0
+	github.com/tochemey/goakt/v3 v3.8.1
 	golang.org/x/sys v0.34.0
 	google.golang.org/protobuf v1.36.6
 )
@@ -61,7 +61,7 @@ require (
 	github.com/pion/turn/v4 v4.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/redis/go-redis/v9 v9.11.0 // indirect
-	github.com/reugn/go-quartz v0.14.0 // indirect
+	github.com/reugn/go-quartz v0.15.1 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
 	github.com/tidwall/btree v1.8.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect

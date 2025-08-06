@@ -55,9 +55,8 @@ func (s *ShakerWS) Receive(ctx *goakt.ReceiveContext) {
 		}
 	case *goaktpb.Mayday:
 		ctx.Logger().Error(msg.GetMessage())
-		ctx.Reinstate(ctx.Sender())
 		ctx.Stop(ctx.Sender())
-		go ctx.Stop(ctx.Self())
+		ctx.Stop(ctx.Self())
 	default:
 		ctx.Unhandled()
 	}

@@ -194,7 +194,6 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 		}
 	case *goaktpb.Mayday:
 		ctx.Logger().Error("shaker "+ctx.Sender().Name()+" failed: ", msg.GetMessage())
-		ctx.Reinstate(ctx.Sender())
 		ctx.Stop(ctx.Sender())
 	default:
 		ctx.Unhandled()

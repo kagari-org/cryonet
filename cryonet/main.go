@@ -49,7 +49,6 @@ func (c *Cryonet) Receive(ctx *goakt.ReceiveContext) {
 		}
 	case *goaktpb.Mayday:
 		ctx.Logger().Error(msg.GetMessage())
-		ctx.Reinstate(ctx.Sender())
 		ctx.Stop(ctx.Sender())
 		go func() {
 			ctx.ActorSystem().Stop(context.Background())
