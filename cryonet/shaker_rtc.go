@@ -119,8 +119,7 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 	self := ctx.Self()
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		if state == webrtc.PeerConnectionStateClosed ||
-			state == webrtc.PeerConnectionStateFailed ||
-			state == webrtc.PeerConnectionStateDisconnected {
+			state == webrtc.PeerConnectionStateFailed {
 			self.Logger().Error("rtc state changed: ", state)
 			err := self.Stop(context.Background(), self)
 			if err != nil {
