@@ -21,15 +21,14 @@ var Config struct {
 
 	IceServers []string `env:"ICE_SERVERS" default:"stun:stun.l.google.com"`
 
-	CheckInterval     time.Duration `env:"CHECK_INTERVAL" default:"10s"`
-	SendAliveInterval time.Duration `env:"SEND_ALIVE_INTERVAL" default:"30s"`
-	ShakeTimeout      time.Duration `env:"SHAKE_TIMEOUT" default:"5m"`
-	PeerTimeout       time.Duration `env:"PEER_TIMEOUT" default:"5m"`
+	CheckInterval time.Duration `env:"CHECK_INTERVAL" default:"10s"`
+	ShakeTimeout  time.Duration `env:"SHAKE_TIMEOUT" default:"1m"`
+	PeerTimeout   time.Duration `env:"PEER_TIMEOUT" default:"1m"`
 
 	InterfacePrefixWS       string `env:"INTERFACE_PREFIX" default:"cnw"`
 	InterfacePrefixRTC      string `env:"INTERFACE_PREFIX" default:"cnr"`
 	EnablePacketInformation bool   `env:"ENABLE_PACKET_INFORMATION" default:"true"`
-	BufSize                 int    `env:"BUF_SIZE" default:"1504"`
+	BufSize                 int    `env:"BUF_SIZE" default:"16004"`
 }
 
 type Cryonet struct{}
