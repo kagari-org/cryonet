@@ -29,7 +29,7 @@ func SpawnShakerRTC(parent *goakt.PID, peerId string) (*goakt.PID, error) {
 		"shaker-rtc-"+peerId,
 		&ShakerRTC{
 			peerId: peerId,
-			descId: uuid.NewString(),
+			descId: "",
 			shaked: false,
 		},
 		goakt.WithLongLived(),
@@ -88,9 +88,6 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 		}
 	case *shaker_rtc.IShaked:
 		ctx.ActorSystem().CancelSchedule(s.descId)
-		if s.dc == nil || s.shaked {
-			panic("unreachable")
-		}
 		s.shaked = true
 		s.peer.OnDataChannel(nil)
 		_, err := SpawnRTCPeer(ctx.Self(), s.peerId, s.dc)
@@ -154,6 +151,7 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 			return err
 		}
 
+		s.descId = uuid.NewString()
 		ctx.ActorSystem().Schedule(context.Background(), &controller.OShakeDesc{
 			Desc: &common.Desc{
 				From:   Config.Id,
@@ -175,8 +173,6 @@ func (s *ShakerRTC) masterReceiveDesc(ctx *goakt.ReceiveContext, desc *common.De
 		// ignore old desc
 		return nil
 	}
-
-	ctx.Logger().Info("received desc")
 
 	err := ctx.ActorSystem().CancelSchedule(s.descId)
 	if err != nil {
@@ -203,9 +199,20 @@ func (s *ShakerRTC) slaveReceiveDesc(ctx *goakt.ReceiveContext, desc *common.Des
 		return nil
 	}
 
-	ctx.Logger().Info("received desc")
+	if s.descId == desc.GetDescId() {
+		// ignore shaking desc
+		return nil
+	}
 
-	s.descId = desc.DescId
+	if s.descId != "" && s.descId != desc.GetDescId() {
+		// received different desc while shaking
+		// maybe the master has been restarted
+		// but we still ignore because desc may be slow to arrive
+		// TODO: encode time into descId
+		return nil
+	}
+
+	s.descId = desc.GetDescId()
 
 	self := ctx.Self()
 	s.peer.OnDataChannel(func(dc *webrtc.DataChannel) {
