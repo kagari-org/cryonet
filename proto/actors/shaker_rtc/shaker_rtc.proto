@@ -2,16 +2,20 @@ syntax = "proto3";
 package actors.shaker_rtc;
 option go_package = "github.com/kagari-org/cryonet/gen/actors/shaker_rtc";
 
-import "channels/common/common.proto";
-
-message IEmitDesc {
-	channels.common.Desc desc = 1;
+message IShake {
+  bool restart = 1;
 }
 
-message IShaked {}
+message IDataChannelSet {}
 
-message ITimeout {}
+message OOnOffer {
+  bytes offer = 1;
+}
 
-message ODesc {
-	channels.common.Desc desc = 1;
+message OOnOfferReply {
+  bytes answer = 1;
+}
+
+message OOnCandidate {
+  bytes candidate = 1;
 }

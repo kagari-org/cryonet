@@ -3,12 +3,8 @@ package cryonet
 import (
 	"context"
 	"encoding/json"
-	"errors"
 
-	"github.com/google/uuid"
-	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
-	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
@@ -16,11 +12,8 @@ import (
 
 type ShakerRTC struct {
 	peerId string
-	descId string
 	peer   *webrtc.PeerConnection
 	dc     *webrtc.DataChannel
-
-	shaked bool
 }
 
 func SpawnShakerRTC(parent *goakt.PID, peerId string) (*goakt.PID, error) {
@@ -29,8 +22,6 @@ func SpawnShakerRTC(parent *goakt.PID, peerId string) (*goakt.PID, error) {
 		"shaker-rtc-"+peerId,
 		&ShakerRTC{
 			peerId: peerId,
-			descId: "",
-			shaked: false,
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
@@ -44,7 +35,6 @@ var _ goakt.Actor = (*ShakerRTC)(nil)
 func (s *ShakerRTC) PreStart(ctx *goakt.Context) error { return nil }
 
 func (s *ShakerRTC) PostStop(ctx *goakt.Context) error {
-	ctx.ActorSystem().CancelSchedule(s.descId)
 	if s.dc != nil {
 		s.dc.Close()
 	}
@@ -57,44 +47,61 @@ func (s *ShakerRTC) PostStop(ctx *goakt.Context) error {
 func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		ctx.ActorSystem().ScheduleOnce(
-			context.Background(),
-			&shaker_rtc.ITimeout{},
-			ctx.Self(),
-			Config.ShakeTimeout,
-		)
 		if err := s.init(ctx); err != nil {
 			ctx.Err(err)
 			return
 		}
-	case *shaker_rtc.ITimeout:
-		if !s.shaked {
-			ctx.Err(errors.New("shake timeout"))
-		}
-	case *shaker_rtc.ODesc:
-		if s.shaked {
-			// ignore desc
+		ctx.Tell(ctx.Self(), &shaker_rtc.IShake{})
+	case *shaker_rtc.IShake:
+		if !IsMaster(s.peerId) {
 			return
 		}
-		var err error
+		err := s.master(ctx, msg.GetRestart())
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		ctx.Tell(ctx.Self(), &shaker_rtc.IDataChannelSet{})
+	case *shaker_rtc.OOnOffer:
 		if IsMaster(s.peerId) {
-			err = s.masterReceiveDesc(ctx, msg.Desc)
-		} else {
-			err = s.slaveReceiveDesc(ctx, msg.Desc)
+			panic("unreachable")
 		}
+		offer := webrtc.SessionDescription{}
+		err := json.Unmarshal(msg.GetOffer(), &offer)
 		if err != nil {
 			ctx.Err(err)
 			return
 		}
-	case *shaker_rtc.IShaked:
-		ctx.ActorSystem().CancelSchedule(s.descId)
-		s.shaked = true
-		s.peer.OnDataChannel(nil)
-		_, err := SpawnRTCPeer(ctx.Self(), s.peerId, s.dc)
+		answer, err := s.slave(ctx, &offer)
 		if err != nil {
 			ctx.Err(err)
 			return
 		}
+		answerBytes, err := json.Marshal(answer)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		ctx.Response(&shaker_rtc.OOnOfferReply{
+			Answer: answerBytes,
+		})
+	case *shaker_rtc.OOnCandidate:
+		candidate := webrtc.ICECandidateInit{}
+		err := json.Unmarshal(msg.GetCandidate(), &candidate)
+		if err != nil {
+			ctx.Logger().Error("failed to unmarshal candidate: ", err)
+			return
+		}
+		err = s.peer.AddICECandidate(candidate)
+		if err != nil {
+			ctx.Logger().Error("failed to add ice candidate: ", err)
+			return
+		}
+	case *shaker_rtc.IDataChannelSet:
+		if s.dc == nil {
+			panic("unreachable")
+		}
+		// TODO: spawn child
 	case *goaktpb.Mayday:
 		ctx.Logger().Error("peer "+ctx.Sender().Name()+" failed: ", msg.GetMessage())
 		ctx.Stop(ctx.Sender())
@@ -105,6 +112,8 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 }
 
 func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
+	self := ctx.Self()
+
 	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: GetICEServers(),
 	})
@@ -113,74 +122,73 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 	}
 	s.peer = peer
 
-	self := ctx.Self()
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		if state == webrtc.PeerConnectionStateClosed ||
-			state == webrtc.PeerConnectionStateFailed {
-			self.Logger().Error("rtc state changed: ", state)
-			err := self.Stop(context.Background(), self)
+		self.Logger().Debug("rtc state changed: ", state.String())
+		if state == webrtc.PeerConnectionStateFailed {
+			err := self.Tell(context.Background(), self, &shaker_rtc.IShake{
+				Restart: true,
+			})
 			if err != nil {
 				self.Logger().Error(err)
 			}
 		}
 	})
 
-	if IsMaster(s.peerId) {
-		order := false
-		dc, err := peer.CreateDataChannel("data", &webrtc.DataChannelInit{
-			Ordered: &order,
-		})
+	peer.OnICECandidate(func(candidate *webrtc.ICECandidate) {
+		if candidate == nil {
+			return
+		}
+		self.Logger().Debug("new ice candidate: ", candidate.String())
+		err := SendCandidateToPeer(s.peerId, candidate)
+		if err != nil {
+			self.Logger().Error(err)
+		}
+	})
+
+	master := IsMaster(s.peerId)
+	peer.OnDataChannel(func(dc *webrtc.DataChannel) {
+		if master {
+			panic("unreachable")
+		}
+		s.dc = dc
+		err := self.Tell(context.Background(), ctx.Self(), &shaker_rtc.IDataChannelSet{})
+		if err != nil {
+			self.Logger().Error(err)
+		}
+	})
+
+	if master {
+		dc, err := peer.CreateDataChannel("dc", nil)
 		if err != nil {
 			return err
 		}
 		s.dc = dc
-
-		offer, err := peer.CreateOffer(nil)
+		err = self.Tell(ctx.Context(), ctx.Self(), &shaker_rtc.IDataChannelSet{})
 		if err != nil {
 			return err
 		}
-		gather := webrtc.GatheringCompletePromise(peer)
-		err = s.peer.SetLocalDescription(offer)
-		if err != nil {
-			return err
-		}
-		<-gather
-		offer = *peer.LocalDescription()
-		offer2, err := json.Marshal(offer)
-		if err != nil {
-			return err
-		}
-
-		s.descId = uuid.NewString()
-		ctx.ActorSystem().Schedule(context.Background(), &controller.OShakeDesc{
-			Desc: &common.Desc{
-				From:   Config.Id,
-				To:     s.peerId,
-				DescId: s.descId,
-				Desc:   offer2,
-			},
-		}, ctx.Self().Parent(), Config.CheckInterval, goakt.WithReference(s.descId))
 	}
 
 	return nil
 }
 
-func (s *ShakerRTC) masterReceiveDesc(ctx *goakt.ReceiveContext, desc *common.Desc) error {
-	if !(desc.From == s.peerId && desc.To == Config.Id) {
-		return nil
-	}
-	if desc.DescId != s.descId {
-		// ignore old desc
-		return nil
+func (s *ShakerRTC) master(ctx *goakt.ReceiveContext, restart bool) error {
+	if s.peer == nil || s.dc == nil {
+		panic("unreachable")
 	}
 
-	err := ctx.ActorSystem().CancelSchedule(s.descId)
+	offer, err := s.peer.CreateOffer(&webrtc.OfferOptions{
+		ICERestart: restart,
+	})
 	if err != nil {
-		ctx.Logger().Error(err)
+		return err
 	}
-
-	answer := &webrtc.SessionDescription{}
-	err = json.Unmarshal(desc.Desc, answer)
+	err = s.peer.SetLocalDescription(offer)
+	if err != nil {
+		return err
+	}
+	// this calls peer's s.slave()
+	answer, err := AskPeerForAnswer(s.peerId, &offer)
 	if err != nil {
 		return err
 	}
@@ -189,74 +197,26 @@ func (s *ShakerRTC) masterReceiveDesc(ctx *goakt.ReceiveContext, desc *common.De
 		return err
 	}
 
-	ctx.Tell(ctx.Self(), &shaker_rtc.IShaked{})
-
 	return nil
 }
 
-func (s *ShakerRTC) slaveReceiveDesc(ctx *goakt.ReceiveContext, desc *common.Desc) error {
-	if !(desc.From == s.peerId && desc.To == Config.Id) {
-		return nil
+func (s *ShakerRTC) slave(ctx *goakt.ReceiveContext, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+	if s.peer == nil {
+		panic("unreachable")
 	}
 
-	if s.descId == desc.GetDescId() {
-		// ignore shaking desc
-		return nil
-	}
-
-	if s.descId != "" && s.descId != desc.GetDescId() {
-		// received different desc while shaking
-		// maybe the master has been restarted
-		// but we still ignore because desc may be slow to arrive
-		// TODO: encode time into descId
-		return nil
-	}
-
-	s.descId = desc.GetDescId()
-
-	self := ctx.Self()
-	s.peer.OnDataChannel(func(dc *webrtc.DataChannel) {
-		s.dc = dc
-		err := self.Tell(context.Background(), self, &shaker_rtc.IShaked{})
-		if err != nil {
-			self.Logger().Error(err)
-		}
-	})
-
-	offer := &webrtc.SessionDescription{}
-	err := json.Unmarshal(desc.Desc, offer)
+	err := s.peer.SetRemoteDescription(*offer)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	err = s.peer.SetRemoteDescription(*offer)
-	if err != nil {
-		return err
-	}
-
 	answer, err := s.peer.CreateAnswer(nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	gather := webrtc.GatheringCompletePromise(s.peer)
 	err = s.peer.SetLocalDescription(answer)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	<-gather
-	answer2 := *s.peer.LocalDescription()
 
-	answer3, err := json.Marshal(answer2)
-	if err != nil {
-		return err
-	}
-	ctx.ActorSystem().Schedule(context.Background(), &controller.OShakeDesc{
-		Desc: &common.Desc{
-			From:   Config.Id,
-			To:     s.peerId,
-			DescId: s.descId,
-			Desc:   answer3,
-		},
-	}, ctx.Self().Parent(), Config.CheckInterval, goakt.WithReference(s.descId))
-
-	return nil
+	return &answer, nil
 }

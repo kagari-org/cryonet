@@ -13,6 +13,7 @@ import (
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
 	"github.com/kagari-org/cryonet/gen/channels/common"
+	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 )
@@ -230,4 +231,12 @@ func (c *Controller) getPeers(ctx *goakt.ReceiveContext) []*goakt.PID {
 		}
 	}
 	return peers
+}
+
+func AskPeerForAnswer(peerId string, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+	panic("unimplemented")
+}
+
+func SendCandidateToPeer(peerId string, candidate *webrtc.ICECandidate) error {
+	panic("unimplemented")
 }

@@ -5,7 +5,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
-	"github.com/kagari-org/cryonet/gen/channels/ws"
+	"github.com/kagari-org/cryonet/gen/channel"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 	"google.golang.org/protobuf/proto"
@@ -69,13 +69,9 @@ func (s *ShakerWS) shake(ctx *goakt.ReceiveContext) (string, error) {
 	s.conn.SetReadLimit(-1)
 
 	// send Init
-	sendInit := &ws.Packet{
-		P: &ws.Packet_Init{
-			Init: &ws.Init{
-				Id:    Config.Id,
-				Token: Config.Token,
-			},
-		},
+	sendInit := &channel.Init{
+		Id:    Config.Id,
+		Token: Config.Token,
 	}
 	data, err := proto.Marshal(sendInit)
 	if err != nil {
@@ -94,24 +90,20 @@ func (s *ShakerWS) shake(ctx *goakt.ReceiveContext) (string, error) {
 		s.conn.Close(websocket.StatusInternalError, "failed to read init packet")
 		return "", err
 	}
-	recvInit := &ws.Packet{}
+	recvInit := &channel.Init{}
 	err = proto.Unmarshal(data, recvInit)
 	if err != nil {
 		s.conn.Close(websocket.StatusInternalError, "failed to unmarshal init packet")
 		return "", err
 	}
-	if recvInit.GetInit() == nil {
-		s.conn.Close(websocket.StatusProtocolError, "received invalid init packet")
-		return "", err
-	}
-	if recvInit.GetInit().GetId() == Config.Id {
+	if recvInit.GetId() == Config.Id {
 		s.conn.Close(websocket.StatusProtocolError, "received init packet with same ID")
 		return "", err
 	}
-	if recvInit.GetInit().GetToken() != Config.Token {
+	if recvInit.GetToken() != Config.Token {
 		s.conn.Close(websocket.StatusProtocolError, "received init packet with invalid token")
 		return "", err
 	}
 
-	return recvInit.GetInit().GetId(), nil
+	return recvInit.GetId(), nil
 }
