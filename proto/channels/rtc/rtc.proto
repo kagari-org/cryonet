@@ -1,9 +1,0 @@
-syntax = "proto3";
-package channels.rtc;
-option go_package = "github.com/kagari-org/cryonet/gen/channels/rtc";
-
-import "channels/common/common.proto";
-
-message Packet {
-  common.Packet packet = 1;
-}

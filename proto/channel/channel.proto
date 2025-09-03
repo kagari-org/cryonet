@@ -1,0 +1,39 @@
+syntax = "proto3";
+package channel;
+option go_package = "github.com/kagari-org/cryonet/gen/channel";
+
+// only needed by ws connections
+message Init {
+  string id = 1;
+  string token = 2;
+}
+
+message Normal {
+  string packet_id = 1;
+  string from      = 2;
+  string to        = 3;
+  oneof  payload {
+    Alive       alive       = 4;
+    Description description = 5;
+    Candidate   candidate   = 6;
+  }
+}
+
+message Direct {
+  bytes data = 1;
+}
+
+
+// payloads for normal packets
+
+message Alive {
+  repeated string peers = 1;
+}
+
+message Description {
+  bytes data = 1;
+}
+
+message Candidate {
+  bytes data = 1;
+}
