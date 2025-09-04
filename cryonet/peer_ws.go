@@ -6,10 +6,8 @@ import (
 	"io"
 	"net"
 	"os"
-	"time"
 
 	"github.com/coder/websocket"
-	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/channel"
 	goakt "github.com/tochemey/goakt/v3/actor"
@@ -22,9 +20,6 @@ type PeerWS struct {
 	ws     *websocket.Conn
 	tun    *os.File
 
-	last            time.Time
-	checkScheduleId string
-
 	context context.Context
 	cancel  func()
 }
@@ -35,12 +30,10 @@ func SpawnWSPeer(parent *goakt.PID, peerId string, ws *websocket.Conn) (*goakt.P
 		context.Background(),
 		"peer-ws-"+peerId,
 		&PeerWS{
-			peerId:          peerId,
-			ws:              ws,
-			last:            time.Now(),
-			checkScheduleId: uuid.NewString(),
-			context:         ctx,
-			cancel:          cancel,
+			peerId:  peerId,
+			ws:      ws,
+			context: ctx,
+			cancel:  cancel,
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
@@ -54,7 +47,6 @@ var _ goakt.Actor = (*PeerWS)(nil)
 func (p *PeerWS) PreStart(ctx *goakt.Context) error { return nil }
 
 func (p *PeerWS) PostStop(ctx *goakt.Context) error {
-	ctx.ActorSystem().CancelSchedule(p.checkScheduleId)
 	if p.ws != nil {
 		p.ws.CloseNow()
 	}
