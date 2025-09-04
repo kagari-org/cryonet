@@ -10,7 +10,6 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller"
-	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 )
@@ -135,12 +134,4 @@ func (c *Controller) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		c.self.Logger().Error(err)
 		return
 	}
-}
-
-func AskPeerForAnswer(peerId string, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
-	panic("unimplemented")
-}
-
-func SendCandidateToPeer(peerId string, candidate *webrtc.ICECandidate) error {
-	panic("unimplemented")
 }

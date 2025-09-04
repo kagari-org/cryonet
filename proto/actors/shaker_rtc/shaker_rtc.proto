@@ -12,7 +12,7 @@ message OOnOffer {
   bytes offer = 1;
 }
 
-message OOnOfferReply {
+message OOnOfferResponse {
   bytes answer = 1;
 }
 

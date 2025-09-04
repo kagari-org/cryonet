@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/kagari-org/cryonet/gen/actors/router"
 	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
+	"github.com/kagari-org/cryonet/gen/channel"
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
@@ -54,6 +56,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 		ctx.Tell(ctx.Self(), &shaker_rtc.IShake{})
 	case *shaker_rtc.IShake:
 		if !IsMaster(s.peerId) {
+			// TODO: add timeout here
 			return
 		}
 		err := s.master(ctx, msg.GetRestart())
@@ -82,7 +85,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		ctx.Response(&shaker_rtc.OOnOfferReply{
+		ctx.Response(&shaker_rtc.OOnOfferResponse{
 			Answer: answerBytes,
 		})
 	case *shaker_rtc.OOnCandidate:
@@ -113,6 +116,10 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 
 func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 	self := ctx.Self()
+	_, rtr, err := ctx.ActorSystem().ActorOf(ctx.Context(), "router")
+	if err != nil {
+		panic("unreachable")
+	}
 
 	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: GetICEServers(),
@@ -139,7 +146,23 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 			return
 		}
 		self.Logger().Debug("new ice candidate: ", candidate.String())
-		err := SendCandidateToPeer(s.peerId, candidate)
+		candidateBytes, err := json.Marshal(candidate.ToJSON())
+		if err != nil {
+			self.Logger().Error("failed to marshal candidate: ", err)
+			return
+		}
+		err = self.Tell(context.Background(), rtr, &router.OSendPacket{
+			Link: router.Link_FORWARD,
+			Packet: &channel.Normal{
+				From: Config.Id,
+				To:   s.peerId,
+				Payload: &channel.Normal_Candidate{
+					Candidate: &channel.Candidate{
+						Data: candidateBytes,
+					},
+				},
+			},
+		})
 		if err != nil {
 			self.Logger().Error(err)
 		}

@@ -16,7 +16,6 @@ message Packet {
 }
 
 message Normal {
-  string packet_id = 1;
   string from      = 2;
   string to        = 3;
   oneof  payload {
