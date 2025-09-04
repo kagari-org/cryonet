@@ -2,7 +2,9 @@ package cryonet
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/kagari-org/cryonet/gen/actors/peer"
@@ -14,7 +16,9 @@ import (
 )
 
 type Router struct {
-	routes                 *TTLMap
+	routes *TTLMap
+
+	blockingAnswerLock     sync.Mutex
 	blockingAnswerRequests map[string]chan *channel.Description
 }
 
@@ -132,11 +136,12 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 	case *channel.Normal_Description:
 		if IsMaster(packet.From) {
 			// the response from slave
+			r.blockingAnswerLock.Lock()
 			ch, ok := r.blockingAnswerRequests[packet.From]
+			r.blockingAnswerLock.Unlock()
 			if !ok {
 				return errors.New("unknown reponse received. maybe timeout")
 			}
-			// TODO: add lock
 			ch <- payload.Description
 		} else {
 			// the request from master
@@ -186,6 +191,53 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 	return nil
 }
 
-func AskPeerForAnswer(peerId string, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
-	panic("unimplemented")
+func AskForAnswer(cid *goakt.PID, peerId string, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+	_, rtr, err := cid.ActorSystem().ActorOf(context.Background(), "router")
+	if err != nil {
+		panic("unreachable")
+	}
+	offerBytes, err := json.Marshal(offer)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan *channel.Description, 1)
+	rtrActor := rtr.Actor().(*Router)
+	rtrActor.blockingAnswerLock.Lock()
+	rtrActor.blockingAnswerRequests[peerId] = ch
+	rtrActor.blockingAnswerLock.Unlock()
+	defer func() {
+		rtrActor.blockingAnswerLock.Lock()
+		delete(rtrActor.blockingAnswerRequests, peerId)
+		rtrActor.blockingAnswerLock.Unlock()
+		close(ch)
+	}()
+
+	err = cid.Tell(context.Background(), rtr, &router.OSendPacket{
+		Link: router.Link_FORWARD,
+		Packet: &channel.Normal{
+			From: Config.Id,
+			To:   peerId,
+			Payload: &channel.Normal_Description{
+				Description: &channel.Description{
+					Data: offerBytes,
+				},
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	select {
+	case desc := <-ch:
+		answer := webrtc.SessionDescription{}
+		err = json.Unmarshal(desc.Data, &answer)
+		if err != nil {
+			return nil, err
+		}
+		return &answer, nil
+	case <-time.After(Config.ShakeTimeout):
+		return nil, errors.New("timeout waiting for answer")
+	}
 }

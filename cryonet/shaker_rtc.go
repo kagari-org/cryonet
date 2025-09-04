@@ -75,7 +75,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		answer, err := s.slave(ctx, &offer)
+		answer, err := s.slave(&offer)
 		if err != nil {
 			ctx.Err(err)
 			return
@@ -211,7 +211,7 @@ func (s *ShakerRTC) master(ctx *goakt.ReceiveContext, restart bool) error {
 		return err
 	}
 	// this calls peer's s.slave()
-	answer, err := AskPeerForAnswer(s.peerId, &offer)
+	answer, err := AskForAnswer(ctx.Self(), s.peerId, &offer)
 	if err != nil {
 		return err
 	}
@@ -223,7 +223,7 @@ func (s *ShakerRTC) master(ctx *goakt.ReceiveContext, restart bool) error {
 	return nil
 }
 
-func (s *ShakerRTC) slave(ctx *goakt.ReceiveContext, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+func (s *ShakerRTC) slave(offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
 	if s.peer == nil {
 		panic("unreachable")
 	}
