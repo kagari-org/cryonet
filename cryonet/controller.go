@@ -12,6 +12,7 @@ import (
 	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
+	"github.com/kagari-org/cryonet/gen/channel"
 	"github.com/kagari-org/cryonet/gen/channels/common"
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
@@ -238,5 +239,9 @@ func AskPeerForAnswer(peerId string, offer *webrtc.SessionDescription) (*webrtc.
 }
 
 func SendCandidateToPeer(peerId string, candidate *webrtc.ICECandidate) error {
+	panic("unimplemented")
+}
+
+func RecvNormalPacket(packet *channel.Normal) {
 	panic("unimplemented")
 }

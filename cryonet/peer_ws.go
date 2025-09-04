@@ -10,10 +10,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
-	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
-	"github.com/kagari-org/cryonet/gen/channels/common"
-	"github.com/kagari-org/cryonet/gen/channels/ws"
+	"github.com/kagari-org/cryonet/gen/channel"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 	"google.golang.org/protobuf/proto"
@@ -79,70 +77,32 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 
 		go p.wsRead(ctx.Self())
 		go p.tunRead(ctx.Self())
-		ctx.ActorSystem().Schedule(
-			ctx.Context(),
-			&peer.ICheck{},
-			ctx.Self(),
-			Config.CheckInterval,
-			goakt.WithReference(p.checkScheduleId),
-		)
-	case *peer.IAlive:
-		p.last = time.Now()
-	case *peer.ICheck:
-		if time.Since(p.last) > Config.PeerTimeout {
-			ctx.Err(errors.New("peer timeout"))
-		}
 	case *peer.IStop:
 		// stop by parent
 		ctx.Err(errors.New("stop peer " + p.peerId))
-	case *peer.OGetPeerId:
-		ctx.Response(&peer.OGetPeerIdResponse{
-			PeerId: p.peerId,
+	case *peer.IRecvPacket:
+		RecvNormalPacket(msg.GetPacket())
+	// case *peer.OGetPeerId:
+	// 	ctx.Response(&peer.OGetPeerIdResponse{
+	// 		PeerId: p.peerId,
+	// 	})
+	case *peer.OSendPacket:
+		data, err := proto.Marshal(&channel.Packet{
+			Packet: &channel.Packet_Normal{
+				Normal: msg.GetPacket(),
+			},
 		})
-	case *peer.OAlive:
-		packet := &ws.Packet{
-			P: &ws.Packet_Packet{
-				Packet: &common.Packet{
-					Packet: &common.Packet_Alive{
-						Alive: msg.GetAlive(),
-					},
-				},
-			},
-		}
-		data, err := proto.Marshal(packet)
 		if err != nil {
 			ctx.Err(err)
 			return
 		}
-		self := ctx.Self()
-		go func() {
-			err = p.ws.Write(ctx.Context(), websocket.MessageBinary, data)
-			if err != nil {
-				self.Logger().Error(err)
-			}
-		}()
-	case *peer.ODesc:
-		packet := &ws.Packet{
-			P: &ws.Packet_Packet{
-				Packet: &common.Packet{
-					Packet: &common.Packet_Desc{
-						Desc: msg.GetDesc(),
-					},
-				},
-			},
-		}
-		data, err := proto.Marshal(packet)
+		context, cancel := context.WithTimeout(ctx.Context(), Config.PeerTimeout)
+		defer cancel()
+		err = p.ws.Write(context, websocket.MessageBinary, data)
 		if err != nil {
 			ctx.Err(err)
 			return
 		}
-		self := ctx.Self()
-		go func() {
-			err = p.ws.Write(ctx.Context(), websocket.MessageBinary, data)
-			if err != nil {
-				self.Logger().Error(err)
-			}
-		}()
 	default:
 		ctx.Unhandled()
 	}
@@ -166,52 +126,29 @@ func (p *PeerWS) wsRead(self *goakt.PID) {
 			self.Logger().Error(err)
 			continue
 		}
-		packet := &ws.Packet{}
+		packet := &channel.Packet{}
 		err = proto.Unmarshal(data, packet)
 		if err != nil {
 			self.Logger().Error(err)
 			continue
 		}
-		switch packet := packet.P.(type) {
-		case *ws.Packet_Init:
-			panic("unreachable")
-		case *ws.Packet_Packet:
-			switch packet := packet.Packet.Packet.(type) {
-			case *common.Packet_Alive:
-				err := self.Tell(
-					context.Background(),
-					self,
-					&peer.IAlive{},
-				)
-				if err != nil {
-					self.Logger().Error(err)
-				}
-				err = self.Tell(
-					context.Background(),
-					self.Parent().Parent(),
-					&controller.OAlive{Alive: packet.Alive},
-				)
-				if err != nil {
-					self.Logger().Error(err)
-				}
-			case *common.Packet_Desc:
-				err := self.Tell(
-					context.Background(),
-					self.Parent().Parent(),
-					&controller.OForwardDesc{Desc: packet.Desc},
-				)
-				if err != nil {
-					self.Logger().Error(err)
-				}
-			case *common.Packet_Data:
-				data := packet.Data.GetData()
-				_, err := p.tun.Write(data)
-				if err != nil {
-					self.Logger().Error(err)
-					continue
-				}
-			default:
-				panic("unreachable")
+		switch packet := packet.GetPacket().(type) {
+		case *channel.Packet_Direct:
+			_, err := p.tun.Write(packet.Direct.GetData())
+			if err != nil {
+				self.Logger().Error(err)
+				continue
+			}
+		case *channel.Packet_Normal:
+			err := self.Tell(
+				context.Background(),
+				self,
+				&peer.IRecvPacket{
+					Packet: packet.Normal,
+				},
+			)
+			if err != nil {
+				self.Logger().Error(err)
 			}
 		default:
 			panic("unreachable")
@@ -238,14 +175,10 @@ func (p *PeerWS) tunRead(self *goakt.PID) {
 			self.Logger().Error(err)
 			continue
 		}
-		packet := &ws.Packet{
-			P: &ws.Packet_Packet{
-				Packet: &common.Packet{
-					Packet: &common.Packet_Data{
-						Data: &common.Data{
-							Data: data[:n],
-						},
-					},
+		packet := &channel.Packet{
+			Packet: &channel.Packet_Direct{
+				Direct: &channel.Direct{
+					Data: data[:n],
 				},
 			},
 		}

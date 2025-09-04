@@ -8,6 +8,13 @@ message Init {
   string token = 2;
 }
 
+message Packet {
+  oneof packet {
+    Normal normal = 1;
+    Direct direct = 2;
+  }
+}
+
 message Normal {
   string packet_id = 1;
   string from      = 2;
