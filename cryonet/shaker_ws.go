@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/coder/websocket"
-	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/channel"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
@@ -16,10 +15,10 @@ type ShakerWS struct {
 	peerId string
 }
 
-func SpawnShakerWS(parent *goakt.PID, conn *websocket.Conn) (*goakt.PID, error) {
+func SpawnShakerWS(parent *goakt.PID, suffix string, conn *websocket.Conn) (*goakt.PID, error) {
 	return parent.SpawnChild(
 		context.Background(),
-		"shaker-ws-"+uuid.NewString(),
+		"shaker-ws-"+suffix,
 		&ShakerWS{
 			conn: conn,
 		},

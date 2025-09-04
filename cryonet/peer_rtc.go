@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/kagari-org/cryonet/gen/actors/peer"
+	"github.com/kagari-org/cryonet/gen/actors/router"
 	"github.com/kagari-org/cryonet/gen/channel"
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
@@ -74,11 +75,14 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 		// stop by parent
 		ctx.Err(errors.New("stop peer"))
 	case *peer.IRecvPacket:
-		RecvNormalPacket(msg.GetPacket())
-	// case *peer.OGetPeerId:
-	// 	ctx.Response(&peer.OGetPeerIdResponse{
-	// 		PeerId: p.peerId,
-	// 	})
+		_, rtr, err := ctx.ActorSystem().ActorOf(ctx.Context(), "router")
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		ctx.Tell(rtr, &router.ORecvPacket{
+			Packet: msg.Packet,
+		})
 	case *peer.OSendPacket:
 		data, err := proto.Marshal(&channel.Packet{
 			Packet: &channel.Packet_Normal{

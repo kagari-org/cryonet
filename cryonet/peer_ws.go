@@ -9,6 +9,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
+	"github.com/kagari-org/cryonet/gen/actors/router"
 	"github.com/kagari-org/cryonet/gen/channel"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
@@ -73,11 +74,14 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 		// stop by parent
 		ctx.Err(errors.New("stop peer " + p.peerId))
 	case *peer.IRecvPacket:
-		RecvNormalPacket(msg.GetPacket())
-	// case *peer.OGetPeerId:
-	// 	ctx.Response(&peer.OGetPeerIdResponse{
-	// 		PeerId: p.peerId,
-	// 	})
+		_, rtr, err := ctx.ActorSystem().ActorOf(ctx.Context(), "router")
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		ctx.Tell(rtr, &router.ORecvPacket{
+			Packet: msg.Packet,
+		})
 	case *peer.OSendPacket:
 		data, err := proto.Marshal(&channel.Packet{
 			Packet: &channel.Packet_Normal{
