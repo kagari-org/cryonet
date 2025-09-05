@@ -2,6 +2,7 @@ package cryonet
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +11,7 @@ import (
 	"github.com/kagari-org/cryonet/gen/actors/router"
 	"github.com/kagari-org/cryonet/gen/channel"
 	goakt "github.com/tochemey/goakt/v3/actor"
+	gerrors "github.com/tochemey/goakt/v3/errors"
 	"github.com/tochemey/goakt/v3/goaktpb"
 )
 
@@ -76,13 +78,17 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 			}
 		}
 		for id, item := range a.table {
+			_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), id)
+			if err != nil && !errors.Is(err, gerrors.ErrActorNotFound) {
+				ctx.Logger().Error(err)
+				continue
+			}
+			if err != nil {
+				delete(a.table, id)
+				continue
+			}
 			if time.Since(item.time) > Config.PeerTimeout {
 				delete(a.table, id)
-				_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), id)
-				if err != nil {
-					ctx.Logger().Error("failed to get actor", "id", id, "error", err)
-					continue
-				}
 				ctx.Tell(pid, &peer.OStop{})
 			}
 		}

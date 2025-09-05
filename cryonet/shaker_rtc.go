@@ -70,7 +70,6 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			goakt.WithReference(s.timeoutId),
 		)
 		if !IsMaster(s.peerId) {
-			// TODO: add timeout here
 			return
 		}
 		err := s.master(ctx, msg.Restart)
