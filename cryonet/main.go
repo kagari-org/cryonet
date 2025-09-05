@@ -23,7 +23,7 @@ var Config struct {
 
 	CheckInterval time.Duration `env:"CHECK_INTERVAL" default:"10s"`
 	ShakeTimeout  time.Duration `env:"SHAKE_TIMEOUT" default:"1m"`
-	PeerTimeout   time.Duration `env:"PEER_TIMEOUT" default:"1m"`
+	PeerTimeout   time.Duration `env:"PEER_TIMEOUT" default:"5m"`
 
 	InterfacePrefixWS       string `env:"INTERFACE_PREFIX" default:"cnw"`
 	InterfacePrefixRTC      string `env:"INTERFACE_PREFIX" default:"cnr"`
