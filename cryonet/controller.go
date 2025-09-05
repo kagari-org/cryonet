@@ -65,6 +65,13 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 			return
 		}
 
+		// spawn alive keeper
+		_, err = SpawnAlive(ctx.Self())
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+
 		// ws listen
 		listener, err := net.Listen("tcp", Config.Listen)
 		if err != nil {
@@ -117,7 +124,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 		}
 		wg.Wait()
 	case *controller.OAlive:
-		ids := append(msg.Alive.Peers, msg.FromPid)
+		ids := append(msg.Alive.Peers, msg.From)
 		slices.Sort(ids)
 		ids = slices.Compact(ids)
 		for _, id := range ids {

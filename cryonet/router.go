@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kagari-org/cryonet/gen/actors/alive"
 	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/actors/router"
@@ -129,19 +130,29 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.Normal) error {
 	switch payload := packet.Payload.(type) {
 	case *channel.Normal_Alive:
+		if packet.From != Config.Id {
+			// not bootstrap alive from self, update route
+			ctx.Tell(ctx.Self(), &router.IAlive{
+				FromPid: ctx.Sender().ID(),
+				Alive:   payload.Alive,
+			})
+
+			_, al, err := ctx.ActorSystem().ActorOf(ctx.Context(), "alive")
+			if err != nil {
+				panic("unreachable")
+			}
+			ctx.Tell(al, &alive.OAlive{
+				FromPid: ctx.Sender().ID(),
+			})
+		}
 		_, ctrl, err := ctx.ActorSystem().ActorOf(ctx.Context(), "controller")
 		if err != nil {
 			panic("unreachable")
 		}
-		ctx.Tell(ctx.Self(), &router.IAlive{
-			FromPid: packet.From,
-			Alive:   payload.Alive,
-		})
 		ctx.Tell(ctrl, &controller.OAlive{
-			FromPid: packet.From,
-			Alive:   payload.Alive,
+			From:  packet.From,
+			Alive: payload.Alive,
 		})
-		// TODO: keep alive
 	case *channel.Normal_Offer:
 		// the request from master
 		// we are slave

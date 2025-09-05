@@ -7,6 +7,6 @@ import "channel/channel.proto";
 message ICheck {}
 
 message OAlive {
-  string        from_pid = 1;
-  channel.Alive alive    = 2;
+  string        from  = 1;
+  channel.Alive alive = 2;
 }
