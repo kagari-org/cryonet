@@ -194,7 +194,7 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 			panic("unreachable")
 		}
 		s.dc = dc
-		err := self.Tell(context.Background(), ctx.Self(), &shaker_rtc.IDataChannelSet{})
+		err := self.Tell(context.Background(), self, &shaker_rtc.IDataChannelSet{})
 		if err != nil {
 			self.Logger().Error(err)
 		}
