@@ -20,8 +20,9 @@ message Normal {
   string to        = 3;
   oneof  payload {
     Alive       alive       = 4;
-    Description description = 5;
-    Candidate   candidate   = 6;
+    Offer       offer       = 5;
+    Answer      answer      = 6;
+    Candidate   candidate   = 7;
   }
 }
 
@@ -36,8 +37,15 @@ message Alive {
   repeated string peers = 1;
 }
 
-message Description {
-  bytes data = 1;
+message Offer {
+  string conn_id = 1;
+  bool   restart = 2;
+  bytes  data    = 3;
+}
+
+message Answer {
+  bool  success = 1;
+  bytes data    = 2;
 }
 
 message Candidate {

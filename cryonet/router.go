@@ -19,7 +19,7 @@ type Router struct {
 	routes *TTLMap
 
 	blockingAnswerLock     sync.Mutex
-	blockingAnswerRequests map[string]chan *channel.Description
+	blockingAnswerRequests map[string]chan *channel.Answer
 }
 
 func SpawnRouter(parent *goakt.PID) (*goakt.PID, error) {
@@ -28,7 +28,7 @@ func SpawnRouter(parent *goakt.PID) (*goakt.PID, error) {
 		"router",
 		&Router{
 			routes:                 NewTTLMap(Config.CheckInterval),
-			blockingAnswerRequests: make(map[string]chan *channel.Description),
+			blockingAnswerRequests: make(map[string]chan *channel.Answer),
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
@@ -133,49 +133,63 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 			Alive:   payload.Alive,
 		})
 		// TODO: keep alive
-	case *channel.Normal_Description:
+	case *channel.Normal_Offer:
+		// the request from master
+		// we are slave
 		if IsMaster(packet.From) {
-			// the response from slave
-			r.blockingAnswerLock.Lock()
-			ch, ok := r.blockingAnswerRequests[packet.From]
-			r.blockingAnswerLock.Unlock()
-			if !ok {
-				return errors.New("unknown reponse received. maybe timeout")
-			}
-			ch <- payload.Description
-		} else {
-			// the request from master
-			_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-rtc-"+packet.From)
-			if err != nil && !errors.Is(err, goakt.ErrActorNotFound) {
-				return err
-			}
-			if err != nil {
-				// TODO: spawn shaker
-				// pid = ...
-			}
-			response, err := ctx.Self().Ask(ctx.Context(), pid, &shaker_rtc.OOnOffer{
-				Offer: payload.Description.Data,
-			}, time.Second*5)
-			if err != nil {
-				return err
-			}
-			res := response.(*shaker_rtc.OOnOfferResponse)
-			err = ctx.Self().Tell(ctx.Context(), ctx.Self(), &router.OSendPacket{
+			panic("unreachable")
+		}
+		_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-rtc-"+packet.From)
+		if err != nil {
+			// tell master to restart shaker to retry
+			err := ctx.Self().Tell(ctx.Context(), ctx.Self(), &router.OSendPacket{
 				Link: router.Link_FORWARD,
 				Packet: &channel.Normal{
 					From: Config.Id,
 					To:   packet.From,
-					Payload: &channel.Normal_Description{
-						Description: &channel.Description{
-							Data: res.Answer,
+					Payload: &channel.Normal_Answer{
+						Answer: &channel.Answer{
+							Success: false,
+							Data:    nil,
 						},
 					},
 				},
 			})
-			if err != nil {
-				return err
-			}
+			return err
 		}
+		response, err := ctx.Self().Ask(ctx.Context(), pid, &shaker_rtc.OOnOffer{
+			Offer: payload.Offer,
+		}, time.Second*5)
+		if err != nil {
+			return err
+		}
+		res := response.(*shaker_rtc.OOnOfferResponse)
+		err = ctx.Self().Tell(ctx.Context(), ctx.Self(), &router.OSendPacket{
+			Link: router.Link_FORWARD,
+			Packet: &channel.Normal{
+				From: Config.Id,
+				To:   packet.From,
+				Payload: &channel.Normal_Answer{
+					Answer: res.Answer,
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+	case *channel.Normal_Answer:
+		// the response from slave
+		// we are master
+		if !IsMaster(packet.From) {
+			panic("unreachable")
+		}
+		r.blockingAnswerLock.Lock()
+		ch, ok := r.blockingAnswerRequests[packet.From]
+		r.blockingAnswerLock.Unlock()
+		if !ok {
+			return errors.New("unknown reponse received. maybe timeout")
+		}
+		ch <- payload.Answer
 	case *channel.Normal_Candidate:
 		_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-rtc-"+packet.From)
 		if err != nil {
@@ -191,7 +205,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 	return nil
 }
 
-func AskForAnswer(cid *goakt.PID, peerId string, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+func AskForAnswer(cid *goakt.PID, peerId string, conn_id string, restart bool, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
 	_, rtr, err := cid.ActorSystem().ActorOf(context.Background(), "router")
 	if err != nil {
 		panic("unreachable")
@@ -201,7 +215,7 @@ func AskForAnswer(cid *goakt.PID, peerId string, offer *webrtc.SessionDescriptio
 		return nil, err
 	}
 
-	ch := make(chan *channel.Description, 1)
+	ch := make(chan *channel.Answer, 1)
 	rtrActor := rtr.Actor().(*Router)
 	rtrActor.blockingAnswerLock.Lock()
 	rtrActor.blockingAnswerRequests[peerId] = ch
@@ -218,9 +232,11 @@ func AskForAnswer(cid *goakt.PID, peerId string, offer *webrtc.SessionDescriptio
 		Packet: &channel.Normal{
 			From: Config.Id,
 			To:   peerId,
-			Payload: &channel.Normal_Description{
-				Description: &channel.Description{
-					Data: offerBytes,
+			Payload: &channel.Normal_Offer{
+				Offer: &channel.Offer{
+					ConnId:  conn_id,
+					Restart: restart,
+					Data:    offerBytes,
 				},
 			},
 		},
@@ -230,13 +246,16 @@ func AskForAnswer(cid *goakt.PID, peerId string, offer *webrtc.SessionDescriptio
 	}
 
 	select {
-	case desc := <-ch:
-		answer := webrtc.SessionDescription{}
-		err = json.Unmarshal(desc.Data, &answer)
+	case answer := <-ch:
+		if !answer.Success {
+			return nil, errors.New("failed to shake with peer, need to restart shaker")
+		}
+		desc := webrtc.SessionDescription{}
+		err = json.Unmarshal(answer.Data, &desc)
 		if err != nil {
 			return nil, err
 		}
-		return &answer, nil
+		return &desc, nil
 	case <-time.After(Config.ShakeTimeout):
 		return nil, errors.New("timeout waiting for answer")
 	}

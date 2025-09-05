@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/router"
 	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
 	"github.com/kagari-org/cryonet/gen/channel"
@@ -14,6 +15,7 @@ import (
 
 type ShakerRTC struct {
 	peerId string
+	connId string
 	peer   *webrtc.PeerConnection
 	dc     *webrtc.DataChannel
 }
@@ -69,8 +71,19 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 		if IsMaster(s.peerId) {
 			panic("unreachable")
 		}
+		if msg.Offer.Restart && s.connId != msg.Offer.ConnId {
+			ctx.Response(&shaker_rtc.OOnOfferResponse{
+				Answer: &channel.Answer{
+					Success: false,
+					Data:    nil,
+				},
+			})
+			return
+		}
+
+		s.connId = msg.Offer.ConnId
 		offer := webrtc.SessionDescription{}
-		err := json.Unmarshal(msg.GetOffer(), &offer)
+		err := json.Unmarshal(msg.Offer.Data, &offer)
 		if err != nil {
 			ctx.Err(err)
 			return
@@ -86,7 +99,10 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			return
 		}
 		ctx.Response(&shaker_rtc.OOnOfferResponse{
-			Answer: answerBytes,
+			Answer: &channel.Answer{
+				Success: true,
+				Data:    answerBytes,
+			},
 		})
 	case *shaker_rtc.OOnCandidate:
 		candidate := webrtc.ICECandidateInit{}
@@ -199,6 +215,7 @@ func (s *ShakerRTC) master(ctx *goakt.ReceiveContext, restart bool) error {
 	if s.peer == nil || s.dc == nil {
 		panic("unreachable")
 	}
+	s.connId = uuid.NewString()
 
 	offer, err := s.peer.CreateOffer(&webrtc.OfferOptions{
 		ICERestart: restart,
@@ -211,7 +228,7 @@ func (s *ShakerRTC) master(ctx *goakt.ReceiveContext, restart bool) error {
 		return err
 	}
 	// this calls peer's s.slave()
-	answer, err := AskForAnswer(ctx.Self(), s.peerId, &offer)
+	answer, err := AskForAnswer(ctx.Self(), s.peerId, s.connId, restart, &offer)
 	if err != nil {
 		return err
 	}
