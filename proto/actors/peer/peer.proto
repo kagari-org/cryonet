@@ -4,8 +4,6 @@ option go_package = "github.com/kagari-org/cryonet/gen/actors/peer";
 
 import "channel/channel.proto";
 
-message IStop {}
-
 message IRecvPacket {
   channel.Normal packet = 1;
 }
@@ -13,3 +11,5 @@ message IRecvPacket {
 message OSendPacket {
   channel.Normal packet = 1;
 }
+
+message OStop {}

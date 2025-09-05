@@ -70,9 +70,6 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 
 		go p.wsRead(ctx.Self())
 		go p.tunRead(ctx.Self())
-	case *peer.IStop:
-		// stop by parent
-		ctx.Err(errors.New("stop peer " + p.peerId))
 	case *peer.IRecvPacket:
 		_, rtr, err := ctx.ActorSystem().ActorOf(ctx.Context(), "router")
 		if err != nil {
@@ -82,6 +79,8 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 		ctx.Tell(rtr, &router.ORecvPacket{
 			Packet: msg.Packet,
 		})
+	case *peer.OStop:
+		ctx.Err(errors.New("stop peer " + p.peerId))
 	case *peer.OSendPacket:
 		data, err := proto.Marshal(&channel.Packet{
 			Packet: &channel.Packet_Normal{
@@ -112,7 +111,7 @@ func (p *PeerWS) wsRead(self *goakt.PID) {
 		_, data, err := p.ws.Read(p.context)
 		if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
 			self.Logger().Error(err)
-			err := self.Tell(context.Background(), self, &peer.IStop{})
+			err := self.Tell(context.Background(), self, &peer.OStop{})
 			if err != nil {
 				self.Logger().Error(err)
 			}
@@ -161,7 +160,7 @@ func (p *PeerWS) tunRead(self *goakt.PID) {
 		n, err := p.tun.Read(data)
 		if errors.Is(err, os.ErrClosed) || errors.Is(err, io.EOF) {
 			self.Logger().Error(err)
-			err := self.Tell(context.Background(), self, &peer.IStop{})
+			err := self.Tell(context.Background(), self, &peer.OStop{})
 			if err != nil {
 				self.Logger().Error(err)
 			}

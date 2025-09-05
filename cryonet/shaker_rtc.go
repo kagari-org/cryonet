@@ -15,10 +15,11 @@ import (
 )
 
 type ShakerRTC struct {
-	peerId string
-	connId string
-	peer   *webrtc.PeerConnection
-	dc     *webrtc.DataChannel
+	peerId    string
+	connId    string
+	peer      *webrtc.PeerConnection
+	dc        *webrtc.DataChannel
+	timeoutId string
 }
 
 func SpawnShakerRTC(parent *goakt.PID, peerId string) (*goakt.PID, error) {
@@ -40,6 +41,7 @@ var _ goakt.Actor = (*ShakerRTC)(nil)
 func (s *ShakerRTC) PreStart(ctx *goakt.Context) error { return nil }
 
 func (s *ShakerRTC) PostStop(ctx *goakt.Context) error {
+	ctx.ActorSystem().CancelSchedule(s.timeoutId)
 	if s.dc != nil {
 		s.dc.Close()
 	}
@@ -58,6 +60,15 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 		}
 		ctx.Tell(ctx.Self(), &shaker_rtc.IShake{})
 	case *shaker_rtc.IShake:
+		ctx.ActorSystem().CancelSchedule(s.timeoutId)
+		s.timeoutId = uuid.NewString()
+		ctx.ActorSystem().ScheduleOnce(
+			context.Background(),
+			&shaker_rtc.OStop{},
+			ctx.Self(),
+			Config.ShakeTimeout,
+			goakt.WithReference(s.timeoutId),
+		)
 		if !IsMaster(s.peerId) {
 			// TODO: add timeout here
 			return
@@ -72,6 +83,8 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			return
 		}
 		ctx.Tell(ctx.Self(), &shaker_rtc.IDataChannelSet{})
+	case *shaker_rtc.OStop:
+		ctx.Err(errors.New("stop shaker " + s.peerId))
 	case *shaker_rtc.OOnOffer:
 		if IsMaster(s.peerId) {
 			panic("unreachable")
@@ -133,6 +146,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			return
 		}
 	case *shaker_rtc.IDataChannelSet:
+		ctx.ActorSystem().CancelSchedule(s.timeoutId)
 		if s.dc == nil {
 			panic("unreachable")
 		}

@@ -10,6 +10,8 @@ message IShake {
 
 message IDataChannelSet {}
 
+message OStop {}
+
 message OOnOffer {
   channel.Offer offer = 1;
 }

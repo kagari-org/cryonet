@@ -83,7 +83,7 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 					ctx.Logger().Error("failed to get actor", "id", id, "error", err)
 					continue
 				}
-				ctx.Tell(pid, &peer.IStop{})
+				ctx.Tell(pid, &peer.OStop{})
 			}
 		}
 

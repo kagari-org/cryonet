@@ -22,7 +22,7 @@ var Config struct {
 	IceServers []string `env:"ICE_SERVERS" default:"stun:stun.l.google.com"`
 
 	CheckInterval time.Duration `env:"CHECK_INTERVAL" default:"10s"`
-	ShakeTimeout  time.Duration `env:"SHAKE_TIMEOUT" default:"1m"`
+	ShakeTimeout  time.Duration `env:"SHAKE_TIMEOUT" default:"5m"`
 	PeerTimeout   time.Duration `env:"PEER_TIMEOUT" default:"5m"`
 
 	InterfacePrefixWS       string `env:"INTERFACE_PREFIX" default:"cnw"`
