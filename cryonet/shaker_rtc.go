@@ -172,7 +172,7 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 			return
 		}
 		err = self.Tell(context.Background(), rtr, &router.OSendPacket{
-			Link: router.Link_FORWARD,
+			Link: router.Link_ANY,
 			Packet: &channel.Normal{
 				From: Config.Id,
 				To:   s.peerId,

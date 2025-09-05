@@ -175,7 +175,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 		if err != nil {
 			// tell master to restart shaker to retry
 			err := ctx.Self().Tell(ctx.Context(), ctx.Self(), &router.OSendPacket{
-				Link: router.Link_FORWARD,
+				Link: router.Link_ANY,
 				Packet: &channel.Normal{
 					From: Config.Id,
 					To:   packet.From,
@@ -197,7 +197,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 		}
 		res := response.(*shaker_rtc.OOnOfferResponse)
 		err = ctx.Self().Tell(ctx.Context(), ctx.Self(), &router.OSendPacket{
-			Link: router.Link_FORWARD,
+			Link: router.Link_ANY,
 			Packet: &channel.Normal{
 				From: Config.Id,
 				To:   packet.From,
@@ -260,7 +260,7 @@ func AskForAnswer(cid *goakt.PID, peerId string, conn_id string, restart bool, o
 	}()
 
 	err = cid.Tell(context.Background(), rtr, &router.OSendPacket{
-		Link: router.Link_FORWARD,
+		Link: router.Link_ANY,
 		Packet: &channel.Normal{
 			From: Config.Id,
 			To:   peerId,
