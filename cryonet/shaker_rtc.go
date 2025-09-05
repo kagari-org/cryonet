@@ -3,6 +3,7 @@ package cryonet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/router"
@@ -62,8 +63,12 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			return
 		}
 		err := s.master(ctx, msg.Restart)
-		if err != nil {
+		if errors.Is(err, ErrRestartNeeded) {
 			ctx.Err(err)
+			return
+		}
+		if err != nil {
+			ctx.Logger().Error("failed to shake with peer: ", err)
 			return
 		}
 		ctx.Tell(ctx.Self(), &shaker_rtc.IDataChannelSet{})
@@ -78,6 +83,17 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 					Data:    nil,
 				},
 			})
+			return
+		}
+		if !msg.Offer.Restart && s.connId != "" {
+			// remote actor restarted
+			ctx.Response(&shaker_rtc.OOnOfferResponse{
+				Answer: &channel.Answer{
+					Success: false,
+					Data:    nil,
+				},
+			})
+			ctx.Err(errors.New("remote actor restarted, restart self now"))
 			return
 		}
 
@@ -201,6 +217,7 @@ func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
 	})
 
 	if master {
+		s.connId = uuid.NewString()
 		dc, err := peer.CreateDataChannel("dc", nil)
 		if err != nil {
 			return err
@@ -219,7 +236,6 @@ func (s *ShakerRTC) master(ctx *goakt.ReceiveContext, restart bool) error {
 	if s.peer == nil || s.dc == nil {
 		panic("unreachable")
 	}
-	s.connId = uuid.NewString()
 
 	offer, err := s.peer.CreateOffer(&webrtc.OfferOptions{
 		ICERestart: restart,

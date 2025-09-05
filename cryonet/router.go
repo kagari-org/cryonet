@@ -40,6 +40,8 @@ func SpawnRouter(parent *goakt.PID) (*goakt.PID, error) {
 	)
 }
 
+var ErrRestartNeeded = errors.New("failed to shake with peer, need to restart shaker")
+
 var _ goakt.Actor = (*Router)(nil)
 
 func (r *Router) PreStart(ctx *goakt.Context) error { return nil }
@@ -238,7 +240,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 	return nil
 }
 
-func AskForAnswer(cid *goakt.PID, peerId string, conn_id string, restart bool, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+func AskForAnswer(cid *goakt.PID, peerId string, connId string, restart bool, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
 	_, rtr, err := cid.ActorSystem().ActorOf(context.Background(), "router")
 	if err != nil {
 		panic("unreachable")
@@ -267,7 +269,7 @@ func AskForAnswer(cid *goakt.PID, peerId string, conn_id string, restart bool, o
 			To:   peerId,
 			Payload: &channel.Normal_Offer{
 				Offer: &channel.Offer{
-					ConnId:  conn_id,
+					ConnId:  connId,
 					Restart: restart,
 					Data:    offerBytes,
 				},
@@ -281,7 +283,7 @@ func AskForAnswer(cid *goakt.PID, peerId string, conn_id string, restart bool, o
 	select {
 	case answer := <-ch:
 		if !answer.Success {
-			return nil, errors.New("failed to shake with peer, need to restart shaker")
+			return nil, ErrRestartNeeded
 		}
 		desc := webrtc.SessionDescription{}
 		err = json.Unmarshal(answer.Data, &desc)
