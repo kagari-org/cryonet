@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/controller"
 	goakt "github.com/tochemey/goakt/v3/actor"
+	gerrors "github.com/tochemey/goakt/v3/errors"
 	"github.com/tochemey/goakt/v3/goaktpb"
 )
 
@@ -99,7 +100,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 		for i, server := range Config.WSServers {
 			suffix := fmt.Sprintf("wsconnect-%d", i)
 			_, _, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-"+suffix)
-			if err != nil && !errors.Is(err, goakt.ErrActorNotFound) {
+			if err != nil && !errors.Is(err, gerrors.ErrActorNotFound) {
 				ctx.Logger().Error(err)
 				continue
 			}
@@ -132,7 +133,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 				continue
 			}
 			_, _, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-rtc-"+id)
-			if err != nil && !errors.Is(err, goakt.ErrActorNotFound) {
+			if err != nil && !errors.Is(err, gerrors.ErrActorNotFound) {
 				ctx.Err(err)
 				return
 			}

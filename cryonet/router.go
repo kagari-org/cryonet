@@ -15,6 +15,7 @@ import (
 	"github.com/kagari-org/cryonet/gen/channel"
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
+	gerrors "github.com/tochemey/goakt/v3/errors"
 )
 
 type Router struct {
@@ -68,7 +69,7 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 		// check local links
 		if msg.Link == router.Link_ANY || msg.Link == router.Link_LOCAL {
 			_, ws, err := ctx.ActorSystem().ActorOf(ctx.Context(), "peer-ws-"+msg.Packet.To)
-			if err != nil && !errors.Is(err, goakt.ErrActorNotFound) {
+			if err != nil && !errors.Is(err, gerrors.ErrActorNotFound) {
 				ctx.Err(err)
 				return
 			}
@@ -79,7 +80,7 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 				return
 			}
 			_, rtc, err := ctx.ActorSystem().ActorOf(ctx.Context(), "peer-rtc-"+msg.Packet.To)
-			if err != nil && !errors.Is(err, goakt.ErrActorNotFound) {
+			if err != nil && !errors.Is(err, gerrors.ErrActorNotFound) {
 				ctx.Err(err)
 				return
 			}
@@ -119,7 +120,7 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 		})
 	case *router.IAlive:
 		_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), msg.FromPid)
-		if err != nil && !errors.Is(err, goakt.ErrActorNotFound) {
+		if err != nil && !errors.Is(err, gerrors.ErrActorNotFound) {
 			ctx.Err(err)
 			return
 		}
