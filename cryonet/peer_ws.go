@@ -85,7 +85,7 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 	case *peer.OSendPacket:
 		data, err := proto.Marshal(&channel.Packet{
 			Packet: &channel.Packet_Normal{
-				Normal: msg.GetPacket(),
+				Normal: msg.Packet,
 			},
 		})
 		if err != nil {
@@ -128,9 +128,9 @@ func (p *PeerWS) wsRead(self *goakt.PID) {
 			self.Logger().Error(err)
 			continue
 		}
-		switch packet := packet.GetPacket().(type) {
+		switch packet := packet.Packet.(type) {
 		case *channel.Packet_Direct:
-			_, err := p.tun.Write(packet.Direct.GetData())
+			_, err := p.tun.Write(packet.Direct.Data)
 			if err != nil {
 				self.Logger().Error(err)
 				continue

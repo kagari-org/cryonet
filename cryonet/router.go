@@ -116,7 +116,7 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 			// peer died
 			return
 		}
-		for _, peerId := range msg.Alive.GetPeers() {
+		for _, peerId := range msg.Alive.Peers {
 			if peerId == Config.Id {
 				continue
 			}

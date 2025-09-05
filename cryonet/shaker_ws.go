@@ -95,14 +95,14 @@ func (s *ShakerWS) shake(ctx *goakt.ReceiveContext) (string, error) {
 		s.conn.Close(websocket.StatusInternalError, "failed to unmarshal init packet")
 		return "", err
 	}
-	if recvInit.GetId() == Config.Id {
+	if recvInit.Id == Config.Id {
 		s.conn.Close(websocket.StatusProtocolError, "received init packet with same ID")
 		return "", err
 	}
-	if recvInit.GetToken() != Config.Token {
+	if recvInit.Token != Config.Token {
 		s.conn.Close(websocket.StatusProtocolError, "received init packet with invalid token")
 		return "", err
 	}
 
-	return recvInit.GetId(), nil
+	return recvInit.Id, nil
 }

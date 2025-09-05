@@ -61,7 +61,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			// TODO: add timeout here
 			return
 		}
-		err := s.master(ctx, msg.GetRestart())
+		err := s.master(ctx, msg.Restart)
 		if err != nil {
 			ctx.Err(err)
 			return
@@ -106,7 +106,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 		})
 	case *shaker_rtc.OOnCandidate:
 		candidate := webrtc.ICECandidateInit{}
-		err := json.Unmarshal(msg.GetCandidate(), &candidate)
+		err := json.Unmarshal(msg.Candidate, &candidate)
 		if err != nil {
 			ctx.Logger().Error("failed to unmarshal candidate: ", err)
 			return
