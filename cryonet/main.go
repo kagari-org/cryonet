@@ -3,7 +3,6 @@ package cryonet
 import (
 	"context"
 	"os"
-	"os/signal"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -86,7 +85,5 @@ func Main() {
 
 	system.Logger().Info("Cryonet started.")
 
-	sigint := make(chan os.Signal, 1)
-	signal.Notify(sigint, os.Interrupt)
-	<-sigint
+	select {}
 }
