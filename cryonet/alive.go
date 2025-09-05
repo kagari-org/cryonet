@@ -60,15 +60,15 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 		actors := ctx.ActorSystem().Actors()
 		for _, actor := range actors {
 			if ws, ok := actor.Actor().(*PeerWS); ok {
-				if _, ok := a.table[actor.ID()]; !ok {
-					a.table[actor.ID()] = &AliveItem{
+				if _, ok := a.table[actor.Name()]; !ok {
+					a.table[actor.Name()] = &AliveItem{
 						peerId: ws.peerId,
 						time:   time.Now(),
 					}
 				}
-			} else if _, ok := actor.Actor().(*PeerRTC); ok {
-				if rtc, ok := a.table[actor.ID()]; !ok {
-					a.table[actor.ID()] = &AliveItem{
+			} else if rtc, ok := actor.Actor().(*PeerRTC); ok {
+				if _, ok := a.table[actor.Name()]; !ok {
+					a.table[actor.Name()] = &AliveItem{
 						peerId: rtc.peerId,
 						time:   time.Now(),
 					}

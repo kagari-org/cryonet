@@ -145,7 +145,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 		if packet.From != Config.Id {
 			// not bootstrap alive from self, update route
 			ctx.Tell(ctx.Self(), &router.IAlive{
-				FromPid: ctx.Sender().ID(),
+				FromPid: ctx.Sender().Name(),
 				Alive:   payload.Alive,
 			})
 
@@ -154,7 +154,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 				panic("unreachable")
 			}
 			ctx.Tell(al, &alive.OAlive{
-				FromPid: ctx.Sender().ID(),
+				FromPid: ctx.Sender().Name(),
 				From:    packet.From,
 			})
 		}
