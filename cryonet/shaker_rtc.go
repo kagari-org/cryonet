@@ -120,7 +120,11 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 		if s.dc == nil {
 			panic("unreachable")
 		}
-		// TODO: spawn child
+		_, err := SpawnRTCPeer(ctx.Self(), s.peerId, s.dc)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
 	case *goaktpb.Mayday:
 		ctx.Logger().Error("peer "+ctx.Sender().Name()+" failed: ", msg.GetMessage())
 		ctx.Stop(ctx.Sender())
