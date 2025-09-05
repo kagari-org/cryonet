@@ -54,6 +54,17 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 			})
 			return
 		}
+		if msg.Link == router.Link_SPECIFIC {
+			_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), msg.SpecificPid)
+			if err != nil {
+				ctx.Err(err)
+				return
+			}
+			ctx.Tell(pid, &peer.OSendPacket{
+				Packet: msg.Packet,
+			})
+			return
+		}
 		// check local links
 		if msg.Link == router.Link_ANY || msg.Link == router.Link_LOCAL {
 			_, ws, err := ctx.ActorSystem().ActorOf(ctx.Context(), "peer-ws-"+msg.Packet.To)
@@ -143,6 +154,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 			}
 			ctx.Tell(al, &alive.OAlive{
 				FromPid: ctx.Sender().ID(),
+				From:    packet.From,
 			})
 		}
 		_, ctrl, err := ctx.ActorSystem().ActorOf(ctx.Context(), "controller")

@@ -7,13 +7,20 @@ import (
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/alive"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
+	"github.com/kagari-org/cryonet/gen/actors/router"
+	"github.com/kagari-org/cryonet/gen/channel"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 )
 
 type Alive struct {
 	checkScheduleId string
-	table           map[string]time.Time
+	table           map[string]*AliveItem
+}
+
+type AliveItem struct {
+	peerId string
+	time   time.Time
 }
 
 func SpawnAlive(parent *goakt.PID) (*goakt.PID, error) {
@@ -22,7 +29,7 @@ func SpawnAlive(parent *goakt.PID) (*goakt.PID, error) {
 		"alive",
 		&Alive{
 			checkScheduleId: uuid.NewString(),
-			table:           make(map[string]time.Time),
+			table:           make(map[string]*AliveItem),
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
@@ -52,18 +59,24 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 	case *alive.ICheck:
 		actors := ctx.ActorSystem().Actors()
 		for _, actor := range actors {
-			if _, ok := actor.Actor().(*PeerWS); ok {
+			if ws, ok := actor.Actor().(*PeerWS); ok {
 				if _, ok := a.table[actor.ID()]; !ok {
-					a.table[actor.ID()] = time.Now()
+					a.table[actor.ID()] = &AliveItem{
+						peerId: ws.peerId,
+						time:   time.Now(),
+					}
 				}
 			} else if _, ok := actor.Actor().(*PeerRTC); ok {
-				if _, ok := a.table[actor.ID()]; !ok {
-					a.table[actor.ID()] = time.Now()
+				if rtc, ok := a.table[actor.ID()]; !ok {
+					a.table[actor.ID()] = &AliveItem{
+						peerId: rtc.peerId,
+						time:   time.Now(),
+					}
 				}
 			}
 		}
-		for id, last := range a.table {
-			if time.Since(last) > Config.PeerTimeout {
+		for id, item := range a.table {
+			if time.Since(item.time) > Config.PeerTimeout {
 				delete(a.table, id)
 				_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), id)
 				if err != nil {
@@ -73,8 +86,50 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 				ctx.Tell(pid, &peer.IStop{})
 			}
 		}
+
+		_, rtr, err := ctx.ActorSystem().ActorOf(ctx.Context(), "router")
+		if err != nil {
+			panic("unreachable")
+		}
+		peers := make([]string, 0, len(a.table))
+		for _, item := range a.table {
+			peers = append(peers, item.peerId)
+		}
+		ctx.Logger().Debug("sending alive ", peers)
+		// send alive packet to self to bootstrap rtc connections
+		ctx.Tell(rtr, &router.OSendPacket{
+			Link: router.Link_ANY,
+			Packet: &channel.Normal{
+				From: Config.Id,
+				To:   Config.Id,
+				Payload: &channel.Normal_Alive{
+					Alive: &channel.Alive{
+						Peers: peers,
+					},
+				},
+			},
+		})
+		// send alive to all peers
+		for pid, item := range a.table {
+			ctx.Tell(rtr, &router.OSendPacket{
+				Link:        router.Link_SPECIFIC,
+				SpecificPid: pid,
+				Packet: &channel.Normal{
+					From: Config.Id,
+					To:   item.peerId,
+					Payload: &channel.Normal_Alive{
+						Alive: &channel.Alive{
+							Peers: peers,
+						},
+					},
+				},
+			})
+		}
 	case *alive.OAlive:
-		a.table[msg.FromPid] = time.Now()
+		a.table[msg.FromPid] = &AliveItem{
+			peerId: msg.From,
+			time:   time.Now(),
+		}
 	default:
 		ctx.Unhandled()
 	}

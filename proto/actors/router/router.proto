@@ -10,14 +10,16 @@ message IAlive {
 }
 
 enum Link {
-  ANY     = 0;
-  LOCAL   = 1;
-  FORWARD = 3;
+  ANY      = 0;
+  LOCAL    = 1;
+  FORWARD  = 3;
+  SPECIFIC = 4;
 }
 
 message OSendPacket {
-  Link           link   = 1;
-  channel.Normal packet = 2;
+  Link           link         = 1;
+  string         specific_pid = 2;
+  channel.Normal packet       = 3;
 }
 
 message ORecvPacket {

@@ -13,9 +13,3 @@ message IRecvPacket {
 message OSendPacket {
   channel.Normal packet = 1;
 }
-
-// message OGetPeerId {}
-// 
-// message OGetPeerIdResponse {
-//   string peerId = 1;
-// }

@@ -8,4 +8,5 @@ message ICheck {}
 
 message OAlive {
   string from_pid = 1;
+  string from     = 2;
 }
