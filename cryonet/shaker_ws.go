@@ -18,7 +18,7 @@ type ShakerWS struct {
 func SpawnShakerWS(parent *goakt.PID, suffix string, conn *websocket.Conn) (*goakt.PID, error) {
 	return parent.SpawnChild(
 		context.Background(),
-		"shaker-ws-"+suffix,
+		"shaker-"+suffix,
 		&ShakerWS{
 			conn: conn,
 		},

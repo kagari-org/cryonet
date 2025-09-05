@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/actors/router"
 	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
@@ -128,7 +129,15 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.Normal) error {
 	switch payload := packet.Payload.(type) {
 	case *channel.Normal_Alive:
-		ctx.Self().Tell(ctx.Context(), ctx.Self(), &router.IAlive{
+		_, ctrl, err := ctx.ActorSystem().ActorOf(ctx.Context(), "controller")
+		if err != nil {
+			panic("unreachable")
+		}
+		ctx.Tell(ctx.Self(), &router.IAlive{
+			FromPid: packet.From,
+			Alive:   payload.Alive,
+		})
+		ctx.Tell(ctrl, &controller.OAlive{
 			FromPid: packet.From,
 			Alive:   payload.Alive,
 		})

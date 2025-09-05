@@ -3,8 +3,10 @@ package cryonet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/coder/websocket"
@@ -87,8 +89,9 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 	case *controller.ICheck:
 		// ws connect
 		wg := sync.WaitGroup{}
-		for _, server := range Config.WSServers {
-			_, _, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-ws-"+server)
+		for i, server := range Config.WSServers {
+			suffix := fmt.Sprintf("wsconnect-%d", i)
+			_, _, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-"+suffix)
 			if err != nil && !errors.Is(err, goakt.ErrActorNotFound) {
 				ctx.Logger().Error(err)
 				continue
@@ -106,13 +109,35 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 					ctx.Logger().Error(err)
 					return
 				}
-				_, err = SpawnShakerWS(ctx.Self(), server, conn)
+				_, err = SpawnShakerWS(ctx.Self(), suffix, conn)
 				if err != nil {
 					ctx.Logger().Error(err)
 				}
 			}()
 		}
 		wg.Wait()
+	case *controller.OAlive:
+		ids := append(msg.Alive.Peers, msg.FromPid)
+		slices.Sort(ids)
+		ids = slices.Compact(ids)
+		for _, id := range ids {
+			if id == Config.Id {
+				continue
+			}
+			_, _, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-rtc-"+id)
+			if err != nil && !errors.Is(err, goakt.ErrActorNotFound) {
+				ctx.Err(err)
+				return
+			}
+			if err == nil {
+				continue
+			}
+			_, err = SpawnShakerRTC(ctx.Self(), id)
+			if err != nil {
+				ctx.Err(err)
+				return
+			}
+		}
 	case *goaktpb.Mayday:
 		ctx.Logger().Error("shaker "+ctx.Sender().Name()+" failed: ", msg.GetMessage())
 		ctx.Stop(ctx.Sender())
@@ -129,7 +154,7 @@ func (c *Controller) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		return
 	}
 
-	_, err = SpawnShakerWS(c.self, uuid.NewString(), conn)
+	_, err = SpawnShakerWS(c.self, "wslisten-"+uuid.NewString(), conn)
 	if err != nil {
 		c.self.Logger().Error(err)
 		return
