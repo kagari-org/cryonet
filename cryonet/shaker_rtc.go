@@ -139,6 +139,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Logger().Error("failed to unmarshal candidate: ", err)
 			return
 		}
+		ctx.Logger().Debug("adding ice candidate: ", candidate)
 		err = s.peer.AddICECandidate(candidate)
 		if err != nil {
 			ctx.Logger().Error("failed to add ice candidate: ", err)
@@ -149,11 +150,13 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 		if s.dc == nil {
 			panic("unreachable")
 		}
-		_, err := SpawnRTCPeer(ctx.Self(), s.peerId, s.dc)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
+		self := ctx.Self()
+		s.dc.OnOpen(func() {
+			_, err := SpawnRTCPeer(self, s.peerId, s.dc)
+			if err != nil {
+				self.Logger().Error(err)
+			}
+		})
 	case *goaktpb.Mayday:
 		ctx.Logger().Error("peer "+ctx.Sender().Name()+" failed: ", msg.GetMessage())
 		ctx.Stop(ctx.Sender())
