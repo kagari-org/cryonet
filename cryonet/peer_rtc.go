@@ -94,7 +94,7 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 		}
 		err = p.dc.Send(data)
 		if err != nil {
-			ctx.Err(err)
+			ctx.Logger().Error(err)
 			return
 		}
 	default:
