@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/kagari-org/cryonet/gen/channel"
 	"github.com/kagari-org/wireguard-go/conn"
 	"github.com/kagari-org/wireguard-go/device"
+	"github.com/kagari-org/wireguard-go/ipc"
 	"github.com/kagari-org/wireguard-go/tun"
 	"github.com/pion/ice/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
@@ -32,6 +34,8 @@ type PeerICE struct {
 
 	wgDev *device.Device
 	user  chan []byte
+
+	uapi net.Listener
 }
 
 func SpawnICEPeer(
@@ -75,12 +79,16 @@ func (p *PeerICE) PostStop(ctx *goakt.Context) error {
 	if p.wgDev != nil {
 		p.wgDev.Close()
 	}
+	if p.uapi != nil {
+		p.uapi.Close()
+	}
 	return nil
 }
 
 func (p *PeerICE) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
+		// TODO: add uapi
 		p.self = ctx.Self()
 
 		tun, err := CreateTun(Config.InterfacePrefix + p.peerId)
@@ -107,6 +115,31 @@ func (p *PeerICE) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
+
+		if Config.EnableWireGuardUAPI {
+			uapiFile, err := ipc.UAPIOpen("cryonet-" + p.peerId)
+			if err != nil {
+				ctx.Logger().Error(err)
+				return
+			}
+			uapi, err := ipc.UAPIListen("cryonet-"+p.peerId, uapiFile)
+			if err != nil {
+				ctx.Logger().Error(err)
+				return
+			}
+			p.uapi = uapi
+			self := ctx.Self()
+			go func() {
+				for {
+					conn, err := uapi.Accept()
+					if err != nil {
+						self.Logger().Error(err)
+						break
+					}
+					go wgDev.IpcHandle(conn)
+				}
+			}()
+		}
 	case *peer.IRecvPacket:
 		packet := &channel.Packet{}
 		err := proto.Unmarshal(msg.Packet, packet)
@@ -125,7 +158,7 @@ func (p *PeerICE) Receive(ctx *goakt.ReceiveContext) {
 	case *peer.OStop:
 		ctx.Err(errors.New("stop peer"))
 	case *peer.OSendPacket:
-		if len(msg.Packet) > Config.BufSize {
+		if len(msg.Packet)+4 > Config.BufSize {
 			ctx.Err(errors.New("packet too large"))
 			return
 		}

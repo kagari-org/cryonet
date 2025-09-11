@@ -27,6 +27,8 @@ var Config struct {
 	InterfacePrefix         string `env:"INTERFACE_PREFIX" default:"cn"`
 	EnablePacketInformation bool   `env:"ENABLE_PACKET_INFORMATION" default:"true"`
 	BufSize                 int    `env:"BUF_SIZE" default:"1420"`
+
+	EnableWireGuardUAPI bool `env:"ENABLE_WIREGUARD_UAPI" default:"true"`
 }
 
 type Cryonet struct{}

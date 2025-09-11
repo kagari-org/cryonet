@@ -24,7 +24,7 @@
           ];
         };
         nativeBuildInputs = [ buf protoc-gen-go protoc-gen-connect-go ];
-        vendorHash = "sha256-BG5IBLHq3ibMV4ufalxFQB3VBqRwt5RpLt8kjMlF9vs=";
+        vendorHash = "sha256-3Wd4jA/3de7ixm/Yq41kloLI2gafSH5nnufhxFtww1E=";
         overrideModAttrs.preBuild = ''
           export HOME=$(pwd)/.home
           mkdir -p $HOME
