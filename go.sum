@@ -186,8 +186,8 @@ github.com/json-iterator/go v1.1.10/go.mod h1:KdQUCv79m/52Kvf8AW2vK1V8akMuk1QjK/
 github.com/json-iterator/go v1.1.11/go.mod h1:KdQUCv79m/52Kvf8AW2vK1V8akMuk1QjK/uOdHXbAo4=
 github.com/julienschmidt/httprouter v1.2.0/go.mod h1:SYymIcj16QtmaHHD7aYtjjsJG7VTCxuUUipMqKk8s4w=
 github.com/julienschmidt/httprouter v1.3.0/go.mod h1:JR6WtHb+2LUe8TCKY3cZOxFyyO8IZAc4RVcycCCAKdM=
-github.com/kagari-org/wireguard-go v0.0.0-20250911090422-5040c5471971 h1:FtVTKXCaE8EmEjAlWRPzkZzmshz4zygpFslaqouDyJQ=
-github.com/kagari-org/wireguard-go v0.0.0-20250911090422-5040c5471971/go.mod h1:4auS+6SfFBeOBLgBZP7OvOT/ngUpADBEaxTw1ivriuE=
+github.com/kagari-org/wireguard-go v0.1.1 h1:r8pTeOVX5MJjLmj4bPVIoiabMfhcpZTHSJvmjM2MPeg=
+github.com/kagari-org/wireguard-go v0.1.1/go.mod h1:4auS+6SfFBeOBLgBZP7OvOT/ngUpADBEaxTw1ivriuE=
 github.com/kapetan-io/tackle v0.12.0 h1:anW3CB6HXZH1fQw5pnooNUAP3ftK/MxX5jzb1MwA//w=
 github.com/kapetan-io/tackle v0.12.0/go.mod h1:5ZGq3U/Qgpq0ccxyx2+Zovg2ceM9yl6DOVL2R90of4g=
 github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=

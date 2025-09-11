@@ -2,9 +2,11 @@ package cryonet
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/kagari-org/cryonet/gen/actors/peer"
@@ -95,12 +97,12 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		err = wgDev.IpcSet("private_key=" + hex.EncodeToString(p.sk[:]))
-		if err != nil {
-			ctx.Err(err)
-			return
+		op := []string{
+			"private_key=" + hex.EncodeToString(p.sk[:]),
+			"public_key=" + hex.EncodeToString(p.pk[:]),
+			"endpoint=0",
 		}
-		err = wgDev.IpcSet("public_key=" + hex.EncodeToString(p.pk[:]))
+		err = wgDev.IpcSet(strings.Join(op, "\n"))
 		if err != nil {
 			ctx.Err(err)
 			return
@@ -144,8 +146,9 @@ func (p *PeerRTC) Name() (string, error)    { return p.peerId, nil }
 func (p *PeerRTC) Read(bufs [][]byte, sizes []int, users []bool, offset int) (int, error) {
 	select {
 	case user := <-p.user:
-		copy(bufs[0][:offset], user)
-		sizes[0] = len(user)
+		binary.LittleEndian.PutUint32(bufs[0][offset:offset+4], uint32(len(user)))
+		copy(bufs[0][offset+4:], user)
+		sizes[0] = len(user) + 4
 		users[0] = true
 		return 1, nil
 	default:
@@ -163,6 +166,7 @@ func (p *PeerRTC) Read(bufs [][]byte, sizes []int, users []bool, offset int) (in
 		return 0, err
 	}
 	sizes[0] = n
+	users[0] = false
 	return 1, nil
 }
 
@@ -171,8 +175,9 @@ func (p *PeerRTC) Write(bufs [][]byte, users []bool, offset int) (int, error) {
 	var e error
 	for i, buf := range bufs {
 		if users[i] {
+			len := binary.LittleEndian.Uint32(buf[offset : offset+4])
 			err := p.self.Tell(context.Background(), p.self, &peer.IRecvPacket{
-				Packet: bufs[i][offset:],
+				Packet: buf[offset+4 : offset+4+int(len)],
 			})
 			if err != nil {
 				if e == nil {
@@ -210,6 +215,7 @@ func (p *PeerRTC) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint16, 
 			return 0, rerr
 		}
 		sizes[0] = rn
+		eps[0] = &conn.StdNetEndpoint{}
 		return 1, nil
 	}
 	return []conn.ReceiveFunc{f}, 0, nil

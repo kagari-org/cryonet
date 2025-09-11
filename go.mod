@@ -6,7 +6,7 @@ require (
 	github.com/alecthomas/kong v1.11.0
 	github.com/coder/websocket v1.8.13
 	github.com/google/uuid v1.6.0
-	github.com/kagari-org/wireguard-go v0.0.0-20250911090422-5040c5471971
+	github.com/kagari-org/wireguard-go v0.1.1
 	github.com/pion/ice/v4 v4.0.10
 	github.com/pion/stun/v3 v3.0.0
 	github.com/tochemey/goakt/v3 v3.9.2
