@@ -193,7 +193,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 					return
 				}
 				self.ActorSystem().CancelSchedule(s.timeoutId)
-				_, err = SpawnRTCPeer(self, s.peerId, conn)
+				_, err = SpawnRTCPeer(self, s.peerId, conn, s.sk, device.NoisePublicKey(answer.Pubkey))
 				if err != nil {
 					self.Logger().Error("failed to spawn rtc peer: ", err)
 					err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
@@ -255,7 +255,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 				return
 			}
 			self.ActorSystem().CancelSchedule(s.timeoutId)
-			_, err = SpawnRTCPeer(self, s.peerId, conn)
+			_, err = SpawnRTCPeer(self, s.peerId, conn, s.sk, device.NoisePublicKey(msg.Offer.Pubkey))
 			if err != nil {
 				self.Logger().Error("failed to spawn rtc peer: ", err)
 				err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})

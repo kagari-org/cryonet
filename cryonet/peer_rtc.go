@@ -2,6 +2,7 @@ package cryonet
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"os"
 	"time"
@@ -23,13 +24,22 @@ type PeerRTC struct {
 
 	peerId string
 	conn   *ice.Conn
+	sk     device.NoisePrivateKey
+	pk     device.NoisePublicKey
 	tun    *os.File
 
 	wgDev *device.Device
 	user  chan []byte
 }
 
-func SpawnRTCPeer(parent *goakt.PID, peerId string, conn *ice.Conn) (*goakt.PID, error) {
+func SpawnRTCPeer(
+	parent *goakt.PID,
+	peerId string,
+	conn *ice.Conn,
+
+	sk device.NoisePrivateKey,
+	pk device.NoisePublicKey,
+) (*goakt.PID, error) {
 	return parent.SpawnChild(
 		context.Background(),
 		"peer-rtc-"+peerId,
@@ -37,6 +47,8 @@ func SpawnRTCPeer(parent *goakt.PID, peerId string, conn *ice.Conn) (*goakt.PID,
 			peerId: peerId,
 			conn:   conn,
 			user:   make(chan []byte, 16),
+			sk:     sk,
+			pk:     pk,
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
@@ -79,6 +91,16 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 		wgDev := device.NewDevice(p, p, device.NewLogger(device.LogLevelError, p.peerId))
 		p.wgDev = wgDev
 		err = wgDev.Up()
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		err = wgDev.IpcSet("private_key=" + hex.EncodeToString(p.sk[:]))
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
+		err = wgDev.IpcSet("public_key=" + hex.EncodeToString(p.pk[:]))
 		if err != nil {
 			ctx.Err(err)
 			return
