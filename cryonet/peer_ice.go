@@ -111,7 +111,7 @@ func (p *PeerICE) Receive(ctx *goakt.ReceiveContext) {
 		packet := &channel.Packet{}
 		err := proto.Unmarshal(msg.Packet, packet)
 		if err != nil {
-			ctx.Err(err)
+			ctx.Logger().Error(err)
 			return
 		}
 		_, rtr, err := ctx.ActorSystem().ActorOf(ctx.Context(), "router")
@@ -156,7 +156,7 @@ func (p *PeerICE) Read(bufs [][]byte, sizes []int, users []bool, offset int) (in
 
 	err := p.tun.SetReadDeadline(time.Now().Add((time.Millisecond * 500)))
 	if err != nil {
-		panic(err)
+		return 0, err
 	}
 	n, err := p.tun.Read(bufs[0][offset:])
 	if errors.Is(err, os.ErrDeadlineExceeded) {
