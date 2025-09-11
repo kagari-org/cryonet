@@ -105,10 +105,10 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 		// send alive packet to self to bootstrap rtc connections
 		ctx.Tell(rtr, &router.OSendPacket{
 			Link: router.Link_ANY,
-			Packet: &channel.Normal{
+			Packet: &channel.Packet{
 				From: Config.Id,
 				To:   Config.Id,
-				Payload: &channel.Normal_Alive{
+				Payload: &channel.Packet_Alive{
 					Alive: &channel.Alive{
 						Peers: peers,
 					},
@@ -120,10 +120,10 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Tell(rtr, &router.OSendPacket{
 				Link:        router.Link_SPECIFIC,
 				SpecificPid: pid,
-				Packet: &channel.Normal{
+				Packet: &channel.Packet{
 					From: Config.Id,
 					To:   item.peerId,
-					Payload: &channel.Normal_Alive{
+					Payload: &channel.Packet_Alive{
 						Alive: &channel.Alive{
 							Peers: peers,
 						},

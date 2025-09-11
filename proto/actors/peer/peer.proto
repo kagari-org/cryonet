@@ -9,7 +9,7 @@ message IRecvPacket {
 }
 
 message OSendPacket {
-  channel.Packet packet = 1;
+  bytes packet = 1;
 }
 
 message OStop {}

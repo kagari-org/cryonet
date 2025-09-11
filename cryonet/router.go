@@ -16,6 +16,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	gerrors "github.com/tochemey/goakt/v3/errors"
+	"google.golang.org/protobuf/proto"
 )
 
 type Router struct {
@@ -57,15 +58,18 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 			})
 			return
 		}
+		data, err := proto.Marshal(msg.Packet)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
 		if msg.Link == router.Link_SPECIFIC {
 			_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), msg.SpecificPid)
 			if err != nil {
 				ctx.Err(err)
 				return
 			}
-			ctx.Tell(pid, &peer.OSendPacket{
-				Packet: msg.Packet,
-			})
+			ctx.Tell(pid, &peer.OSendPacket{Packet: data})
 			return
 		}
 		// check local links
@@ -76,9 +80,7 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 				return
 			}
 			if err == nil {
-				ctx.Tell(ws, &peer.OSendPacket{
-					Packet: msg.Packet,
-				})
+				ctx.Tell(ws, &peer.OSendPacket{Packet: data})
 				return
 			}
 			_, rtc, err := ctx.ActorSystem().ActorOf(ctx.Context(), "peer-rtc-"+msg.Packet.To)
@@ -87,9 +89,7 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 				return
 			}
 			if err == nil {
-				ctx.Tell(rtc, &peer.OSendPacket{
-					Packet: msg.Packet,
-				})
+				ctx.Tell(rtc, &peer.OSendPacket{Packet: data})
 				return
 			}
 			if msg.Link == router.Link_LOCAL {
@@ -105,9 +105,7 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(errors.New("no route to peer " + msg.Packet.To))
 			return
 		}
-		ctx.Tell(pid, &peer.OSendPacket{
-			Packet: msg.Packet,
-		})
+		ctx.Tell(pid, &peer.OSendPacket{Packet: data})
 	case *router.ORecvPacket:
 		if msg.Packet.To == Config.Id {
 			err := r.handleLocalPacket(ctx, msg.Packet)
@@ -141,9 +139,9 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 	}
 }
 
-func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.Normal) error {
+func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.Packet) error {
 	switch payload := packet.Payload.(type) {
-	case *channel.Normal_Alive:
+	case *channel.Packet_Alive:
 		if packet.From != Config.Id {
 			// not bootstrap alive from self, update route
 			ctx.Tell(ctx.Self(), &router.IAlive{
@@ -168,7 +166,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 			From:  packet.From,
 			Alive: payload.Alive,
 		})
-	case *channel.Normal_Offer:
+	case *channel.Packet_Offer:
 		// the request from master
 		// we are slave
 		if IsMaster(packet.From) {
@@ -179,10 +177,10 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 			// tell master to restart shaker to retry
 			err := ctx.Self().Tell(ctx.Context(), ctx.Self(), &router.OSendPacket{
 				Link: router.Link_ANY,
-				Packet: &channel.Normal{
+				Packet: &channel.Packet{
 					From: Config.Id,
 					To:   packet.From,
-					Payload: &channel.Normal_Answer{
+					Payload: &channel.Packet_Answer{
 						Answer: &channel.Answer{
 							Success: false,
 							Data:    nil,
@@ -201,10 +199,10 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 		res := response.(*shaker_rtc.OOnOfferResponse)
 		err = ctx.Self().Tell(ctx.Context(), ctx.Self(), &router.OSendPacket{
 			Link: router.Link_ANY,
-			Packet: &channel.Normal{
+			Packet: &channel.Packet{
 				From: Config.Id,
 				To:   packet.From,
-				Payload: &channel.Normal_Answer{
+				Payload: &channel.Packet_Answer{
 					Answer: res.Answer,
 				},
 			},
@@ -212,7 +210,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 		if err != nil {
 			return err
 		}
-	case *channel.Normal_Answer:
+	case *channel.Packet_Answer:
 		// the response from slave
 		// we are master
 		if !IsMaster(packet.From) {
@@ -225,7 +223,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.No
 			return errors.New("unknown reponse received. maybe timeout")
 		}
 		ch <- payload.Answer
-	case *channel.Normal_Candidate:
+	case *channel.Packet_Candidate:
 		_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-rtc-"+packet.From)
 		if err != nil {
 			return err
@@ -264,10 +262,10 @@ func AskForAnswer(cid *goakt.PID, peerId string, connId string, restart bool, of
 
 	err = cid.Tell(context.Background(), rtr, &router.OSendPacket{
 		Link: router.Link_ANY,
-		Packet: &channel.Normal{
+		Packet: &channel.Packet{
 			From: Config.Id,
 			To:   peerId,
-			Payload: &channel.Normal_Offer{
+			Payload: &channel.Packet_Offer{
 				Offer: &channel.Offer{
 					ConnId:  connId,
 					Restart: restart,

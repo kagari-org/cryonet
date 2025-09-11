@@ -6,6 +6,8 @@ require (
 	github.com/alecthomas/kong v1.11.0
 	github.com/coder/websocket v1.8.13
 	github.com/google/uuid v1.6.0
+	github.com/kagari-org/wireguard-go v0.0.0-20250911090422-5040c5471971
+	github.com/pion/ice/v4 v4.0.10
 	github.com/pion/webrtc/v4 v4.1.2
 	github.com/tochemey/goakt/v3 v3.9.2
 	golang.org/x/sys v0.36.0
@@ -40,14 +42,12 @@ require (
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/hashicorp/logutils v1.0.0 // indirect
 	github.com/hashicorp/memberlist v0.5.3 // indirect
-	github.com/kagari-org/wireguard-go v0.0.0-20250911090422-5040c5471971 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/miekg/dns v1.1.68 // indirect
 	github.com/mschoch/smat v0.2.0 // indirect
 	github.com/pion/datachannel v1.5.10 // indirect
 	github.com/pion/dtls/v3 v3.0.7 // indirect
-	github.com/pion/ice/v4 v4.0.10 // indirect
 	github.com/pion/interceptor v0.1.40 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.0.7 // indirect

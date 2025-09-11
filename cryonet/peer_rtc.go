@@ -101,16 +101,11 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 	case *peer.OStop:
 		ctx.Err(errors.New("stop peer"))
 	case *peer.OSendPacket:
-		data, err := proto.Marshal(msg.Packet)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
-		if len(data) > Config.BufSize {
+		if len(msg.Packet) > Config.BufSize {
 			ctx.Err(errors.New("packet too large"))
 			return
 		}
-		p.user <- data
+		p.user <- msg.Packet
 	default:
 		ctx.Unhandled()
 	}
