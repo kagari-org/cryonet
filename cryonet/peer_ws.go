@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
 
 	"github.com/coder/websocket"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
@@ -19,7 +18,6 @@ import (
 type PeerWS struct {
 	peerId string
 	ws     *websocket.Conn
-	tun    *os.File
 
 	context context.Context
 	cancel  func()
@@ -51,9 +49,6 @@ func (p *PeerWS) PostStop(ctx *goakt.Context) error {
 	if p.ws != nil {
 		p.ws.CloseNow()
 	}
-	if p.tun != nil {
-		p.tun.Close()
-	}
 	p.cancel()
 	return nil
 }
@@ -61,13 +56,6 @@ func (p *PeerWS) PostStop(ctx *goakt.Context) error {
 func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		tun, err := CreateTun(Config.InterfacePrefixWS + p.peerId)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
-		p.tun = tun
-
 		go p.wsRead(ctx.Self())
 	case *peer.IRecvPacket:
 		packet := &channel.Packet{}
