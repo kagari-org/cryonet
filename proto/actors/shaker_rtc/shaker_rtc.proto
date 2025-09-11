@@ -4,12 +4,6 @@ option go_package = "github.com/kagari-org/cryonet/gen/actors/shaker_rtc";
 
 import "channel/channel.proto";
 
-message IShake {
-  bool restart = 1;
-}
-
-message IDataChannelSet {}
-
 message OStop {}
 
 message OOnOffer {
@@ -21,5 +15,5 @@ message OOnOfferResponse {
 }
 
 message OOnCandidate {
-  bytes candidate = 1;
+  string candidate = 1;
 }

@@ -1,28 +1,34 @@
 package cryonet
 
 import (
+	"crypto/rand"
 	"os"
 	"strings"
 
-	"github.com/pion/webrtc/v4"
+	"github.com/kagari-org/wireguard-go/device"
+	"github.com/pion/stun/v3"
+	"golang.org/x/crypto/curve25519"
 	"golang.org/x/sys/unix"
 )
 
-func GetICEServers() []webrtc.ICEServer {
-	ice_servers := []webrtc.ICEServer{}
+func GetICEServers() []*stun.URI {
+	ice_servers := []*stun.URI{}
 	for _, server := range Config.IceServers {
 		splited := strings.Split(server, "|")
 		if len(splited) == 1 {
-			ice_servers = append(ice_servers, webrtc.ICEServer{
-				URLs: []string{server},
-			})
+			server, err := stun.ParseURI(server)
+			if err != nil {
+				panic(err)
+			}
+			ice_servers = append(ice_servers, server)
 		} else if len(splited) == 3 {
-			ice_servers = append(ice_servers, webrtc.ICEServer{
-				URLs:           []string{splited[0]},
-				Username:       splited[1],
-				Credential:     splited[2],
-				CredentialType: webrtc.ICECredentialTypePassword,
-			})
+			server, err := stun.ParseURI(splited[0])
+			if err != nil {
+				panic(err)
+			}
+			server.Username = splited[1]
+			server.Password = splited[2]
+			ice_servers = append(ice_servers, server)
 		} else {
 			panic("Invalid ICE server format: " + server)
 		}
@@ -97,4 +103,20 @@ func CreateTun(name string) (*os.File, error) {
 	}
 
 	return os.NewFile(uintptr(device), "tun"), nil
+}
+
+func GenWGPrivkey() (device.NoisePrivateKey, error) {
+	var sk device.NoisePrivateKey
+	_, err := rand.Read(sk[:])
+	sk[0] &= 248
+	sk[31] = (sk[31] & 127) | 64
+	return sk, err
+}
+
+func GenWGPubkey(sk *device.NoisePrivateKey) device.NoisePublicKey {
+	var pk device.NoisePublicKey
+	apk := (*[device.NoisePublicKeySize]byte)(&pk)
+	ask := (*[device.NoisePrivateKeySize]byte)(sk)
+	curve25519.ScalarBaseMult(apk, ask)
+	return pk
 }

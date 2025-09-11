@@ -24,16 +24,18 @@ message Alive {
 }
 
 message Offer {
-  string conn_id = 1;
-  bool   restart = 2;
-  bytes  data    = 3;
+  string ufrag   = 2;
+  string pwd     = 3;
+  bytes  pubkey  = 4;
 }
 
 message Answer {
-  bool  success = 1;
-  bytes data    = 2;
+  bool   success = 1;
+  string ufrag   = 2;
+  string pwd     = 3;
+  bytes  pubkey  = 4;
 }
 
 message Candidate {
-  bytes data = 1;
+  string candidate = 1;
 }

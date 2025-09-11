@@ -2,7 +2,6 @@ package cryonet
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -13,7 +12,6 @@ import (
 	"github.com/kagari-org/cryonet/gen/actors/router"
 	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
 	"github.com/kagari-org/cryonet/gen/channel"
-	"github.com/pion/webrtc/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	gerrors "github.com/tochemey/goakt/v3/errors"
 	"google.golang.org/protobuf/proto"
@@ -40,8 +38,6 @@ func SpawnRouter(parent *goakt.PID) (*goakt.PID, error) {
 		)),
 	)
 }
-
-var ErrRestartNeeded = errors.New("failed to shake with peer, need to restart shaker")
 
 var _ goakt.Actor = (*Router)(nil)
 
@@ -183,7 +179,6 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.Pa
 					Payload: &channel.Packet_Answer{
 						Answer: &channel.Answer{
 							Success: false,
-							Data:    nil,
 						},
 					},
 				},
@@ -229,7 +224,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.Pa
 			return err
 		}
 		err = ctx.Self().Tell(ctx.Context(), pid, &shaker_rtc.OOnCandidate{
-			Candidate: payload.Candidate.Data,
+			Candidate: payload.Candidate.Candidate,
 		})
 		if err != nil {
 			return err
@@ -238,14 +233,14 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.Pa
 	return nil
 }
 
-func AskForAnswer(cid *goakt.PID, peerId string, connId string, restart bool, offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+func AskForAnswer(
+	cid *goakt.PID,
+	peerId string,
+	offer *channel.Offer,
+) (answer *channel.Answer, err error) {
 	_, rtr, err := cid.ActorSystem().ActorOf(context.Background(), "router")
 	if err != nil {
 		panic("unreachable")
-	}
-	offerBytes, err := json.Marshal(offer)
-	if err != nil {
-		return nil, err
 	}
 
 	ch := make(chan *channel.Answer, 1)
@@ -266,11 +261,7 @@ func AskForAnswer(cid *goakt.PID, peerId string, connId string, restart bool, of
 			From: Config.Id,
 			To:   peerId,
 			Payload: &channel.Packet_Offer{
-				Offer: &channel.Offer{
-					ConnId:  connId,
-					Restart: restart,
-					Data:    offerBytes,
-				},
+				Offer: offer,
 			},
 		},
 	})
@@ -280,15 +271,7 @@ func AskForAnswer(cid *goakt.PID, peerId string, connId string, restart bool, of
 
 	select {
 	case answer := <-ch:
-		if !answer.Success {
-			return nil, ErrRestartNeeded
-		}
-		desc := webrtc.SessionDescription{}
-		err = json.Unmarshal(answer.Data, &desc)
-		if err != nil {
-			return nil, err
-		}
-		return &desc, nil
+		return answer, nil
 	case <-time.After(Config.ShakeTimeout):
 		return nil, errors.New("timeout waiting for answer")
 	}

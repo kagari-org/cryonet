@@ -2,32 +2,44 @@ package cryonet
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/router"
 	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
 	"github.com/kagari-org/cryonet/gen/channel"
-	"github.com/pion/webrtc/v4"
+	"github.com/kagari-org/wireguard-go/device"
+	"github.com/pion/ice/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 )
 
 type ShakerRTC struct {
-	peerId    string
-	connId    string
-	peer      *webrtc.PeerConnection
-	dc        *webrtc.DataChannel
+	peerId string
+	shaked atomic.Bool
+	sk     device.NoisePrivateKey
+
+	agent       *ice.Agent
+	localUfrag  string
+	localPwd    string
+	remoteUfrag string
+	remotePwd   string
+
 	timeoutId string
 }
 
 func SpawnShakerRTC(parent *goakt.PID, peerId string) (*goakt.PID, error) {
+	sk, err := GenWGPrivkey()
+	if err != nil {
+		return nil, err
+	}
 	return parent.SpawnChild(
 		context.Background(),
 		"shaker-rtc-"+peerId,
 		&ShakerRTC{
 			peerId: peerId,
+			sk:     sk,
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
@@ -42,11 +54,8 @@ func (s *ShakerRTC) PreStart(ctx *goakt.Context) error { return nil }
 
 func (s *ShakerRTC) PostStop(ctx *goakt.Context) error {
 	ctx.ActorSystem().CancelSchedule(s.timeoutId)
-	if s.dc != nil {
-		s.dc.Close()
-	}
-	if s.peer != nil {
-		s.peer.Close()
+	if s.agent != nil {
+		s.agent.Close()
 	}
 	return nil
 }
@@ -54,13 +63,6 @@ func (s *ShakerRTC) PostStop(ctx *goakt.Context) error {
 func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		if err := s.init(ctx); err != nil {
-			ctx.Err(err)
-			return
-		}
-		ctx.Tell(ctx.Self(), &shaker_rtc.IShake{})
-	case *shaker_rtc.IShake:
-		ctx.ActorSystem().CancelSchedule(s.timeoutId)
 		s.timeoutId = uuid.NewString()
 		ctx.ActorSystem().ScheduleOnce(
 			context.Background(),
@@ -69,94 +71,212 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			Config.ShakeTimeout,
 			goakt.WithReference(s.timeoutId),
 		)
-		if !IsMaster(s.peerId) {
-			return
+
+		self := ctx.Self()
+		_, rtr, err := ctx.ActorSystem().ActorOf(ctx.Context(), "router")
+		if err != nil {
+			panic("unreachable")
 		}
-		err := s.master(ctx, msg.Restart)
-		if errors.Is(err, ErrRestartNeeded) {
+
+		agent, err := ice.NewAgent(&ice.AgentConfig{
+			Urls: GetICEServers(),
+			NetworkTypes: []ice.NetworkType{
+				ice.NetworkTypeUDP4,
+				ice.NetworkTypeUDP6,
+			},
+		})
+		if err != nil {
 			ctx.Err(err)
 			return
 		}
+		s.agent = agent
+
+		agent.OnConnectionStateChange(func(state ice.ConnectionState) {
+			check := func(err error) bool {
+				if err != nil {
+					self.Logger().Error(err)
+					err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+					if err != nil {
+						self.Logger().Error(err)
+					}
+					return false
+				}
+				return true
+			}
+			self.Logger().Debug("ice state changed: ", state.String())
+			if state == ice.ConnectionStateDisconnected || state == ice.ConnectionStateFailed {
+				if !s.shaked.Load() {
+					self.Logger().Error("ice connection failed before shaked")
+					err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+					if err != nil {
+						self.Logger().Error(err)
+					}
+					return
+				}
+				if !check(agent.Restart(s.localUfrag, s.localPwd)) {
+					return
+				}
+				if !check(agent.SetRemoteCredentials(s.remoteUfrag, s.remotePwd)) {
+					return
+				}
+				if !check(s.agent.GatherCandidates()) {
+					return
+				}
+			}
+		})
+
+		agent.OnCandidate(func(c ice.Candidate) {
+			if c == nil {
+				return
+			}
+			candidate := c.Marshal()
+			self.Logger().Debug("new ice candidate: ", candidate)
+			err = self.Tell(context.Background(), rtr, &router.OSendPacket{
+				Link: router.Link_ANY,
+				Packet: &channel.Packet{
+					From: Config.Id,
+					To:   s.peerId,
+					Payload: &channel.Packet_Candidate{
+						Candidate: &channel.Candidate{
+							Candidate: candidate,
+						},
+					},
+				},
+			})
+			if err != nil {
+				self.Logger().Error(err)
+			}
+		})
+
+		err = agent.GatherCandidates()
 		if err != nil {
-			ctx.Logger().Error("failed to shake with peer: ", err)
+			ctx.Err(err)
 			return
 		}
-		ctx.Tell(ctx.Self(), &shaker_rtc.IDataChannelSet{})
+
+		if IsMaster(s.peerId) {
+			pk := GenWGPubkey(&s.sk)
+			ufrag, pwd, err := s.agent.GetLocalUserCredentials()
+			if err != nil {
+				ctx.Err(err)
+				return
+			}
+
+			answer, err := AskForAnswer(ctx.Self(), s.peerId, &channel.Offer{
+				Ufrag:  ufrag,
+				Pwd:    pwd,
+				Pubkey: pk[:],
+			})
+			if err != nil {
+				ctx.Err(err)
+				return
+			}
+			if !answer.Success {
+				ctx.Err(errors.New("need to reshake"))
+				return
+			}
+
+			s.localUfrag = ufrag
+			s.localPwd = pwd
+			s.remoteUfrag = answer.Ufrag
+			s.remotePwd = answer.Pwd
+			s.shaked.Store(true)
+
+			go func() {
+				conn, err := s.agent.Dial(context.Background(), s.remoteUfrag, s.remotePwd)
+				if err != nil {
+					self.Logger().Error("failed to dial: ", err)
+					err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+					if err != nil {
+						self.Logger().Error(err)
+					}
+					return
+				}
+				self.ActorSystem().CancelSchedule(s.timeoutId)
+				_, err = SpawnRTCPeer(self, s.peerId, conn)
+				if err != nil {
+					self.Logger().Error("failed to spawn rtc peer: ", err)
+					err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+					if err != nil {
+						self.Logger().Error(err)
+					}
+					return
+				}
+			}()
+		}
 	case *shaker_rtc.OStop:
 		ctx.Err(errors.New("stop shaker " + s.peerId))
 	case *shaker_rtc.OOnOffer:
 		if IsMaster(s.peerId) {
 			panic("unreachable")
 		}
-		if msg.Offer.Restart && s.connId != msg.Offer.ConnId {
+
+		if s.shaked.Load() {
 			ctx.Response(&shaker_rtc.OOnOfferResponse{
 				Answer: &channel.Answer{
 					Success: false,
-					Data:    nil,
 				},
 			})
-			return
-		}
-		if !msg.Offer.Restart && s.connId != "" {
-			// remote actor restarted
-			ctx.Response(&shaker_rtc.OOnOfferResponse{
-				Answer: &channel.Answer{
-					Success: false,
-					Data:    nil,
-				},
-			})
-			ctx.Err(errors.New("remote actor restarted, restart self now"))
+			ctx.Err(errors.New("remote restarted, restart self now"))
 			return
 		}
 
-		s.connId = msg.Offer.ConnId
-		offer := webrtc.SessionDescription{}
-		err := json.Unmarshal(msg.Offer.Data, &offer)
+		pk := GenWGPubkey(&s.sk)
+		ufrag, pwd, err := s.agent.GetLocalUserCredentials()
 		if err != nil {
 			ctx.Err(err)
 			return
 		}
-		answer, err := s.slave(&offer)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
-		answerBytes, err := json.Marshal(answer)
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
+		s.localUfrag = ufrag
+		s.localPwd = pwd
+		s.remoteUfrag = msg.Offer.Ufrag
+		s.remotePwd = msg.Offer.Pwd
+
+		s.shaked.Store(true)
+
 		ctx.Response(&shaker_rtc.OOnOfferResponse{
 			Answer: &channel.Answer{
 				Success: true,
-				Data:    answerBytes,
+				Ufrag:   ufrag,
+				Pwd:     pwd,
+				Pubkey:  pk[:],
 			},
 		})
+
+		self := ctx.Self()
+		go func() {
+			conn, err := s.agent.Accept(context.Background(), s.remoteUfrag, s.remotePwd)
+			if err != nil {
+				self.Logger().Error("failed to dial: ", err)
+				err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+				if err != nil {
+					self.Logger().Error(err)
+				}
+				return
+			}
+			self.ActorSystem().CancelSchedule(s.timeoutId)
+			_, err = SpawnRTCPeer(self, s.peerId, conn)
+			if err != nil {
+				self.Logger().Error("failed to spawn rtc peer: ", err)
+				err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+				if err != nil {
+					self.Logger().Error(err)
+				}
+				return
+			}
+		}()
 	case *shaker_rtc.OOnCandidate:
-		candidate := webrtc.ICECandidateInit{}
-		err := json.Unmarshal(msg.Candidate, &candidate)
+		candidate, err := ice.UnmarshalCandidate(msg.Candidate)
 		if err != nil {
 			ctx.Logger().Error("failed to unmarshal candidate: ", err)
 			return
 		}
 		ctx.Logger().Debug("adding ice candidate: ", candidate)
-		err = s.peer.AddICECandidate(candidate)
+		err = s.agent.AddRemoteCandidate(candidate)
 		if err != nil {
 			ctx.Logger().Error("failed to add ice candidate: ", err)
 			return
 		}
-	case *shaker_rtc.IDataChannelSet:
-		ctx.ActorSystem().CancelSchedule(s.timeoutId)
-		if s.dc == nil {
-			panic("unreachable")
-		}
-		self := ctx.Self()
-		s.dc.OnOpen(func() {
-			_, err := SpawnRTCPeer(self, s.peerId, s.dc)
-			if err != nil {
-				self.Logger().Error(err)
-			}
-		})
 	case *goaktpb.Mayday:
 		ctx.Logger().Error("peer "+ctx.Sender().Name()+" failed: ", msg.GetMessage())
 		ctx.Stop(ctx.Sender())
@@ -164,135 +284,4 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 	default:
 		ctx.Unhandled()
 	}
-}
-
-func (s *ShakerRTC) init(ctx *goakt.ReceiveContext) error {
-	self := ctx.Self()
-	_, rtr, err := ctx.ActorSystem().ActorOf(ctx.Context(), "router")
-	if err != nil {
-		panic("unreachable")
-	}
-
-	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{
-		ICEServers: GetICEServers(),
-	})
-	if err != nil {
-		return err
-	}
-	s.peer = peer
-
-	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		self.Logger().Debug("rtc state changed: ", state.String())
-		if state == webrtc.PeerConnectionStateFailed {
-			err := self.Tell(context.Background(), self, &shaker_rtc.IShake{
-				Restart: true,
-			})
-			if err != nil {
-				self.Logger().Error(err)
-			}
-		}
-	})
-
-	peer.OnICECandidate(func(candidate *webrtc.ICECandidate) {
-		if candidate == nil {
-			return
-		}
-		self.Logger().Debug("new ice candidate: ", candidate.String())
-		candidateBytes, err := json.Marshal(candidate.ToJSON())
-		if err != nil {
-			self.Logger().Error("failed to marshal candidate: ", err)
-			return
-		}
-		err = self.Tell(context.Background(), rtr, &router.OSendPacket{
-			Link: router.Link_ANY,
-			Packet: &channel.Normal{
-				From: Config.Id,
-				To:   s.peerId,
-				Payload: &channel.Normal_Candidate{
-					Candidate: &channel.Candidate{
-						Data: candidateBytes,
-					},
-				},
-			},
-		})
-		if err != nil {
-			self.Logger().Error(err)
-		}
-	})
-
-	master := IsMaster(s.peerId)
-	peer.OnDataChannel(func(dc *webrtc.DataChannel) {
-		if master {
-			panic("unreachable")
-		}
-		s.dc = dc
-		err := self.Tell(context.Background(), self, &shaker_rtc.IDataChannelSet{})
-		if err != nil {
-			self.Logger().Error(err)
-		}
-	})
-
-	if master {
-		s.connId = uuid.NewString()
-		dc, err := peer.CreateDataChannel("dc", nil)
-		if err != nil {
-			return err
-		}
-		s.dc = dc
-		err = self.Tell(ctx.Context(), ctx.Self(), &shaker_rtc.IDataChannelSet{})
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (s *ShakerRTC) master(ctx *goakt.ReceiveContext, restart bool) error {
-	if s.peer == nil || s.dc == nil {
-		panic("unreachable")
-	}
-
-	offer, err := s.peer.CreateOffer(&webrtc.OfferOptions{
-		ICERestart: restart,
-	})
-	if err != nil {
-		return err
-	}
-	err = s.peer.SetLocalDescription(offer)
-	if err != nil {
-		return err
-	}
-	// this calls peer's s.slave()
-	answer, err := AskForAnswer(ctx.Self(), s.peerId, s.connId, restart, &offer)
-	if err != nil {
-		return err
-	}
-	err = s.peer.SetRemoteDescription(*answer)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (s *ShakerRTC) slave(offer *webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
-	if s.peer == nil {
-		panic("unreachable")
-	}
-
-	err := s.peer.SetRemoteDescription(*offer)
-	if err != nil {
-		return nil, err
-	}
-	answer, err := s.peer.CreateAnswer(nil)
-	if err != nil {
-		return nil, err
-	}
-	err = s.peer.SetLocalDescription(answer)
-	if err != nil {
-		return nil, err
-	}
-
-	return &answer, nil
 }
