@@ -24,10 +24,9 @@ var Config struct {
 	ShakeTimeout  time.Duration `env:"SHAKE_TIMEOUT" default:"5m"`
 	PeerTimeout   time.Duration `env:"PEER_TIMEOUT" default:"5m"`
 
-	InterfacePrefixWS       string `env:"INTERFACE_PREFIX" default:"cnw"`
-	InterfacePrefixICE      string `env:"INTERFACE_PREFIX" default:"cnr"`
+	InterfacePrefix         string `env:"INTERFACE_PREFIX" default:"cn"`
 	EnablePacketInformation bool   `env:"ENABLE_PACKET_INFORMATION" default:"true"`
-	BufSize                 int    `env:"BUF_SIZE" default:"16004"`
+	BufSize                 int    `env:"BUF_SIZE" default:"1420"`
 }
 
 type Cryonet struct{}

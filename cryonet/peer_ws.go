@@ -56,7 +56,7 @@ func (p *PeerWS) PostStop(ctx *goakt.Context) error {
 func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		go p.wsRead(ctx.Self())
+		go p.read(ctx.Self())
 	case *peer.IRecvPacket:
 		packet := &channel.Packet{}
 		err := proto.Unmarshal(msg.Packet, packet)
@@ -87,7 +87,7 @@ func (p *PeerWS) Receive(ctx *goakt.ReceiveContext) {
 	}
 }
 
-func (p *PeerWS) wsRead(self *goakt.PID) {
+func (p *PeerWS) read(self *goakt.PID) {
 	for {
 		if !self.IsRunning() {
 			break

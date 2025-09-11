@@ -83,7 +83,7 @@ func (p *PeerICE) Receive(ctx *goakt.ReceiveContext) {
 	case *goaktpb.PostStart:
 		p.self = ctx.Self()
 
-		tun, err := CreateTun(Config.InterfacePrefixICE + p.peerId)
+		tun, err := CreateTun(Config.InterfacePrefix + p.peerId)
 		if err != nil {
 			ctx.Err(err)
 			return
