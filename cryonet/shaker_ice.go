@@ -103,7 +103,7 @@ func (s *ShakerICE) Receive(ctx *goakt.ReceiveContext) {
 				}
 				return true
 			}
-			self.Logger().Debug("ice state changed: ", state.String())
+			self.Logger().Info("ice state changed: ", state.String())
 			if state == ice.ConnectionStateDisconnected || state == ice.ConnectionStateFailed {
 				if !s.shaked.Load() {
 					self.Logger().Error("ice connection failed before shaked")

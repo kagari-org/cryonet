@@ -20,15 +20,17 @@ var Config struct {
 
 	IceServers []string `env:"ICE_SERVERS" default:"stun:stun.l.google.com"`
 
-	CheckInterval time.Duration `env:"CHECK_INTERVAL" default:"10s"`
-	ShakeTimeout  time.Duration `env:"SHAKE_TIMEOUT" default:"5m"`
-	PeerTimeout   time.Duration `env:"PEER_TIMEOUT" default:"5m"`
+	CheckInterval time.Duration `env:"CHECK_INTERVAL" default:"5s"`
+	ShakeTimeout  time.Duration `env:"SHAKE_TIMEOUT" default:"3m"`
+	PeerTimeout   time.Duration `env:"PEER_TIMEOUT" default:"30s"`
 
 	InterfacePrefix         string `env:"INTERFACE_PREFIX" default:"cn"`
 	EnablePacketInformation bool   `env:"ENABLE_PACKET_INFORMATION" default:"true"`
 	BufSize                 int    `env:"BUF_SIZE" default:"1420"`
 
 	EnableWireGuardUAPI bool `env:"ENABLE_WIREGUARD_UAPI" default:"true"`
+
+	Verbose bool `short:"v" env:"VERBOSE" default:"false"`
 }
 
 type Cryonet struct{}
@@ -63,9 +65,14 @@ func Main() {
 
 	ctx := context.Background()
 
+	level := log.InfoLevel
+	if Config.Verbose {
+		level = log.DebugLevel
+	}
+
 	system, err := goakt.NewActorSystem(
 		"CryonetSystem",
-		goakt.WithLogger(log.New(log.DebugLevel, os.Stderr)),
+		goakt.WithLogger(log.New(level, os.Stderr)),
 	)
 	if err != nil {
 		system.Logger().Fatal(err)
