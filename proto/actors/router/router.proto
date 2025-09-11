@@ -19,9 +19,9 @@ enum Link {
 message OSendPacket {
   Link           link         = 1;
   string         specific_pid = 2;
-  channel.Normal packet       = 3;
+  channel.Packet packet       = 3;
 }
 
 message ORecvPacket {
-  channel.Normal packet = 1;
+  channel.Packet packet = 1;
 }

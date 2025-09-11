@@ -9,13 +9,6 @@ message Init {
 }
 
 message Packet {
-  oneof packet {
-    Normal normal = 1;
-    Direct direct = 2;
-  }
-}
-
-message Normal {
   string from      = 2;
   string to        = 3;
   oneof  payload {
@@ -25,13 +18,6 @@ message Normal {
     Candidate   candidate   = 7;
   }
 }
-
-message Direct {
-  bytes data = 1;
-}
-
-
-// payloads for normal packets
 
 message Alive {
   repeated string peers = 1;

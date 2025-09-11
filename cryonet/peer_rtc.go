@@ -4,29 +4,39 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/actors/router"
 	"github.com/kagari-org/cryonet/gen/channel"
-	"github.com/pion/webrtc/v4"
+	"github.com/kagari-org/wireguard-go/conn"
+	"github.com/kagari-org/wireguard-go/device"
+	"github.com/kagari-org/wireguard-go/tun"
+	"github.com/pion/ice/v4"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	"github.com/tochemey/goakt/v3/goaktpb"
 	"google.golang.org/protobuf/proto"
 )
 
 type PeerRTC struct {
+	self *goakt.PID
+
 	peerId string
-	dc     *webrtc.DataChannel
+	conn   *ice.Conn
 	tun    *os.File
+
+	wgDev *device.Device
+	user  chan []byte
 }
 
-func SpawnRTCPeer(parent *goakt.PID, peerId string, dc *webrtc.DataChannel) (*goakt.PID, error) {
+func SpawnRTCPeer(parent *goakt.PID, peerId string, conn *ice.Conn) (*goakt.PID, error) {
 	return parent.SpawnChild(
 		context.Background(),
 		"peer-rtc-"+peerId,
 		&PeerRTC{
 			peerId: peerId,
-			dc:     dc,
+			conn:   conn,
+			user:   make(chan []byte, 16),
 		},
 		goakt.WithLongLived(),
 		goakt.WithSupervisor(goakt.NewSupervisor(
@@ -36,15 +46,20 @@ func SpawnRTCPeer(parent *goakt.PID, peerId string, dc *webrtc.DataChannel) (*go
 }
 
 var _ goakt.Actor = (*PeerRTC)(nil)
+var _ tun.Device = (*PeerRTC)(nil)
+var _ conn.Bind = (*PeerRTC)(nil)
 
 func (p *PeerRTC) PreStart(ctx *goakt.Context) error { return nil }
 
 func (p *PeerRTC) PostStop(ctx *goakt.Context) error {
-	if p.dc != nil {
-		p.dc.Close()
+	if p.conn != nil {
+		p.conn.Close()
 	}
 	if p.tun != nil {
 		p.tun.Close()
+	}
+	if p.wgDev != nil {
+		p.wgDev.Close()
 	}
 	return nil
 }
@@ -52,7 +67,7 @@ func (p *PeerRTC) PostStop(ctx *goakt.Context) error {
 func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		self := ctx.Self()
+		p.self = ctx.Self()
 
 		tun, err := CreateTun(Config.InterfacePrefixRTC + p.peerId)
 		if err != nil {
@@ -61,116 +76,139 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 		}
 		p.tun = tun
 
-		p.dc.OnClose(func() {
-			self.Logger().Debug("data channel closed")
-			err := self.Tell(context.Background(), self, &peer.OStop{})
-			if err != nil {
-				self.Logger().Error(err)
-			}
-		})
-
-		p.rtcRead(ctx.Self())
-		go p.tunRead(ctx.Self())
+		wgDev := device.NewDevice(p, p, device.NewLogger(device.LogLevelError, p.peerId))
+		p.wgDev = wgDev
+		err = wgDev.Up()
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
 	case *peer.IRecvPacket:
+		packet := &channel.Packet{}
+		err := proto.Unmarshal(msg.Packet, packet)
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
 		_, rtr, err := ctx.ActorSystem().ActorOf(ctx.Context(), "router")
 		if err != nil {
 			ctx.Err(err)
 			return
 		}
 		ctx.Tell(rtr, &router.ORecvPacket{
-			Packet: msg.Packet,
+			Packet: packet,
 		})
 	case *peer.OStop:
 		ctx.Err(errors.New("stop peer"))
 	case *peer.OSendPacket:
-		data, err := proto.Marshal(&channel.Packet{
-			Packet: &channel.Packet_Normal{
-				Normal: msg.Packet,
-			},
-		})
+		data, err := proto.Marshal(msg.Packet)
 		if err != nil {
 			ctx.Err(err)
 			return
 		}
-		err = p.dc.Send(data)
-		if err != nil {
-			ctx.Logger().Error(err)
+		if len(data) > Config.BufSize {
+			ctx.Err(errors.New("packet too large"))
 			return
 		}
+		p.user <- data
 	default:
 		ctx.Unhandled()
 	}
 }
 
-func (p *PeerRTC) rtcRead(self *goakt.PID) {
-	p.dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		if !self.IsRunning() {
-			return
-		}
-		packet := &channel.Packet{}
-		err := proto.Unmarshal(msg.Data, packet)
-		if err != nil {
-			self.Logger().Error(err)
-			return
-		}
-		switch packet := packet.Packet.(type) {
-		case *channel.Packet_Direct:
-			_, err := p.tun.Write(packet.Direct.Data)
-			if err != nil {
-				self.Logger().Error(err)
-			}
-		case *channel.Packet_Normal:
-			err := self.Tell(
-				context.Background(),
-				self,
-				&peer.IRecvPacket{
-					Packet: packet.Normal,
-				},
-			)
-			if err != nil {
-				self.Logger().Error(err)
-			}
-		default:
-			panic("unreachable")
-		}
-	})
+// tun.Device implementation
+func (p *PeerRTC) BatchSize() int           { return 1 }
+func (p *PeerRTC) Close() error             { return nil }
+func (p *PeerRTC) Events() <-chan tun.Event { return nil }
+func (p *PeerRTC) File() *os.File           { return p.tun }
+func (p *PeerRTC) MTU() (int, error)        { return Config.BufSize, nil }
+func (p *PeerRTC) Name() (string, error)    { return p.peerId, nil }
+
+func (p *PeerRTC) Read(bufs [][]byte, sizes []int, users []bool, offset int) (int, error) {
+	select {
+	case user := <-p.user:
+		copy(bufs[0][:offset], user)
+		sizes[0] = len(user)
+		users[0] = true
+		return 1, nil
+	default:
+	}
+
+	err := p.tun.SetReadDeadline(time.Now().Add((time.Millisecond * 500)))
+	if err != nil {
+		panic(err)
+	}
+	n, err := p.tun.Read(bufs[0][offset:])
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	sizes[0] = n
+	return 1, nil
 }
 
-func (p *PeerRTC) tunRead(self *goakt.PID) {
-	data := make([]byte, Config.BufSize)
-	for {
-		if !self.IsRunning() {
-			break
-		}
-		n, err := p.tun.Read(data)
-		if errors.Is(err, os.ErrClosed) || errors.Is(err, os.ErrInvalid) {
-			self.Logger().Error(err)
-			err := self.Tell(context.Background(), self, &peer.OStop{})
+func (p *PeerRTC) Write(bufs [][]byte, users []bool, offset int) (int, error) {
+	sent := 0
+	var e error
+	for i, buf := range bufs {
+		if users[i] {
+			err := p.self.Tell(context.Background(), p.self, &peer.IRecvPacket{
+				Packet: bufs[i][offset:],
+			})
 			if err != nil {
-				self.Logger().Error(err)
+				if e == nil {
+					e = err
+				} else {
+					e = errors.Join(e, err)
+				}
+				continue
 			}
-			break
-		}
-		if err != nil {
-			self.Logger().Error(err)
-			continue
-		}
-		packet := &channel.Packet{
-			Packet: &channel.Packet_Direct{
-				Direct: &channel.Direct{
-					Data: data[:n],
-				},
-			},
-		}
-		data, err := proto.Marshal(packet)
-		if err != nil {
-			self.Logger().Error(err)
-			continue
-		}
-		err = p.dc.Send(data)
-		if err != nil {
-			self.Logger().Error(err)
-			continue
+			sent++
+		} else {
+			_, err := p.tun.Write(buf[offset:])
+			if err != nil {
+				if e == nil {
+					e = err
+				} else {
+					e = errors.Join(e, err)
+				}
+				continue
+			}
+			sent++
 		}
 	}
+	return sent, e
+}
+
+// conn.Bind implementation
+func (p *PeerRTC) SetMark(mark uint32) error                     { return nil }
+func (p *PeerRTC) ParseEndpoint(s string) (conn.Endpoint, error) { return &conn.StdNetEndpoint{}, nil }
+
+func (p *PeerRTC) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint16, err error) {
+	f := func(packets [][]byte, sizes []int, eps []conn.Endpoint) (n int, err error) {
+		rn, rerr := p.conn.Read(packets[0])
+		if rerr != nil {
+			return 0, rerr
+		}
+		sizes[0] = rn
+		return 1, nil
+	}
+	return []conn.ReceiveFunc{f}, 0, nil
+}
+
+func (p *PeerRTC) Send(bufs [][]byte, ep conn.Endpoint) error {
+	var e error
+	for _, buf := range bufs {
+		_, err := p.conn.Write(buf)
+		if err != nil {
+			if e == nil {
+				e = err
+			} else {
+				e = errors.Join(e, err)
+			}
+		}
+	}
+	return e
 }
