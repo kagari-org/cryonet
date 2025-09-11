@@ -10,7 +10,7 @@ import (
 	"github.com/kagari-org/cryonet/gen/actors/controller"
 	"github.com/kagari-org/cryonet/gen/actors/peer"
 	"github.com/kagari-org/cryonet/gen/actors/router"
-	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
+	"github.com/kagari-org/cryonet/gen/actors/shaker_ice"
 	"github.com/kagari-org/cryonet/gen/channel"
 	goakt "github.com/tochemey/goakt/v3/actor"
 	gerrors "github.com/tochemey/goakt/v3/errors"
@@ -79,13 +79,13 @@ func (r *Router) Receive(ctx *goakt.ReceiveContext) {
 				ctx.Tell(ws, &peer.OSendPacket{Packet: data})
 				return
 			}
-			_, rtc, err := ctx.ActorSystem().ActorOf(ctx.Context(), "peer-rtc-"+msg.Packet.To)
+			_, ice, err := ctx.ActorSystem().ActorOf(ctx.Context(), "peer-ice-"+msg.Packet.To)
 			if err != nil && !errors.Is(err, gerrors.ErrActorNotFound) {
 				ctx.Err(err)
 				return
 			}
 			if err == nil {
-				ctx.Tell(rtc, &peer.OSendPacket{Packet: data})
+				ctx.Tell(ice, &peer.OSendPacket{Packet: data})
 				return
 			}
 			if msg.Link == router.Link_LOCAL {
@@ -168,7 +168,7 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.Pa
 		if IsMaster(packet.From) {
 			panic("unreachable")
 		}
-		_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-rtc-"+packet.From)
+		_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-ice-"+packet.From)
 		if err != nil {
 			// tell master to restart shaker to retry
 			err := ctx.Self().Tell(ctx.Context(), ctx.Self(), &router.OSendPacket{
@@ -185,13 +185,13 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.Pa
 			})
 			return err
 		}
-		response, err := ctx.Self().Ask(ctx.Context(), pid, &shaker_rtc.OOnOffer{
+		response, err := ctx.Self().Ask(ctx.Context(), pid, &shaker_ice.OOnOffer{
 			Offer: payload.Offer,
 		}, time.Second*5)
 		if err != nil {
 			return err
 		}
-		res := response.(*shaker_rtc.OOnOfferResponse)
+		res := response.(*shaker_ice.OOnOfferResponse)
 		err = ctx.Self().Tell(ctx.Context(), ctx.Self(), &router.OSendPacket{
 			Link: router.Link_ANY,
 			Packet: &channel.Packet{
@@ -219,11 +219,11 @@ func (r *Router) handleLocalPacket(ctx *goakt.ReceiveContext, packet *channel.Pa
 		}
 		ch <- payload.Answer
 	case *channel.Packet_Candidate:
-		_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-rtc-"+packet.From)
+		_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-ice-"+packet.From)
 		if err != nil {
 			return err
 		}
-		err = ctx.Self().Tell(ctx.Context(), pid, &shaker_rtc.OOnCandidate{
+		err = ctx.Self().Tell(ctx.Context(), pid, &shaker_ice.OOnCandidate{
 			Candidate: payload.Candidate.Candidate,
 		})
 		if err != nil {

@@ -25,7 +25,7 @@ var Config struct {
 	PeerTimeout   time.Duration `env:"PEER_TIMEOUT" default:"5m"`
 
 	InterfacePrefixWS       string `env:"INTERFACE_PREFIX" default:"cnw"`
-	InterfacePrefixRTC      string `env:"INTERFACE_PREFIX" default:"cnr"`
+	InterfacePrefixICE      string `env:"INTERFACE_PREFIX" default:"cnr"`
 	EnablePacketInformation bool   `env:"ENABLE_PACKET_INFORMATION" default:"true"`
 	BufSize                 int    `env:"BUF_SIZE" default:"16004"`
 }

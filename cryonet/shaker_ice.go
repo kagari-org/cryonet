@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kagari-org/cryonet/gen/actors/router"
-	"github.com/kagari-org/cryonet/gen/actors/shaker_rtc"
+	"github.com/kagari-org/cryonet/gen/actors/shaker_ice"
 	"github.com/kagari-org/cryonet/gen/channel"
 	"github.com/kagari-org/wireguard-go/device"
 	"github.com/pion/ice/v4"
@@ -15,7 +15,7 @@ import (
 	"github.com/tochemey/goakt/v3/goaktpb"
 )
 
-type ShakerRTC struct {
+type ShakerICE struct {
 	peerId string
 	shaked atomic.Bool
 	sk     device.NoisePrivateKey
@@ -29,15 +29,15 @@ type ShakerRTC struct {
 	timeoutId string
 }
 
-func SpawnShakerRTC(parent *goakt.PID, peerId string) (*goakt.PID, error) {
+func SpawnShakerICE(parent *goakt.PID, peerId string) (*goakt.PID, error) {
 	sk, err := GenWGPrivkey()
 	if err != nil {
 		return nil, err
 	}
 	return parent.SpawnChild(
 		context.Background(),
-		"shaker-rtc-"+peerId,
-		&ShakerRTC{
+		"shaker-ice-"+peerId,
+		&ShakerICE{
 			peerId: peerId,
 			sk:     sk,
 		},
@@ -48,11 +48,11 @@ func SpawnShakerRTC(parent *goakt.PID, peerId string) (*goakt.PID, error) {
 	)
 }
 
-var _ goakt.Actor = (*ShakerRTC)(nil)
+var _ goakt.Actor = (*ShakerICE)(nil)
 
-func (s *ShakerRTC) PreStart(ctx *goakt.Context) error { return nil }
+func (s *ShakerICE) PreStart(ctx *goakt.Context) error { return nil }
 
-func (s *ShakerRTC) PostStop(ctx *goakt.Context) error {
+func (s *ShakerICE) PostStop(ctx *goakt.Context) error {
 	ctx.ActorSystem().CancelSchedule(s.timeoutId)
 	if s.agent != nil {
 		s.agent.Close()
@@ -60,13 +60,13 @@ func (s *ShakerRTC) PostStop(ctx *goakt.Context) error {
 	return nil
 }
 
-func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
+func (s *ShakerICE) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
 		s.timeoutId = uuid.NewString()
 		ctx.ActorSystem().ScheduleOnce(
 			context.Background(),
-			&shaker_rtc.OStop{},
+			&shaker_ice.OStop{},
 			ctx.Self(),
 			Config.ShakeTimeout,
 			goakt.WithReference(s.timeoutId),
@@ -95,7 +95,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			check := func(err error) bool {
 				if err != nil {
 					self.Logger().Error(err)
-					err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+					err := self.Tell(context.Background(), self, &shaker_ice.OStop{})
 					if err != nil {
 						self.Logger().Error(err)
 					}
@@ -107,7 +107,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			if state == ice.ConnectionStateDisconnected || state == ice.ConnectionStateFailed {
 				if !s.shaked.Load() {
 					self.Logger().Error("ice connection failed before shaked")
-					err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+					err := self.Tell(context.Background(), self, &shaker_ice.OStop{})
 					if err != nil {
 						self.Logger().Error(err)
 					}
@@ -186,17 +186,17 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 				conn, err := s.agent.Dial(context.Background(), s.remoteUfrag, s.remotePwd)
 				if err != nil {
 					self.Logger().Error("failed to dial: ", err)
-					err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+					err := self.Tell(context.Background(), self, &shaker_ice.OStop{})
 					if err != nil {
 						self.Logger().Error(err)
 					}
 					return
 				}
 				self.ActorSystem().CancelSchedule(s.timeoutId)
-				_, err = SpawnRTCPeer(self, s.peerId, conn, s.sk, device.NoisePublicKey(answer.Pubkey))
+				_, err = SpawnICEPeer(self, s.peerId, conn, s.sk, device.NoisePublicKey(answer.Pubkey))
 				if err != nil {
-					self.Logger().Error("failed to spawn rtc peer: ", err)
-					err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+					self.Logger().Error("failed to spawn ice peer: ", err)
+					err := self.Tell(context.Background(), self, &shaker_ice.OStop{})
 					if err != nil {
 						self.Logger().Error(err)
 					}
@@ -204,15 +204,15 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 				}
 			}()
 		}
-	case *shaker_rtc.OStop:
+	case *shaker_ice.OStop:
 		ctx.Err(errors.New("stop shaker " + s.peerId))
-	case *shaker_rtc.OOnOffer:
+	case *shaker_ice.OOnOffer:
 		if IsMaster(s.peerId) {
 			panic("unreachable")
 		}
 
 		if s.shaked.Load() {
-			ctx.Response(&shaker_rtc.OOnOfferResponse{
+			ctx.Response(&shaker_ice.OOnOfferResponse{
 				Answer: &channel.Answer{
 					Success: false,
 				},
@@ -234,7 +234,7 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 
 		s.shaked.Store(true)
 
-		ctx.Response(&shaker_rtc.OOnOfferResponse{
+		ctx.Response(&shaker_ice.OOnOfferResponse{
 			Answer: &channel.Answer{
 				Success: true,
 				Ufrag:   ufrag,
@@ -248,24 +248,24 @@ func (s *ShakerRTC) Receive(ctx *goakt.ReceiveContext) {
 			conn, err := s.agent.Accept(context.Background(), s.remoteUfrag, s.remotePwd)
 			if err != nil {
 				self.Logger().Error("failed to dial: ", err)
-				err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+				err := self.Tell(context.Background(), self, &shaker_ice.OStop{})
 				if err != nil {
 					self.Logger().Error(err)
 				}
 				return
 			}
 			self.ActorSystem().CancelSchedule(s.timeoutId)
-			_, err = SpawnRTCPeer(self, s.peerId, conn, s.sk, device.NoisePublicKey(msg.Offer.Pubkey))
+			_, err = SpawnICEPeer(self, s.peerId, conn, s.sk, device.NoisePublicKey(msg.Offer.Pubkey))
 			if err != nil {
-				self.Logger().Error("failed to spawn rtc peer: ", err)
-				err := self.Tell(context.Background(), self, &shaker_rtc.OStop{})
+				self.Logger().Error("failed to spawn ice peer: ", err)
+				err := self.Tell(context.Background(), self, &shaker_ice.OStop{})
 				if err != nil {
 					self.Logger().Error(err)
 				}
 				return
 			}
 		}()
-	case *shaker_rtc.OOnCandidate:
+	case *shaker_ice.OOnCandidate:
 		candidate, err := ice.UnmarshalCandidate(msg.Candidate)
 		if err != nil {
 			ctx.Logger().Error("failed to unmarshal candidate: ", err)

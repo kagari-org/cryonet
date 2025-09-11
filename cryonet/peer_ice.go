@@ -21,7 +21,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type PeerRTC struct {
+type PeerICE struct {
 	self *goakt.PID
 
 	peerId string
@@ -34,7 +34,7 @@ type PeerRTC struct {
 	user  chan []byte
 }
 
-func SpawnRTCPeer(
+func SpawnICEPeer(
 	parent *goakt.PID,
 	peerId string,
 	conn *ice.Conn,
@@ -44,8 +44,8 @@ func SpawnRTCPeer(
 ) (*goakt.PID, error) {
 	return parent.SpawnChild(
 		context.Background(),
-		"peer-rtc-"+peerId,
-		&PeerRTC{
+		"peer-ice-"+peerId,
+		&PeerICE{
 			peerId: peerId,
 			conn:   conn,
 			user:   make(chan []byte, 16),
@@ -59,13 +59,13 @@ func SpawnRTCPeer(
 	)
 }
 
-var _ goakt.Actor = (*PeerRTC)(nil)
-var _ tun.Device = (*PeerRTC)(nil)
-var _ conn.Bind = (*PeerRTC)(nil)
+var _ goakt.Actor = (*PeerICE)(nil)
+var _ tun.Device = (*PeerICE)(nil)
+var _ conn.Bind = (*PeerICE)(nil)
 
-func (p *PeerRTC) PreStart(ctx *goakt.Context) error { return nil }
+func (p *PeerICE) PreStart(ctx *goakt.Context) error { return nil }
 
-func (p *PeerRTC) PostStop(ctx *goakt.Context) error {
+func (p *PeerICE) PostStop(ctx *goakt.Context) error {
 	if p.conn != nil {
 		p.conn.Close()
 	}
@@ -78,12 +78,12 @@ func (p *PeerRTC) PostStop(ctx *goakt.Context) error {
 	return nil
 }
 
-func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
+func (p *PeerICE) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
 		p.self = ctx.Self()
 
-		tun, err := CreateTun(Config.InterfacePrefixRTC + p.peerId)
+		tun, err := CreateTun(Config.InterfacePrefixICE + p.peerId)
 		if err != nil {
 			ctx.Err(err)
 			return
@@ -136,14 +136,14 @@ func (p *PeerRTC) Receive(ctx *goakt.ReceiveContext) {
 }
 
 // tun.Device implementation
-func (p *PeerRTC) BatchSize() int           { return 1 }
-func (p *PeerRTC) Close() error             { return nil }
-func (p *PeerRTC) Events() <-chan tun.Event { return nil }
-func (p *PeerRTC) File() *os.File           { return p.tun }
-func (p *PeerRTC) MTU() (int, error)        { return Config.BufSize, nil }
-func (p *PeerRTC) Name() (string, error)    { return p.peerId, nil }
+func (p *PeerICE) BatchSize() int           { return 1 }
+func (p *PeerICE) Close() error             { return nil }
+func (p *PeerICE) Events() <-chan tun.Event { return nil }
+func (p *PeerICE) File() *os.File           { return p.tun }
+func (p *PeerICE) MTU() (int, error)        { return Config.BufSize, nil }
+func (p *PeerICE) Name() (string, error)    { return p.peerId, nil }
 
-func (p *PeerRTC) Read(bufs [][]byte, sizes []int, users []bool, offset int) (int, error) {
+func (p *PeerICE) Read(bufs [][]byte, sizes []int, users []bool, offset int) (int, error) {
 	select {
 	case user := <-p.user:
 		binary.LittleEndian.PutUint32(bufs[0][offset:offset+4], uint32(len(user)))
@@ -170,7 +170,7 @@ func (p *PeerRTC) Read(bufs [][]byte, sizes []int, users []bool, offset int) (in
 	return 1, nil
 }
 
-func (p *PeerRTC) Write(bufs [][]byte, users []bool, offset int) (int, error) {
+func (p *PeerICE) Write(bufs [][]byte, users []bool, offset int) (int, error) {
 	sent := 0
 	var e error
 	for i, buf := range bufs {
@@ -205,10 +205,10 @@ func (p *PeerRTC) Write(bufs [][]byte, users []bool, offset int) (int, error) {
 }
 
 // conn.Bind implementation
-func (p *PeerRTC) SetMark(mark uint32) error                     { return nil }
-func (p *PeerRTC) ParseEndpoint(s string) (conn.Endpoint, error) { return &conn.StdNetEndpoint{}, nil }
+func (p *PeerICE) SetMark(mark uint32) error                     { return nil }
+func (p *PeerICE) ParseEndpoint(s string) (conn.Endpoint, error) { return &conn.StdNetEndpoint{}, nil }
 
-func (p *PeerRTC) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint16, err error) {
+func (p *PeerICE) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint16, err error) {
 	f := func(packets [][]byte, sizes []int, eps []conn.Endpoint) (n int, err error) {
 		rn, rerr := p.conn.Read(packets[0])
 		if rerr != nil {
@@ -221,7 +221,7 @@ func (p *PeerRTC) Open(port uint16) (fns []conn.ReceiveFunc, actualPort uint16, 
 	return []conn.ReceiveFunc{f}, 0, nil
 }
 
-func (p *PeerRTC) Send(bufs [][]byte, ep conn.Endpoint) error {
+func (p *PeerICE) Send(bufs [][]byte, ep conn.Endpoint) error {
 	var e error
 	for _, buf := range bufs {
 		_, err := p.conn.Write(buf)

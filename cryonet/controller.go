@@ -132,7 +132,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 			if id == Config.Id {
 				continue
 			}
-			_, _, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-rtc-"+id)
+			_, _, err := ctx.ActorSystem().ActorOf(ctx.Context(), "shaker-ice-"+id)
 			if err != nil && !errors.Is(err, gerrors.ErrActorNotFound) {
 				ctx.Err(err)
 				return
@@ -140,7 +140,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 			if err == nil {
 				continue
 			}
-			_, err = SpawnShakerRTC(ctx.Self(), id)
+			_, err = SpawnShakerICE(ctx.Self(), id)
 			if err != nil {
 				ctx.Err(err)
 				return

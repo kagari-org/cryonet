@@ -68,10 +68,10 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 						time:   time.Now(),
 					}
 				}
-			} else if rtc, ok := actor.Actor().(*PeerRTC); ok {
+			} else if ice, ok := actor.Actor().(*PeerICE); ok {
 				if _, ok := a.table[actor.Name()]; !ok {
 					a.table[actor.Name()] = &AliveItem{
-						peerId: rtc.peerId,
+						peerId: ice.peerId,
 						time:   time.Now(),
 					}
 				}
@@ -102,7 +102,7 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 			peers = append(peers, item.peerId)
 		}
 		ctx.Logger().Debug("sending alive ", peers)
-		// send alive packet to self to bootstrap rtc connections
+		// send alive packet to self to bootstrap ice connections
 		ctx.Tell(rtr, &router.OSendPacket{
 			Link: router.Link_ANY,
 			Packet: &channel.Packet{

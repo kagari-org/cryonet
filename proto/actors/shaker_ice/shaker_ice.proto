@@ -1,6 +1,6 @@
 syntax = "proto3";
-package actors.shaker_rtc;
-option go_package = "github.com/kagari-org/cryonet/gen/actors/shaker_rtc";
+package actors.shaker_ice;
+option go_package = "github.com/kagari-org/cryonet/gen/actors/shaker_ice";
 
 import "channel/channel.proto";
 
