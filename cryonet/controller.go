@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
@@ -110,7 +111,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				context, cancel := context.WithTimeout(ctx.Context(), Config.ShakeTimeout)
+				context, cancel := context.WithTimeout(ctx.Context(), 10*time.Second)
 				defer cancel()
 				conn, _, err := websocket.Dial(context, server, nil)
 				if err != nil {
