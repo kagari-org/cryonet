@@ -148,12 +148,6 @@ func (s *ShakerICE) Receive(ctx *goakt.ReceiveContext) {
 			}
 		})
 
-		err = agent.GatherCandidates()
-		if err != nil {
-			ctx.Err(err)
-			return
-		}
-
 		if IsMaster(s.peerId) {
 			pk := GenWGPubkey(&s.sk)
 			ufrag, pwd, err := s.agent.GetLocalUserCredentials()
@@ -181,6 +175,12 @@ func (s *ShakerICE) Receive(ctx *goakt.ReceiveContext) {
 			s.remoteUfrag = answer.Ufrag
 			s.remotePwd = answer.Pwd
 			s.shaked.Store(true)
+
+			err = agent.GatherCandidates()
+			if err != nil {
+				ctx.Err(err)
+				return
+			}
 
 			go func() {
 				conn, err := s.agent.Dial(context.Background(), s.remoteUfrag, s.remotePwd)
@@ -242,6 +242,12 @@ func (s *ShakerICE) Receive(ctx *goakt.ReceiveContext) {
 				Pubkey:  pk[:],
 			},
 		})
+
+		err = s.agent.GatherCandidates()
+		if err != nil {
+			ctx.Err(err)
+			return
+		}
 
 		self := ctx.Self()
 		go func() {
