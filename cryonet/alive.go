@@ -59,6 +59,7 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 			Config.CheckInterval,
 		)
 	case *alive.ICheck:
+		ctx.Logger().Debug("alive check")
 		actors := ctx.ActorSystem().Actors()
 		for _, actor := range actors {
 			if ws, ok := actor.Actor().(*PeerWS); ok {
@@ -117,6 +118,7 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 		})
 		// send alive to all peers
 		for pid, item := range a.table {
+			ctx.Logger().Debug("sending alive to ", pid)
 			ctx.Tell(rtr, &router.OSendPacket{
 				Link:        router.Link_SPECIFIC,
 				SpecificPid: pid,
@@ -132,6 +134,7 @@ func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
 			})
 		}
 	case *alive.OAlive:
+		ctx.Logger().Debug("alive from ", msg.From, ", pid ", msg.FromPid)
 		a.table[msg.FromPid] = &AliveItem{
 			peerId: msg.From,
 			time:   time.Now(),

@@ -96,6 +96,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 			goakt.WithReference(c.checkScheduleId),
 		)
 	case *controller.ICheck:
+		ctx.Logger().Debug("controller check")
 		// ws connect
 		wg := sync.WaitGroup{}
 		for i, server := range Config.WSServers {
@@ -126,6 +127,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 		}
 		wg.Wait()
 	case *controller.OAlive:
+		ctx.Logger().Debug("controller alive from ", msg.From, " peers: ", msg.Alive.Peers)
 		ids := append(msg.Alive.Peers, msg.From)
 		slices.Sort(ids)
 		ids = slices.Compact(ids)
@@ -150,6 +152,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 	case *goaktpb.Mayday:
 		ctx.Logger().Error("shaker "+ctx.Sender().Name()+" failed: ", msg.GetMessage())
 		ctx.Stop(ctx.Sender())
+		ctx.Logger().Debug("shaker " + ctx.Sender().Name() + " stopped")
 	default:
 		ctx.Unhandled()
 	}

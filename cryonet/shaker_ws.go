@@ -46,6 +46,7 @@ func (s *ShakerWS) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
+		// FIXME: reject connected peer by wslisten
 		s.peerId = peerId
 		_, err = SpawnWSPeer(ctx.Self(), s.peerId, s.conn)
 		if err != nil {
