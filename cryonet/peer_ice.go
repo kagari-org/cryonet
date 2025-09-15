@@ -88,7 +88,6 @@ func (p *PeerICE) PostStop(ctx *goakt.Context) error {
 func (p *PeerICE) Receive(ctx *goakt.ReceiveContext) {
 	switch msg := ctx.Message().(type) {
 	case *goaktpb.PostStart:
-		// TODO: add uapi
 		p.self = ctx.Self()
 
 		tun, err := CreateTun(Config.InterfacePrefix + p.peerId)

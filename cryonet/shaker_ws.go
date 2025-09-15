@@ -2,10 +2,14 @@ package cryonet
 
 import (
 	"context"
+	"errors"
+	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/kagari-org/cryonet/gen/channel"
 	goakt "github.com/tochemey/goakt/v3/actor"
+	gerrors "github.com/tochemey/goakt/v3/errors"
 	"github.com/tochemey/goakt/v3/goaktpb"
 	"google.golang.org/protobuf/proto"
 )
@@ -14,6 +18,8 @@ type ShakerWS struct {
 	conn   *websocket.Conn
 	peerId string
 }
+
+var peerLock sync.Mutex
 
 func SpawnShakerWS(parent *goakt.PID, suffix string, conn *websocket.Conn) (*goakt.PID, error) {
 	return parent.SpawnChild(
@@ -46,7 +52,25 @@ func (s *ShakerWS) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-		// FIXME: reject connected peer by wslisten
+		peerLock.Lock()
+		defer peerLock.Unlock()
+		_, _, err = ctx.ActorSystem().ActorOf(ctx.Context(), "peer-ws-"+peerId)
+		if err == nil {
+			s.conn.Close(websocket.StatusProtocolError, "duplicate connection")
+			peerLock.Unlock()
+			// avoid respawning too fast
+			time.Sleep(Config.ShakeTimeout)
+			ctx.Stop(ctx.Self())
+			return
+		}
+		if !errors.Is(err, gerrors.ErrActorNotFound) {
+			ctx.Err(err)
+			return
+		}
+		if !errors.Is(err, gerrors.ErrActorNotFound) {
+
+			return
+		}
 		s.peerId = peerId
 		_, err = SpawnWSPeer(ctx.Self(), s.peerId, s.conn)
 		if err != nil {
