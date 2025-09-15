@@ -2,10 +2,12 @@ package cryonet
 
 import (
 	"crypto/rand"
+	"net/netip"
 	"os"
 	"strings"
 
 	"github.com/kagari-org/wireguard-go/device"
+	"github.com/pion/ice/v4"
 	"github.com/pion/stun/v3"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/sys/unix"
@@ -34,6 +36,23 @@ func GetICEServers() []*stun.URI {
 		}
 	}
 	return ice_servers
+}
+
+func UseCandidate(candidate ice.Candidate) bool {
+	for _, item := range Config.FilteredPrefixes {
+		prefix, err := netip.ParsePrefix(item)
+		if err != nil {
+			panic(err)
+		}
+		ip, err := netip.ParseAddr(candidate.Address())
+		if err != nil {
+			return false
+		}
+		if prefix.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }
 
 func IsMaster(peerId string) bool {

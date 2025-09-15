@@ -18,7 +18,8 @@ var Config struct {
 	WSServers []string `env:"WS_SERVERS"`
 	Token     string   `env:"TOKEN"`
 
-	IceServers []string `env:"ICE_SERVERS" default:"stun:stun.l.google.com"`
+	IceServers       []string `env:"ICE_SERVERS" default:"stun:stun.l.google.com"`
+	FilteredPrefixes []string `env:"FILTERED_PREFIXES"`
 
 	CheckInterval time.Duration `env:"CHECK_INTERVAL" default:"5s"`
 	ShakeTimeout  time.Duration `env:"SHAKE_TIMEOUT" default:"3m"`

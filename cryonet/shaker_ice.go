@@ -277,6 +277,10 @@ func (s *ShakerICE) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Logger().Error("failed to unmarshal candidate: ", err)
 			return
 		}
+		if !UseCandidate(candidate) {
+			ctx.Logger().Info("candidate filtered: ", candidate)
+			return
+		}
 		ctx.Logger().Debug("adding ice candidate: ", candidate)
 		err = s.agent.AddRemoteCandidate(candidate)
 		if err != nil {
