@@ -157,7 +157,7 @@ func (p *PeerICE) Receive(ctx *goakt.ReceiveContext) {
 	case *peer.OStop:
 		ctx.Err(errors.New("stop peer"))
 	case *peer.OSendPacket:
-		if len(msg.Packet)+4 > Config.BufSize {
+		if len(msg.Packet) > Config.MTU {
 			ctx.Err(errors.New("packet too large"))
 			return
 		}
@@ -172,8 +172,15 @@ func (p *PeerICE) BatchSize() int           { return 1 }
 func (p *PeerICE) Close() error             { return nil }
 func (p *PeerICE) Events() <-chan tun.Event { return nil }
 func (p *PeerICE) File() *os.File           { return p.tun }
-func (p *PeerICE) MTU() (int, error)        { return Config.BufSize, nil }
 func (p *PeerICE) Name() (string, error)    { return p.peerId, nil }
+
+func (p *PeerICE) MTU() (int, error) {
+	if Config.EnablePacketInformation {
+		return Config.MTU + 4, nil
+	} else {
+		return Config.MTU, nil
+	}
+}
 
 func (p *PeerICE) Read(bufs [][]byte, sizes []int, users []bool, offset int) (int, error) {
 	select {

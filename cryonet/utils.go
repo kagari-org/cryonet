@@ -105,11 +105,7 @@ func CreateTun(name string) (*os.File, error) {
 		unix.Close(device)
 		return nil, err
 	}
-	mtu := Config.BufSize
-	if Config.EnablePacketInformation {
-		mtu -= 4
-	}
-	ifreq.SetUint32(uint32(mtu))
+	ifreq.SetUint32(uint32(Config.MTU))
 	if err := unix.IoctlIfreq(socket, unix.SIOCSIFMTU, ifreq); err != nil {
 		unix.Close(device)
 		return nil, err

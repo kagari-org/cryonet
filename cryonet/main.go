@@ -27,7 +27,8 @@ var Config struct {
 
 	InterfacePrefix         string `env:"INTERFACE_PREFIX" default:"cn"`
 	EnablePacketInformation bool   `env:"ENABLE_PACKET_INFORMATION" default:"true"`
-	BufSize                 int    `env:"BUF_SIZE" default:"1420"`
+	// The size of turn indication packets are unknown, so we use the min size for IPv6
+	MTU int `env:"MTU" default:"1280"`
 
 	EnableWireGuardUAPI bool `env:"ENABLE_WIREGUARD_UAPI" default:"true"`
 
