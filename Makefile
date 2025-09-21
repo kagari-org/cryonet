@@ -1,5 +1,3 @@
-PROTO_FILES := $(wildcard proto/**/*.proto)
-
 .PHONY: all
 all: proto
 	go build -o build/cryonet main.go
@@ -8,12 +6,9 @@ all: proto
 run: proto
 	go run main.go
 
-proto/.proto-codegen: $(PROTO_FILES)
-	cd proto && buf generate
-	touch proto/.proto-codegen
-
 .PHONY: proto
-proto: proto/.proto-codegen
+proto:
+	cd proto && buf generate
 
 .PHONY: clean
 clean:
