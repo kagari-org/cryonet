@@ -287,7 +287,7 @@ func (s *ShakerICE) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Logger().Error("failed to add ice candidate: ", err)
 			return
 		}
-	case *goaktpb.Mayday:
+	case *goaktpb.PanicSignal:
 		ctx.Logger().Error("peer "+ctx.Sender().Name()+" failed: ", msg.GetMessage())
 		ctx.Stop(ctx.Sender())
 		ctx.Stop(ctx.Self())

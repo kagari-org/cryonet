@@ -77,7 +77,7 @@ func (s *ShakerWS) Receive(ctx *goakt.ReceiveContext) {
 			ctx.Err(err)
 			return
 		}
-	case *goaktpb.Mayday:
+	case *goaktpb.PanicSignal:
 		ctx.Logger().Error(msg.GetMessage())
 		ctx.Stop(ctx.Sender())
 		ctx.Stop(ctx.Self())

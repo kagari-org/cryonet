@@ -149,7 +149,7 @@ func (c *Controller) Receive(ctx *goakt.ReceiveContext) {
 				return
 			}
 		}
-	case *goaktpb.Mayday:
+	case *goaktpb.PanicSignal:
 		ctx.Logger().Error("shaker "+ctx.Sender().Name()+" failed: ", msg.GetMessage())
 		ctx.Stop(ctx.Sender())
 		ctx.Logger().Debug("shaker " + ctx.Sender().Name() + " stopped")
