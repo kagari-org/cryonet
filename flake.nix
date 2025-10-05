@@ -1,4 +1,6 @@
 {
+  # TODO: https://github.com/NixOS/nixpkgs/pull/444862
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/staging-next";
   outputs = inputs@{
     self, nixpkgs, flake-parts,
   }: flake-parts.lib.mkFlake { inherit inputs; } {
@@ -24,7 +26,7 @@
           ];
         };
         nativeBuildInputs = [ buf protoc-gen-go protoc-gen-connect-go ];
-        vendorHash = "sha256-iJO07Vcx0MRe6STyQ/iNKtGbYkpdxNmjuH2ZeaVaehw=";
+        vendorHash = "sha256-U8qam4n9qVQbYhaJIomfOnjm0taPdKQ7bWo8JWWPTwk=";
         overrideModAttrs.preBuild = ''
           export HOME=$(pwd)/.home
           mkdir -p $HOME

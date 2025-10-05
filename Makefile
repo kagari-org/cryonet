@@ -12,6 +12,5 @@ proto:
 
 .PHONY: clean
 clean:
-	rm -rf proto/.proto-codegen
 	rm -rf gen
 	rm -rf build
