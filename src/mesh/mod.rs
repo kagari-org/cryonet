@@ -27,6 +27,31 @@ impl Mesh {
     async fn send(&self, packet: Packet) {}
     async fn recv(&self) -> Packet { unimplemented!() }
 
+    async fn add_connection(&self, node_id: NodeId, conn: Box<dyn Connection>) {
+        let mut connections = self.connections.lock().await;
+        connections.insert(node_id, conn);
+    }
+
+    async fn remove_connection(&self, node_id: NodeId) {
+        let mut routes = self.routes.lock().await;
+        routes.retain(|_, &mut v| v != node_id);
+        drop(routes);
+        
+        let mut connections = self.connections.lock().await;
+        connections.remove(&node_id);
+        drop(connections);
+    }
+
+    async fn add_route(&self, dest: NodeId, next_hop: NodeId) {
+        let mut routes = self.routes.lock().await;
+        routes.insert(dest, next_hop);
+    }
+
+    async fn remove_route(&self, dest: NodeId) {
+        let mut routes = self.routes.lock().await;
+        routes.remove(&dest);
+    }
+
     // forward logic
     async fn handle_connections(
         &self,
