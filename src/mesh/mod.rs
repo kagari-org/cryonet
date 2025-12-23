@@ -10,7 +10,7 @@ use crate::errors::Result;
 pub(crate) mod packet;
 
 #[async_trait::async_trait]
-pub(crate) trait Connection: Debug + Send + Sync {
+pub(crate) trait Link: Debug + Send + Sync {
     async fn send(&self, packet: Packet) -> Result<()>;
     async fn recv(&self) -> Result<Packet>;
 }
@@ -19,7 +19,7 @@ pub(crate) trait Connection: Debug + Send + Sync {
 pub(crate) struct Mesh {
     id: NodeId,
 
-    connections: Arc<Mutex<HashMap<NodeId, Box<dyn Connection>>>>,
+    links: Arc<Mutex<HashMap<NodeId, Box<dyn Link>>>>,
     routes: Arc<Mutex<HashMap<NodeId, NodeId>>>,
 }
 
@@ -27,19 +27,19 @@ impl Mesh {
     async fn send(&self, packet: Packet) {}
     async fn recv(&self) -> Packet { unimplemented!() }
 
-    async fn add_connection(&self, node_id: NodeId, conn: Box<dyn Connection>) {
-        let mut connections = self.connections.lock().await;
-        connections.insert(node_id, conn);
+    async fn add_link(&self, node_id: NodeId, conn: Box<dyn Link>) {
+        let mut links = self.links.lock().await;
+        links.insert(node_id, conn);
     }
 
-    async fn remove_connection(&self, node_id: NodeId) {
+    async fn remove_link(&self, node_id: NodeId) {
         let mut routes = self.routes.lock().await;
         routes.retain(|_, &mut v| v != node_id);
         drop(routes);
         
-        let mut connections = self.connections.lock().await;
-        connections.remove(&node_id);
-        drop(connections);
+        let mut links = self.links.lock().await;
+        links.remove(&node_id);
+        drop(links);
     }
 
     async fn add_route(&self, dest: NodeId, next_hop: NodeId) {
@@ -53,7 +53,7 @@ impl Mesh {
     }
 
     // forward logic
-    async fn handle_connections(
+    async fn handle_links(
         &self,
         mut send_queue: mpsc::Receiver<Packet>,
         queue_to_send: mpsc::Sender<Packet>,
@@ -62,12 +62,12 @@ impl Mesh {
         mut stop: oneshot::Receiver<()>,
     ) {
         let id = self.id;
-        let connections = self.connections.clone();
+        let links = self.links.clone();
         let routes = self.routes.clone();
         tokio::spawn(async move {
             loop {
-                let connections = connections.lock().await;
-                let futures: Vec<_> = connections
+                let links = links.lock().await;
+                let futures: Vec<_> = links
                     .values()
                     .map(|conn| conn.recv())
                     .collect();
@@ -76,7 +76,7 @@ impl Mesh {
                         _ = cont.recv() => continue,
                         _ = &mut stop => break,
                         Some(packet) = send_queue.recv() => {
-                            warn!("No connections available to send packet to {:X}", packet.dst);
+                            warn!("No link available to send packet to {:X}", packet.dst);
                         }
                     }
                 }
@@ -112,8 +112,8 @@ impl Mesh {
                             warn!("No route to destination {:X}", packet.dst);
                             continue;
                         };
-                        let Some(conn) = connections.get(dst) else {
-                            warn!("No connection to next hop {:X}", dst);
+                        let Some(conn) = links.get(dst) else {
+                            warn!("No link to next hop {:X}", dst);
                             continue;
                         };
                         if let Err(err) = conn.send(packet).await {
@@ -122,7 +122,7 @@ impl Mesh {
                     }
                 }
             }
-            warn!("connection handler exiting");
+            warn!("link handler exiting");
         });
     }
 }
