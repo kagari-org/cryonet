@@ -16,7 +16,20 @@ pub(crate) struct IGP {
 }
 
 impl IGP {
-    pub(crate) async fn new(
+    pub(crate) async fn new(mesh: Arc<Mutex<Mesh>>) -> Self {
+        Self::new_with_parameters(
+            Duration::from_secs(4),
+            Duration::from_secs(16),
+            Duration::from_secs(60),
+            Duration::from_secs(56),
+            Duration::from_secs(8),
+            64,
+            1000,
+            mesh,
+        ).await
+    }
+
+    pub(crate) async fn new_with_parameters(
         hello_interval: Duration,
         dump_interval: Duration,
         gc_interval: Duration,

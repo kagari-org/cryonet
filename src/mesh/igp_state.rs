@@ -8,6 +8,7 @@ use super::{seq::{SeqMetric, Seq}, igp_payload::IGPPayload, packet::NodeId, Mesh
 
 pub(crate) struct IGPState {
     pub(crate) costs: HashMap<NodeId, Cost>,
+    // TODO: add source gc
     pub(crate) sources: HashMap<NodeId, SeqMetric>,
     pub(crate) requests: HashMap<NodeId, RouteRequest>,
     pub(crate) routes: HashMap<(NodeId, NodeId), Route>, // (dst, neigh) -> Route
