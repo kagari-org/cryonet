@@ -8,13 +8,13 @@ use super::{seq::{SeqMetric, Seq}, igp_payload::IGPPayload, packet::NodeId, Mesh
 
 pub(crate) struct IGPState {
     pub(crate) costs: HashMap<NodeId, Cost>,
-    // TODO: add source gc
-    pub(crate) sources: HashMap<NodeId, SeqMetric>,
+    pub(crate) sources: HashMap<NodeId, (SeqMetric, Instant)>,
     pub(crate) requests: HashMap<NodeId, RouteRequest>,
     pub(crate) routes: HashMap<(NodeId, NodeId), Route>, // (dst, neigh) -> Route
     pub(crate) mesh: Arc<Mutex<Mesh>>,
 
     pub(crate) route_timeout: Duration,
+    pub(crate) source_timeout: Duration,
     pub(crate) seqno_request_timeout: Duration,
     pub(crate) diameter: u16,
     pub(crate) update_threshold: u32,
@@ -166,7 +166,7 @@ impl IGPState {
                     if *neigh == src || *dst != route.dst {
                         continue;
                     }
-                    if route.metric.feasible(&source) {
+                    if route.metric.feasible(&source.0) {
                         match route_feasible {
                             None => route_feasible = Some(route),
                             Some(rf) => {
@@ -223,7 +223,7 @@ impl IGPState {
                             // ignore
                             return Ok(());
                         }
-                        if let Some(source) = source && !metric.feasible(source) {
+                        if let Some(source) = source && !metric.feasible(&source.0) {
                             // ignore
                             return Ok(());
                         }
@@ -245,14 +245,16 @@ impl IGPState {
                                 return Ok(());
                             },
                         };
-                        if route.selected && !metric.feasible(&source) {
+                        if route.selected && !metric.feasible(&source.0) {
                             // ignore
                             return Ok(())
                         }
                         route.metric = *metric;
                         route.computed_metric = computed_metric;
-                        route.timeout = Instant::now() + self.route_timeout;
-                        if !route.metric.feasible(source) {
+                        if metric.metric != u32::MAX {
+                            route.timeout = Instant::now() + self.route_timeout;
+                        }
+                        if !route.metric.feasible(&source.0) {
                             route.selected = false;
                         }
                     },
@@ -317,19 +319,19 @@ impl IGPState {
                         self.mesh.lock().await.remove_route(**dst).await;
                         // no reachable route
                     } else {
-                        source.insert(best.0.metric);
+                        source.insert((best.0.metric, Instant::now() + self.source_timeout));
                         self.mesh.lock().await.set_route(**dst, best.0.from).await;
                     }
                 },
                 Entry::Occupied(mut source) => {
                     let source = source.get_mut();
-                    if best.0.metric.metric == u32::MAX || !best.0.metric.feasible(source) {
+                    if best.0.metric.metric == u32::MAX || !best.0.metric.feasible(&source.0) {
                         let mesh = self.mesh.lock().await;
                         mesh.remove_route(**dst).await;
                         // no reachable route
                         // Don't send retraction. The routes of neighbors will time out eventually.
                         let existing_request = self.requests.get(dst);
-                        let seq = source.seq + Seq(1);
+                        let seq = source.0.seq + Seq(1);
                         if let Some(existing_request) = existing_request {
                             if seq <= existing_request.seq && Instant::now() < existing_request.expiry {
                                 info!("Supressing SequenceRequest for {:X} with seq {:?}", dst, seq);
@@ -350,14 +352,14 @@ impl IGPState {
                         }
                     } else {
                         let origin = *source;
-                        *source = best.0.metric;
+                        *source = (best.0.metric, Instant::now() + self.source_timeout);
                         best.0.selected = true;
                         let mesh = self.mesh.lock().await;
                         mesh.set_route(**dst, best.0.from).await;
-                        if source.metric.abs_diff(origin.metric) > self.update_threshold {
+                        if source.0.metric.abs_diff(origin.0.metric) > self.update_threshold {
                             let result = mesh.broadcast_packet_local(IGPPayload::Update {
                                 dst: **dst,
-                                metric: *source,
+                                metric: source.0,
                             }).await;
                             if let Err(err) = result {
                                 warn!("Failed to broadcast Update for {:X}: {}", dst, err);
@@ -378,11 +380,23 @@ impl IGPState {
         }
     }
 
-    pub(crate) async fn dump(&self, neigh: Option<NodeId>) {
+    pub(crate) async fn dump(&mut self, neigh: Option<NodeId>) {
+        self.select().await;
+
         let mesh = self.mesh.lock().await;
         for ((dst, _), route) in &self.routes {
             if !route.selected {
                 continue;
+            }
+            // update source timeout
+            match self.sources.entry(*dst) {
+                Entry::Occupied(mut occupied_entry) => {
+                    occupied_entry.get_mut().1 = Instant::now() + self.source_timeout;
+                },
+                Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert((route.metric, Instant::now() + self.source_timeout));
+                    warn!("Source for {:X} missing during RouteDump, inserting", dst);
+                },
             }
             let update = IGPPayload::Update {
                 metric: route.metric,
@@ -400,6 +414,7 @@ impl IGPState {
 
     pub(crate) async fn gc(&mut self) {
         let now = Instant::now();
+        self.sources.retain(|_, (_, expiry)| *expiry > now);
         self.requests.retain(|_, request| request.expiry > now);
         self.routes.retain(|_, route| !(route.timeout <= now && route.metric.metric == u32::MAX));
 
