@@ -2,17 +2,19 @@ use std::{cmp::Ordering, collections::{HashMap, hash_map::Entry}, sync::Arc, tim
 
 use anyhow::Result;
 use tokio::sync::Mutex;
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::{seq::{SeqMetric, Seq}, igp_payload::IGPPayload, packet::NodeId, Mesh};
 
 pub(crate) struct IGPState {
     pub(crate) costs: HashMap<NodeId, Cost>,
     pub(crate) sources: HashMap<NodeId, SeqMetric>,
+    pub(crate) requests: HashMap<NodeId, RouteRequest>,
     pub(crate) routes: HashMap<(NodeId, NodeId), Route>, // (dst, neigh) -> Route
     pub(crate) mesh: Arc<Mutex<Mesh>>,
 
     pub(crate) route_timeout: Duration,
+    pub(crate) seqno_request_timeout: Duration,
     pub(crate) diameter: u16,
     pub(crate) update_threshold: u32,
 }
@@ -21,6 +23,11 @@ pub(crate) struct Cost {
     pub(crate) seq: Seq,
     pub(crate) start: Instant,
     pub(crate) cost: u32,
+}
+
+pub(crate) struct RouteRequest {
+    pub(crate) seq: Seq,
+    pub(crate) expiry: Instant,
 }
 
 pub(crate) struct Route {
@@ -38,23 +45,22 @@ impl IGPState {
         src: NodeId,
         payload: &IGPPayload,
     ) -> Result<()> {
-        use IGPPayload::*;
         match payload {
-            Hello { seq } => {
+            IGPPayload::Hello { seq } => {
                 let mesh = self.mesh.lock().await;
                 mesh.send_packet_link(src, IGPPayload::HelloReply { seq: *seq }).await?;
             },
 
 
-            HelloReply { seq } => {
+            IGPPayload::HelloReply { seq } => {
                 let time = Instant::now();
                 let Entry::Occupied(mut cost) = self.costs.entry(src) else {
-                    warn!("Received unexpected HelloReply from {}", src);
+                    warn!("Received unexpected HelloReply from {:X}", src);
                     return Ok(());
                 };
                 let cost = cost.get_mut();
                 if cost.seq != *seq {
-                    warn!("Ignoring unexpected HelloReply with seq {:?} from {}", seq, src);
+                    warn!("Ignoring unexpected HelloReply with seq {:?} from {:X}", seq, src);
                     return Ok(());
                 }
                 let rtt = time.duration_since(cost.start).as_millis();
@@ -80,7 +86,7 @@ impl IGPState {
             },
 
 
-            RouteRequest { dst } => {
+            IGPPayload::RouteRequest { dst } => {
                 let mesh = self.mesh.lock().await;
                 let route = self.routes.iter().find(|((d, _), r)| d == dst && r.selected);
                 // ignore when we don't have a route to dst
@@ -94,19 +100,19 @@ impl IGPState {
             },
 
 
-            SequenceRequest { seq, dst, ttl } => {
+            IGPPayload::SequenceRequest { seq, dst, ttl } => {
                 let mesh = self.mesh.lock().await;
                 let route = self.routes.iter_mut().find(|((d, _), r)| d == dst && r.selected);
                 let route = match route {
                     Some((_, route)) => {
                         if route.metric.metric == u32::MAX {
-                            warn!("The route to {} is unreachable, dropping SequenceRequest", dst);
+                            warn!("The route to {:X} is unreachable, dropping SequenceRequest", dst);
                             return Ok(());
                         }
                         route
                     },
                     None => {
-                        warn!("Routes to {} not found, dropping SequenceRequest", dst);
+                        warn!("Routes to {:X} not found, dropping SequenceRequest", dst);
                         return Ok(());
                     },
                 };
@@ -130,17 +136,27 @@ impl IGPState {
                 }
                 // forward the request
                 if *ttl == 0 {
-                    warn!("TTL expired for SequenceRequest to {}, dropping", dst);
+                    warn!("TTL expired for SequenceRequest to {:X}, dropping", dst);
                     return Ok(());
                 }
-                // TODO: supress duplicate requests
                 let source = match self.sources.get(dst) {
                     Some(source) => source,
                     None => {
-                        warn!("Unexpected missing source for {}, dropping SequenceRequest", dst);
+                        warn!("Unexpected missing source for {:X}, dropping SequenceRequest", dst);
                         return Ok(());
                     },
                 };
+                let existing_request = self.requests.get(dst);
+                if let Some(existing_request) = existing_request {
+                    if *seq <= existing_request.seq && Instant::now() < existing_request.expiry {
+                        info!("Supressing SequenceRequest for {:X} with seq {:?}", dst, seq);
+                        return Ok(());
+                    }
+                }
+                self.requests.insert(*dst, RouteRequest {
+                    seq: *seq,
+                    expiry: Instant::now() + self.seqno_request_timeout,
+                });
                 let mut route_feasible: Option<&Route> = None;
                 let mut route_any: Option<&Route> = None;
                 for ((_, neigh), route) in &self.routes {
@@ -181,16 +197,16 @@ impl IGPState {
                     mesh.send_packet_link(route.from, payload).await?;
                     return Ok(());
                 }
-                warn!("No alternative route to {} found, dropping SequenceRequest", dst);
+                warn!("No alternative route to {:X} found, dropping SequenceRequest", dst);
             },
 
 
-            Update { metric, dst, timeout } => {
+            IGPPayload::Update { metric, dst, timeout } => {
                 let cost = self.costs.get(&src);
                 let computed_metric = match (cost, metric.metric) {
                     (_, u32::MAX) => u32::MAX,
                     (None, _) => {
-                        warn!("Unexpected missing cost for {}", src);
+                        warn!("Unexpected missing cost for {:X}", src);
                         u32::MAX - 1
                     },
                     (Some(cost), metric) => metric.saturating_add(cost.cost),
@@ -222,7 +238,7 @@ impl IGPState {
                         let source = match source {
                             Some(source) => source,
                             None => {
-                                warn!("Unexpected missing source for {}, dropping Update", dst);
+                                warn!("Unexpected missing source for {:X}, dropping Update", dst);
                                 return Ok(());
                             },
                         };
@@ -238,6 +254,21 @@ impl IGPState {
                         }
                     },
                 }
+
+                let route = &self.routes[&(*dst, src)];                
+                if let Some(seqno_request) = self.requests.get(dst) {
+                    if metric.seq >= seqno_request.seq {
+                        self.requests.remove(dst);
+                    }
+                    // trigger update
+                    let mesh = self.mesh.lock().await;
+                    mesh.broadcast_packet_local(IGPPayload::Update {
+                        dst: *dst,
+                        metric: SeqMetric { metric: route.computed_metric, ..route.metric },
+                        timeout: self.route_timeout,
+                    }).await?;
+                }
+
                 self.select().await;
             },
         }
@@ -261,7 +292,7 @@ impl IGPState {
             let result = mesh.send_packet_link(link,
                 IGPPayload::Hello { seq: cost.seq }).await;
             if let Err(err) = result {
-                warn!("Failed to send IGP Hello to {}: {}", link, err);
+                warn!("Failed to send IGP Hello to {:X}: {}", link, err);
             }
         }
         Ok(())
@@ -296,14 +327,25 @@ impl IGPState {
                         mesh.remove_route(**dst).await;
                         // no reachable route
                         // Don't send retraction. The routes of neighbors will time out eventually.
-                        // TODO: check if already sent
+                        let existing_request = self.requests.get(dst);
+                        let seq = source.seq + Seq(1);
+                        if let Some(existing_request) = existing_request {
+                            if seq <= existing_request.seq && Instant::now() < existing_request.expiry {
+                                info!("Supressing SequenceRequest for {:X} with seq {:?}", dst, seq);
+                                return;
+                            }
+                        }
+                        self.requests.insert(**dst, RouteRequest {
+                            seq,
+                            expiry: Instant::now() + self.seqno_request_timeout,
+                        });
                         let result = mesh.broadcast_packet_local(IGPPayload::SequenceRequest {
-                            seq: source.seq + Seq(1),
+                            seq,
                             dst: **dst,
                             ttl: self.diameter,
                         }).await;
                         if let Err(err) = result {
-                            warn!("Failed to broadcast SequenceRequest for {}: {}", dst, err);
+                            warn!("Failed to broadcast SequenceRequest for {:X}: {}", dst, err);
                         }
                     } else {
                         let origin = *source;
@@ -318,7 +360,7 @@ impl IGPState {
                                 timeout: self.route_timeout,
                             }).await;
                             if let Err(err) = result {
-                                warn!("Failed to broadcast Update for {}: {}", dst, err);
+                                warn!("Failed to broadcast Update for {:X}: {}", dst, err);
                             }
                         }
                     }
