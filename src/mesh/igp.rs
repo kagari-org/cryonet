@@ -3,7 +3,7 @@
 use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::{sync::{oneshot, Mutex}, time::interval};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::mesh::{igp_payload::IGPPayload, LinkEvent};
 
@@ -93,10 +93,9 @@ impl IGP {
                             },
                         };
                         match event {
-                            LinkEvent::Down(link) => {
-                                // TODO
-                                // let mut state = state.lock().await;
-                                // state.hellos.remove(&link);
+                            LinkEvent::Up(_) => {
+                                // re-export routes after unexpected link disconnection
+                                state.lock().await.export().await;
                             },
                             _ => {},
                         }
@@ -121,7 +120,13 @@ impl IGP {
                 warn!("IGP stop signal receiver already dropped");
             }
         } else {
-            warn!("IGP already stopped");
+            info!("IGP already stopped");
         }
+    }
+}
+
+impl Drop for IGP {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

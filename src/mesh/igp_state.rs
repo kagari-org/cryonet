@@ -368,4 +368,13 @@ impl IGPState {
             };
         };
     }
+
+    pub(crate) async fn export(&self) {
+        let mesh = self.mesh.lock().await;
+        for ((dst, neigh), route) in &self.routes {
+            if route.selected {
+                mesh.set_route(*dst, *neigh).await;
+            }
+        }
+    }
 }
