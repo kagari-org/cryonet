@@ -67,7 +67,8 @@ impl IGPState {
                 let origin = cost.cost;
                 if cost.cost == u32::MAX {
                     cost.cost = rtt as u32;
-                    // TODO: first hello reply received, request route dump
+                    // first hello reply received, request route dump
+                    self.mesh.lock().await.send_packet_link(src, IGPPayload::RouteDump).await?;
                 } else {
                     cost.cost = ((836 * cost.cost as u128 + 164 * rtt) / 1000) as u32;
                 }
@@ -98,6 +99,9 @@ impl IGPState {
                     }).await?;
                 }
             },
+
+
+            IGPPayload::RouteDump => self.dump(Some(src)).await,
 
 
             IGPPayload::SequenceRequest { seq, dst, ttl } => {
@@ -373,15 +377,22 @@ impl IGPState {
         }
     }
 
-    pub(crate) async fn dump(&self) {
+    pub(crate) async fn dump(&self, neigh: Option<NodeId>) {
         let mesh = self.mesh.lock().await;
-        for ((dst, neigh), route) in &self.routes {
-            let result = mesh.broadcast_packet_local(IGPPayload::Update {
+        for ((dst, _), route) in &self.routes {
+            if !route.selected {
+                continue;
+            }
+            let update = IGPPayload::Update {
                 metric: route.metric,
                 dst: *dst,
-            }).await;
+            };
+            let result = match neigh {
+                Some(neigh) => mesh.send_packet_link(neigh, update).await,
+                None => mesh.broadcast_packet_local(update).await,
+            };
             if let Err(err) = result {
-                warn!("Failed to dump route to {:X} via {:X}: {}", dst, neigh, err);
+                warn!("Failed to send RouteDump for {:X}: {}", dst, err);
             }
         }
     }

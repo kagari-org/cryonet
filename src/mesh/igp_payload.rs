@@ -10,6 +10,7 @@ pub(crate) enum IGPPayload {
     Hello { seq: Seq },
     HelloReply { seq: Seq },
     RouteRequest { dst: NodeId }, // only used when route is about to expire
+    RouteDump,
     SequenceRequest {
         seq: Seq,
         dst: NodeId,
