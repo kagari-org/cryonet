@@ -275,7 +275,7 @@ impl IGPState {
         Ok(())
     }
 
-    pub(crate) async fn send_hello(&mut self) -> Result<()> {
+    pub(crate) async fn send_hello(&mut self) {
         let mesh = self.mesh.lock().await;
         let links = mesh.get_links().await;
         for link in links {
@@ -295,7 +295,6 @@ impl IGPState {
                 warn!("Failed to send IGP Hello to {:X}: {}", link, err);
             }
         }
-        Ok(())
     }
 
     pub(crate) async fn select(&mut self) {
@@ -374,6 +373,20 @@ impl IGPState {
         for ((dst, neigh), route) in &self.routes {
             if route.selected {
                 mesh.set_route(*dst, *neigh).await;
+            }
+        }
+    }
+
+    pub(crate) async fn dump(&self) {
+        let mesh = self.mesh.lock().await;
+        for ((dst, neigh), route) in &self.routes {
+            let result = mesh.broadcast_packet_local(IGPPayload::Update {
+                metric: route.metric,
+                dst: *dst,
+                timeout: self.route_timeout,
+            }).await;
+            if let Err(err) = result {
+                warn!("Failed to dump route to {:X} via {:X}: {}", dst, neigh, err);
             }
         }
     }

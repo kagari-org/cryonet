@@ -100,13 +100,8 @@ impl IGP {
                             _ => {},
                         }
                     },
-                    _ = hello_ticker.tick() => {
-                        if let Err(err) = state.lock().await.send_hello().await {
-                            warn!("Failed to send IGP Hello packets: {err}");
-                        }
-                    },
-                    _ = dump_ticker.tick() => {
-                    },
+                    _ = hello_ticker.tick() => state.lock().await.send_hello().await,
+                    _ = dump_ticker.tick() => state.lock().await.dump().await,
                     _ = gc_ticker.tick() => {
                     },
                 }

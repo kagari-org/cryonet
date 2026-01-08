@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Debug, pin::Pin, sync::Arc};
 
 use anyhow::{bail, Result};
-use futures::future::select_all;
+use futures::future::{join_all, select_all};
 use packet::{NodeId, Packet, Payload};
 use tokio::{select, sync::{broadcast, mpsc, Mutex}};
 use tracing::warn;
@@ -114,14 +114,15 @@ impl Mesh {
 
     pub(crate) async fn broadcast_packet_local<P: Payload>(&self, payload: P) -> Result<()> {
         let links_routes = self.links_routes.lock().await;
-        for (dst, link) in links_routes.0.iter() {
-            link.send(Packet {
-                src: self.id,
-                dst: *dst,
-                ttl: 16,
-                payload: dyn_clone::clone_box(&payload),
-            }).await?;
-        }
+        let futures = links_routes.0.iter().map(|(dst, link)| link.send(Packet {
+            src: self.id,
+            dst: *dst,
+            ttl: 16,
+            payload: dyn_clone::clone_box(&payload),
+        }));
+        join_all(futures).await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(())
     }
 
