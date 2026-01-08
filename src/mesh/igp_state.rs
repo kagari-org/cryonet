@@ -67,6 +67,7 @@ impl IGPState {
                 let origin = cost.cost;
                 if cost.cost == u32::MAX {
                     cost.cost = rtt as u32;
+                    // TODO: first hello reply received, request route dump
                 } else {
                     cost.cost = ((836 * cost.cost as u128 + 164 * rtt) / 1000) as u32;
                 }
@@ -94,7 +95,6 @@ impl IGPState {
                     mesh.broadcast_packet_local(IGPPayload::Update {
                         dst: *dst,
                         metric: SeqMetric { metric: route.computed_metric, ..route.metric },
-                        timeout: self.route_timeout,
                     }).await?;
                 }
             },
@@ -120,7 +120,6 @@ impl IGPState {
                     mesh.broadcast_packet_local(IGPPayload::Update {
                         dst: *dst,
                         metric: SeqMetric { metric: route.computed_metric, ..route.metric },
-                        timeout: self.route_timeout,
                     }).await?;
                     return Ok(());
                 }
@@ -130,7 +129,6 @@ impl IGPState {
                     mesh.broadcast_packet_local(IGPPayload::Update {
                         dst: *dst,
                         metric: SeqMetric { metric: route.computed_metric, ..route.metric },
-                        timeout: self.route_timeout,
                     }).await?;
                     return Ok(());
                 }
@@ -201,7 +199,7 @@ impl IGPState {
             },
 
 
-            IGPPayload::Update { metric, dst, timeout } => {
+            IGPPayload::Update { metric, dst } => {
                 let cost = self.costs.get(&src);
                 let computed_metric = match (cost, metric.metric) {
                     (_, u32::MAX) => u32::MAX,
@@ -229,7 +227,7 @@ impl IGPState {
                             computed_metric,
                             dst: *dst,
                             from: src,
-                            timeout: Instant::now() + *timeout,
+                            timeout: Instant::now() + self.route_timeout,
                             selected: false,
                         });
                     },
@@ -248,7 +246,7 @@ impl IGPState {
                         }
                         route.metric = *metric;
                         route.computed_metric = computed_metric;
-                        route.timeout = Instant::now() + *timeout;
+                        route.timeout = Instant::now() + self.route_timeout;
                         if !route.metric.feasible(source) {
                             route.selected = false;
                         }
@@ -265,7 +263,6 @@ impl IGPState {
                     mesh.broadcast_packet_local(IGPPayload::Update {
                         dst: *dst,
                         metric: SeqMetric { metric: route.computed_metric, ..route.metric },
-                        timeout: self.route_timeout,
                     }).await?;
                 }
 
@@ -356,7 +353,6 @@ impl IGPState {
                             let result = mesh.broadcast_packet_local(IGPPayload::Update {
                                 dst: **dst,
                                 metric: *source,
-                                timeout: self.route_timeout,
                             }).await;
                             if let Err(err) = result {
                                 warn!("Failed to broadcast Update for {:X}: {}", dst, err);
@@ -383,11 +379,36 @@ impl IGPState {
             let result = mesh.broadcast_packet_local(IGPPayload::Update {
                 metric: route.metric,
                 dst: *dst,
-                timeout: self.route_timeout,
             }).await;
             if let Err(err) = result {
                 warn!("Failed to dump route to {:X} via {:X}: {}", dst, neigh, err);
             }
         }
+    }
+
+    pub(crate) async fn gc(&mut self) {
+        let now = Instant::now();
+        self.requests.retain(|_, request| request.expiry > now);
+        self.routes.retain(|_, route| !(route.timeout <= now && route.metric.metric == u32::MAX));
+
+        let mesh = self.mesh.lock().await;
+        let mut futures = Vec::new();
+        for ((dst, neigh), route) in &mut self.routes {
+            if route.timeout <= now {
+                route.metric.metric = u32::MAX;
+                route.computed_metric = u32::MAX;
+                route.timeout = now + self.route_timeout;
+                route.selected = false;
+                futures.push(mesh.send_packet_link(*neigh, IGPPayload::RouteRequest { dst: *dst }));
+            }
+        }
+        let results = futures::future::join_all(futures).await;
+        for result in results {
+            if let Err(err) = result {
+                warn!("Failed to send RouteRequest: {}", err);
+            }
+        }
+        drop(mesh);
+        self.select().await;
     }
 }

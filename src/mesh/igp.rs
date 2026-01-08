@@ -102,8 +102,7 @@ impl IGP {
                     },
                     _ = hello_ticker.tick() => state.lock().await.send_hello().await,
                     _ = dump_ticker.tick() => state.lock().await.dump().await,
-                    _ = gc_ticker.tick() => {
-                    },
+                    _ = gc_ticker.tick() => state.lock().await.gc().await,
                 }
             } 
         });

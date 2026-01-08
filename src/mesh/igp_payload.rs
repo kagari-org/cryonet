@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use serde::{Deserialize, Serialize};
 
 use super::{packet::{NodeId, Payload}, seq::{Seq, SeqMetric}};
@@ -20,6 +18,5 @@ pub(crate) enum IGPPayload {
     Update {
         metric: SeqMetric,
         dst: NodeId,
-        timeout: Duration,
     },
 }
