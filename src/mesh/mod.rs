@@ -82,9 +82,10 @@ impl Mesh {
         mesh
     }
 
-    pub(crate) fn stop(&mut self) -> Result<()> {
-        self.stop.send(())?;
-        Ok(())
+    pub(crate) fn stop(&mut self) {
+        if let Err(err) = self.stop.send(()) {
+            warn!("Failed to send stop signal to mesh: {}", err);
+        }
     }
 
     pub(crate) async fn send_packet<P: Payload>(&self, dst: NodeId, payload: P) -> Result<()> {
@@ -299,5 +300,11 @@ impl Mesh {
                 }
             }
         });
+    }
+}
+
+impl Drop for Mesh {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
