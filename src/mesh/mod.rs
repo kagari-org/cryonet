@@ -1,12 +1,18 @@
-use std::{array::from_fn, collections::HashMap, fmt::Debug, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use futures::future::select_all;
-use packet::{NodeId, Packet};
-use tokio::{select, sync::{mpsc, oneshot, Mutex}};
+use packet::{NodeId, Packet, Payload};
+use tokio::{select, sync::{broadcast, mpsc, Mutex}};
 use tracing::warn;
 
+use crate::errors::Error;
+
+pub(crate) mod seq;
 pub(crate) mod packet;
+pub(crate) mod igp;
+pub(crate) mod igp_payload;
+pub(crate) mod igp_state;
 
 #[async_trait::async_trait]
 pub(crate) trait Link: Debug + Send + Sync {
@@ -18,19 +24,34 @@ pub(crate) struct Mesh {
     id: NodeId,
 
     links: Arc<Mutex<HashMap<NodeId, Box<dyn Link>>>>,
+    link_event_tx: broadcast::Sender<LinkEvent>,
     routes: Arc<Mutex<HashMap<NodeId, NodeId>>>,
+    route_event_tx: broadcast::Sender<RouteEvent>,
 
     send_queue: mpsc::Sender<Packet>,
     dispatchees: Arc<Mutex<Vec<(Box<dyn Fn(&Packet) -> bool + Send + Sync>, mpsc::Sender<Packet>)>>>,
 
-    stop: Option<[oneshot::Sender<()>; 2]>,
+    stop: broadcast::Sender<()>,
     cont: mpsc::Sender<()>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum LinkEvent {
+    Up(NodeId),
+    Down(NodeId),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RouteEvent {
+    Added(NodeId, NodeId),
+    Removed(NodeId, NodeId),
 }
 
 impl Mesh {
     pub(crate) fn new(id: NodeId) -> Self {
-        let stop_channels: [_; 2] = from_fn(|_| oneshot::channel());
-        let (stop_tx, mut stop_rx): (Vec<_>, Vec<_>) = stop_channels.into_iter().unzip();
+        let stop_tx = broadcast::Sender::new(1);
+        let stop_rx1 = stop_tx.subscribe();
+        let stop_rx2 = stop_tx.subscribe();
         let (cont_tx, cont_rx) = mpsc::channel(8);
 
         let (send_queue_tx, send_queue_rx) = mpsc::channel(64);
@@ -39,10 +60,12 @@ impl Mesh {
         let mesh = Mesh {
             id,
             links: Arc::new(Mutex::new(HashMap::new())),
+            link_event_tx: broadcast::Sender::new(16),
             routes: Arc::new(Mutex::new(HashMap::new())),
+            route_event_tx: broadcast::Sender::new(16),
             send_queue: send_queue_tx.clone(),
             dispatchees: Arc::new(Mutex::new(Vec::new())),
-            stop: Some(stop_tx.try_into().unwrap()),
+            stop: stop_tx,
             cont: cont_tx,
         };
         mesh.handle_links(
@@ -50,25 +73,55 @@ impl Mesh {
             send_queue_tx,
             recv_queue_tx,
             cont_rx,
-            stop_rx.pop().unwrap(),
+            stop_rx1,
         );
         mesh.dispatch(
             recv_queue_rx,
-            stop_rx.pop().unwrap(),
+            stop_rx2,
         );
 
         mesh
     }
 
-    pub(crate) fn stop(&mut self) {
-        if let Some([tx_links, tx_dispatch]) = self.stop.take() {
-            let _ = tx_links.send(());
-            let _ = tx_dispatch.send(());
-        }
+    pub(crate) fn stop(&mut self) -> Result<()> {
+        self.stop.send(())?;
+        Ok(())
     }
 
-    pub(crate) async fn send_packet(&self, packet: Packet) -> Result<()> {
-        self.send_queue.send(packet).await?;
+    pub(crate) async fn send_packet<P: Payload>(&self, dst: NodeId, payload: P) -> Result<()> {
+        self.send_queue.send(Packet {
+            src: self.id,
+            dst,
+            ttl: 16,
+            payload: Box::new(payload),
+        }).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn send_packet_link<P: Payload>(&self, dst: NodeId, payload: P) -> Result<()> {
+        let links = self.links.lock().await;
+        let Some(link) = links.get(&dst) else {
+            bail!(Error::NoSuchLink(dst));
+        };
+        link.send(Packet {
+            src: self.id,
+            dst,
+            ttl: 16,
+            payload: Box::new(payload),
+        }).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn broadcast_packet_local<P: Payload>(&self, payload: P) -> Result<()> {
+        let links = self.links.lock().await;
+        for (dst, link) in links.iter() {
+            link.send(Packet {
+                src: self.id,
+                dst: *dst,
+                ttl: 16,
+                payload: dyn_clone::clone_box(&payload),
+            }).await?;
+        }
         Ok(())
     }
 
@@ -82,34 +135,68 @@ impl Mesh {
         rx
     }
 
-    pub(crate) async fn add_link(&self, node_id: NodeId, conn: Box<dyn Link>) -> Result<()> {
+    pub(crate) async fn remove_dispatchee(&self, rx: &mut mpsc::Receiver<Packet>) {
+        let mut dispatchees = self.dispatchees.lock().await;
+        rx.close();
+        dispatchees.retain(|(_, tx)| !tx.is_closed());
+    }
+
+    // link api
+    pub(crate) async fn add_link(&self, dst: NodeId, conn: Box<dyn Link>) -> Result<()> {
         let mut links = self.links.lock().await;
-        links.insert(node_id, conn);
+        links.insert(dst, conn);
         self.cont.send(()).await?;
+        self.link_event_tx.send(LinkEvent::Up(dst))?;
         Ok(())
     }
 
-    pub(crate) async fn remove_link(&self, node_id: NodeId) -> Result<()> {
+    pub(crate) async fn remove_link(&self, dst: NodeId) -> Result<()> {
         let mut routes = self.routes.lock().await;
-        routes.retain(|_, &mut v| v != node_id);
+        routes.retain(|_, &mut v| v != dst);
         drop(routes);
         
         let mut links = self.links.lock().await;
-        links.remove(&node_id);
+        links.remove(&dst);
         drop(links);
 
         self.cont.send(()).await?;
+        self.link_event_tx.send(LinkEvent::Down(dst))?;
         Ok(())
     }
 
-    pub(crate) async fn add_route(&self, dest: NodeId, next_hop: NodeId) {
-        let mut routes = self.routes.lock().await;
-        routes.insert(dest, next_hop);
+    pub(crate) async fn get_links(&self) -> Vec<NodeId> {
+        let links = self.links.lock().await;
+        links.keys().cloned().collect()
     }
 
-    pub(crate) async fn remove_route(&self, dest: NodeId) {
+    pub(crate) async fn subscribe_link_events(&self) -> broadcast::Receiver<LinkEvent> {
+        self.link_event_tx.subscribe()
+    }
+
+    // route api
+    pub(crate) async fn set_route(&self, dest: NodeId, next_hop: NodeId) -> Result<()> {
         let mut routes = self.routes.lock().await;
-        routes.remove(&dest);
+        routes.insert(dest, next_hop);
+        self.route_event_tx.send(RouteEvent::Added(dest, next_hop))?;
+        Ok(())
+    }
+
+    pub(crate) async fn remove_route(&self, dest: NodeId) -> Result<()> {
+        let mut routes = self.routes.lock().await;
+        let route = routes.remove(&dest);
+        if let Some(next_hop) = route {
+            self.route_event_tx.send(RouteEvent::Removed(dest, next_hop))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn get_routes(&self) -> HashMap<NodeId, NodeId> {
+        let routes = self.routes.lock().await;
+        routes.clone()
+    }
+
+    pub(crate) async fn subscribe_route_events(&self) -> broadcast::Receiver<RouteEvent> {
+        self.route_event_tx.subscribe()
     }
 
     // forward logic
@@ -120,7 +207,7 @@ impl Mesh {
         recv_queue: mpsc::Sender<Packet>,
         // when adding or removing links, we need to notify the handler to refresh the link list
         mut cont: mpsc::Receiver<()>,
-        mut stop: oneshot::Receiver<()>,
+        mut stop: broadcast::Receiver<()>,
     ) {
         let id = self.id;
         let links = self.links.clone();
@@ -135,7 +222,7 @@ impl Mesh {
                 if futures.is_empty() {
                     select! {
                         _ = cont.recv() => continue,
-                        _ = &mut stop => break,
+                        _ = stop.recv() => break,
                         Some(packet) = send_queue.recv() => {
                             warn!("No link available to send packet to {:X}", packet.dst);
                         }
@@ -143,7 +230,7 @@ impl Mesh {
                 }
                 select! {
                     _ = cont.recv() => continue,
-                    _ = &mut stop => break,
+                    _ = stop.recv() => break,
                     (packet, _, _) = select_all(futures) => {
                         let mut packet = match packet {
                             Ok(packet) => packet,
@@ -189,13 +276,13 @@ impl Mesh {
 
     fn dispatch(&self,
         mut recv_queue: mpsc::Receiver<Packet>,
-        mut stop: oneshot::Receiver<()>,
+        mut stop: broadcast::Receiver<()>,
     ) {
         let dispatchees = self.dispatchees.clone();
         tokio::spawn(async move {
             loop {
                 select! {
-                    _ = &mut stop => break,
+                    _ = stop.recv() => break,
                     Some(packet) = recv_queue.recv() => {
                         let dispatchees = dispatchees.lock().await;
                         for (filter, dispatch) in dispatchees.iter() {

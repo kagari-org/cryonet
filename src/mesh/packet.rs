@@ -7,7 +7,6 @@ pub(crate) type NodeId = u32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Packet {
-    pub version: u8,
     pub src: NodeId,
     pub dst: NodeId,
     pub ttl: u8,
