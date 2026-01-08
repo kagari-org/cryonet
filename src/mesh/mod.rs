@@ -174,20 +174,24 @@ impl Mesh {
     }
 
     // route api
-    pub(crate) async fn set_route(&self, dest: NodeId, next_hop: NodeId) -> Result<()> {
+    pub(crate) async fn set_route(&self, dest: NodeId, next_hop: NodeId) {
         let mut routes = self.routes.lock().await;
         routes.insert(dest, next_hop);
-        self.route_event_tx.send(RouteEvent::Added(dest, next_hop))?;
-        Ok(())
+        let result = self.route_event_tx.send(RouteEvent::Added(dest, next_hop));
+        if let Err(err) = result {
+            warn!("Failed to send route added event: {}", err);
+        }
     }
 
-    pub(crate) async fn remove_route(&self, dest: NodeId) -> Result<()> {
+    pub(crate) async fn remove_route(&self, dest: NodeId) {
         let mut routes = self.routes.lock().await;
         let route = routes.remove(&dest);
         if let Some(next_hop) = route {
-            self.route_event_tx.send(RouteEvent::Removed(dest, next_hop))?;
+            let result = self.route_event_tx.send(RouteEvent::Removed(dest, next_hop));
+            if let Err(err) = result {
+                warn!("Failed to send route removed event: {}", err);
+            }
         }
-        Ok(())
     }
 
     pub(crate) async fn get_routes(&self) -> HashMap<NodeId, NodeId> {
