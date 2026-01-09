@@ -62,7 +62,7 @@ impl SeqMetric {
         if self.seq > rhs.seq {
             return true
         }
-        if self.seq == rhs.seq && (self.metric < rhs.metric || self.metric == u32::MAX) {
+        if self.seq == rhs.seq && (self.metric <= rhs.metric || self.metric == u32::MAX) {
             return true
         }
         false

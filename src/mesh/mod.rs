@@ -140,7 +140,7 @@ impl Mesh {
         debug!("Adding link to {:X}", dst);
         self.handler_event_tx.send(HandlerEvent::AddLink(dst, link, reply_tx)).await?;
         reply_rx.await??;
-        self.link_event_tx.send(LinkEvent::Up(dst))?;
+        let _ = self.link_event_tx.send(LinkEvent::Up(dst));
         Ok(())
     }
 
@@ -151,7 +151,7 @@ impl Mesh {
         debug!("Removing link to {:X}", dst);
         self.handler_event_tx.send(HandlerEvent::RemoveLink(dst, reply_tx)).await?;
         reply_rx.await??;
-        self.link_event_tx.send(LinkEvent::Down(dst))?;
+        let _ = self.link_event_tx.send(LinkEvent::Down(dst));
         Ok(())
     }
 
@@ -166,29 +166,31 @@ impl Mesh {
     }
 
     // route api
-    pub(crate) async fn set_route(&self, dest: NodeId, next_hop: NodeId) {
-        let mut routes = self.routes.lock().await;
-        if !routes.contains_key(&next_hop) {
-            warn!("Tried to set route to {:X} via non-existent link {:X}", dest, next_hop);
+    pub(crate) async fn set_route(&self, dst: NodeId, next_hop: NodeId) {
+        if dst == self.id {
+            // skip routes to self
             return;
         }
-        debug!("Setting route to {:X} via next hop {:X}", dest, next_hop);
-        routes.insert(dest, next_hop);
-        let result = self.route_event_tx.send(RouteEvent::Added(dest, next_hop));
-        if let Err(err) = result {
-            warn!("Failed to send route added event: {}", err);
+        let Ok(links) = self.get_links().await else {
+            warn!("Failed to get links when setting route to {:X} via {:X}", dst, next_hop);
+            return;
+        };
+        let mut routes = self.routes.lock().await;
+        if !links.contains(&next_hop) {
+            warn!("Tried to set route to {:X} via non-existent link {:X}", dst, next_hop);
+            return;
         }
+        debug!("Setting route to {:X} via next hop {:X}", dst, next_hop);
+        routes.insert(dst, next_hop);
+        let _ = self.route_event_tx.send(RouteEvent::Added(dst, next_hop));
     }
 
-    pub(crate) async fn remove_route(&self, dest: NodeId) {
+    pub(crate) async fn remove_route(&self, dst: NodeId) {
         let mut routes = self.routes.lock().await;
-        debug!("Removing route to {:X}", dest);
-        let route = routes.remove(&dest);
+        debug!("Removing route to {:X}", dst);
+        let route = routes.remove(&dst);
         if let Some(next_hop) = route {
-            let result = self.route_event_tx.send(RouteEvent::Removed(dest, next_hop));
-            if let Err(err) = result {
-                warn!("Failed to send route removed event: {}", err);
-            }
+            let _ = self.route_event_tx.send(RouteEvent::Removed(dst, next_hop));
         }
     }
 

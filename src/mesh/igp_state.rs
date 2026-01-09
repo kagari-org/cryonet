@@ -8,6 +8,8 @@ use tracing::{info, warn};
 use super::{seq::{SeqMetric, Seq}, igp_payload::IGPPayload, packet::NodeId, Mesh};
 
 pub(crate) struct IGPState {
+    pub(crate) id: NodeId,
+
     pub(crate) costs: HashMap<NodeId, Cost>,
     pub(crate) sources: HashMap<NodeId, (SeqMetric, Instant)>,
     pub(crate) requests: HashMap<NodeId, RouteRequest>,
@@ -388,6 +390,23 @@ impl IGPState {
     }
 
     pub(crate) async fn dump(&mut self, neigh: Option<NodeId>) {
+        // add self route
+        self.routes.insert((self.id, 0), Route {
+            metric: SeqMetric {
+                seq: Seq(0),
+                metric: 0,
+            },
+            computed_metric: 0,
+            dst: 0,
+            from: self.id,
+            timeout: Instant::now() + self.route_timeout,
+            selected: true,
+        });
+        self.sources.insert(self.id, (SeqMetric {
+            seq: Seq(0),
+            metric: 0,
+        }, Instant::now() + self.source_timeout));
+
         self.select().await;
 
         let mesh = self.mesh.lock().await;

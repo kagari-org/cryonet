@@ -5,7 +5,7 @@ use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
 use tokio::{sync::{oneshot, Mutex}, time::interval};
 use tracing::{error, warn};
 
-use crate::mesh::{igp_payload::IGPPayload, LinkEvent};
+use crate::mesh::{LinkEvent, igp_payload::IGPPayload};
 
 use super::{igp_state::IGPState, Mesh};
 
@@ -41,10 +41,12 @@ impl IGP {
         update_threshold: u32,
         mesh: Arc<Mutex<Mesh>>,
     ) -> Self {
+        let id = mesh.lock().await.id;
         let (stop_tx, stop_rx) = oneshot::channel();
         let igp = IGP {
             mesh: mesh.clone(),
             state: Arc::new(Mutex::new(IGPState {
+                id,
                 costs: HashMap::new(),
                 sources: HashMap::new(),
                 requests: HashMap::new(),

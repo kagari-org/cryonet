@@ -1,15 +1,15 @@
 #![feature(let_chains)]
 #![feature(trait_upcasting)]
 #![feature(try_blocks)]
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::pending;
 use mesh::{igp::IGP, Mesh};
-use tokio::sync::{Mutex, mpsc::{Receiver, Sender, channel}};
+use serde::{Deserialize, Serialize};
+use tokio::{select, sync::{Mutex, mpsc::{Receiver, Sender, channel}}, time::interval};
 
-use crate::mesh::{Link, packet::Packet};
+use crate::mesh::{Link, packet::{Packet, Payload}};
 
 pub(crate) mod errors;
 pub(crate) mod mesh;
@@ -39,6 +39,12 @@ impl Link for L {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct P(String);
+
+#[typetag::serde]
+impl Payload for P {}
+
 #[tokio::main]
 async fn main() -> Result<()>{
     tracing_subscriber::fmt::init();
@@ -47,7 +53,7 @@ async fn main() -> Result<()>{
     let (link2_a, link2_b) = L::new().await;
 
     let mesh1 = Arc::new(Mutex::new(Mesh::new(1)));
-    let igp = IGP::new(mesh1.clone()).await;
+    let igp1 = IGP::new(mesh1.clone()).await;
     mesh1.lock().await.add_link(2, Box::new(link1_a)).await?;
 
     let mesh2 = Arc::new(Mutex::new(Mesh::new(2)));
@@ -59,6 +65,22 @@ async fn main() -> Result<()>{
     let igp3 = IGP::new(mesh3.clone()).await;
     mesh3.lock().await.add_link(2, Box::new(link2_b)).await?;
 
-    pending!();
-    Ok(())
+    let mut packet_rx = mesh1.lock().await.add_dispatchee(|packet| {
+        (packet.payload.as_ref() as &dyn std::any::Any).is::<P>()
+    }).await;
+    let mut ticker = interval(Duration::from_secs(3));
+    let x = (igp1, igp2, igp3);
+    loop {
+        let y = &x;
+        select! {
+            _ = ticker.tick() => {
+                if let Err(err) = mesh1.lock().await.send_packet(3, P("test".to_string())).await {
+                    println!("Error sending packet: {:?}", err);
+                }
+            }
+            Some(packet) = packet_rx.recv() => {
+                dbg!(&packet);
+            }
+        }
+    }
 }
