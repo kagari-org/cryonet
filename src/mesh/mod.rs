@@ -30,9 +30,9 @@ pub(crate) struct Mesh {
 }
 
 #[async_trait]
-pub(crate) trait Link: Debug + Send + Sync {
+pub(crate) trait Link: Send + Sync {
     async fn recv(&mut self) -> Result<Packet>;
-    async fn send(&self, packet: Packet) -> Result<()>;
+    async fn send(&mut self, packet: Packet) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -225,6 +225,7 @@ impl Mesh {
                         let mut packet = match packet {
                             Ok(packet) => packet,
                             Err(err) => {
+                                // TODO: may remove link on closure
                                 warn!("Failed to receive packet: {}", err);
                                 continue;
                             }
@@ -277,7 +278,7 @@ impl Mesh {
                                     let _ = reply_tx.send(Err(anyhow!(Error::Unreachable(packet.dst))));
                                     continue;
                                 };
-                                let Some(link) = links.get(route) else {
+                                let Some(link) = links.get_mut(route) else {
                                     let _ = reply_tx.send(Err(anyhow!(Error::NoSuchLink(*route))));
                                     continue;
                                 };
@@ -285,7 +286,7 @@ impl Mesh {
                                 let _ = reply_tx.send(link.send(packet).await);
                             }
                             HandlerEvent::SendPacketLink(packet, reply_tx) => {
-                                let Some(link) = links.get(&packet.dst) else {
+                                let Some(link) = links.get_mut(&packet.dst) else {
                                     let _ = reply_tx.send(Err(anyhow!(Error::NoSuchLink(packet.dst))));
                                     continue;
                                 };
@@ -294,7 +295,7 @@ impl Mesh {
                             }
                             HandlerEvent::BroadcastPacket(payload, reply_tx) => {
                                 debug!("Broadcasting packet to all links, {:?}", payload);
-                                let futures = links.iter().map(|(dst, link)| link.send(Packet {
+                                let futures = links.iter_mut().map(|(dst, link)| link.send(Packet {
                                     src: id,
                                     dst: *dst,
                                     ttl: 16,
@@ -318,7 +319,7 @@ impl Mesh {
     }
 
     fn dispatch(&self,
-        mut recv_queue: mpsc::Receiver<Packet>,
+        mut dispatch_rx: mpsc::Receiver<Packet>,
         mut dispatch_event_rx: mpsc::Receiver<DispatcherEvent>,
     ) {
         let dispatchees = self.dispatchees.clone();
@@ -336,7 +337,7 @@ impl Mesh {
                             }
                         }
                     },
-                    packet = recv_queue.recv() => {
+                    packet = dispatch_rx.recv() => {
                         let packet = match packet {
                             Some(packet) => packet,
                             None => {
