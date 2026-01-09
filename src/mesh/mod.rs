@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use futures::future::{join_all, pending, select_all};
 use packet::{NodeId, Packet, Payload};
 use tokio::{select, sync::{Mutex, broadcast, mpsc, oneshot}};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::errors::Error;
 
@@ -137,6 +137,7 @@ impl Mesh {
     // link api
     pub(crate) async fn add_link(&self, dst: NodeId, link: Box<dyn Link>) -> Result<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
+        debug!("Adding link to {:X}", dst);
         self.handler_event_tx.send(HandlerEvent::AddLink(dst, link, reply_tx)).await?;
         reply_rx.await??;
         self.link_event_tx.send(LinkEvent::Up(dst))?;
@@ -147,6 +148,7 @@ impl Mesh {
         let mut routes = self.routes.lock().await;
         routes.retain(|_, &mut v| v != dst);
         let (reply_tx, reply_rx) = oneshot::channel();
+        debug!("Removing link to {:X}", dst);
         self.handler_event_tx.send(HandlerEvent::RemoveLink(dst, reply_tx)).await?;
         reply_rx.await??;
         self.link_event_tx.send(LinkEvent::Down(dst))?;
@@ -170,6 +172,7 @@ impl Mesh {
             warn!("Tried to set route to {:X} via non-existent link {:X}", dest, next_hop);
             return;
         }
+        debug!("Setting route to {:X} via next hop {:X}", dest, next_hop);
         routes.insert(dest, next_hop);
         let result = self.route_event_tx.send(RouteEvent::Added(dest, next_hop));
         if let Err(err) = result {
@@ -179,6 +182,7 @@ impl Mesh {
 
     pub(crate) async fn remove_route(&self, dest: NodeId) {
         let mut routes = self.routes.lock().await;
+        debug!("Removing route to {:X}", dest);
         let route = routes.remove(&dest);
         if let Some(next_hop) = route {
             let result = self.route_event_tx.send(RouteEvent::Removed(dest, next_hop));
@@ -223,6 +227,7 @@ impl Mesh {
                                 continue;
                             }
                         };
+                        debug!("Received packet: {:?}", packet);
                         if packet.dst == id {
                             if let Err(err) = dispatch.send(packet).await {
                                 warn!("Failed to forward packet to recv queue: {}", err);
@@ -274,6 +279,7 @@ impl Mesh {
                                     let _ = reply_tx.send(Err(anyhow!(Error::NoSuchLink(*route))));
                                     continue;
                                 };
+                                debug!("Sending packet to {:X} via link {:X}, {:?}", packet.dst, route, packet);
                                 let _ = reply_tx.send(link.send(packet).await);
                             }
                             HandlerEvent::SendPacketLink(packet, reply_tx) => {
@@ -281,9 +287,11 @@ impl Mesh {
                                     let _ = reply_tx.send(Err(anyhow!(Error::NoSuchLink(packet.dst))));
                                     continue;
                                 };
+                                debug!("Sending packet to {:X} via direct link, {:?}", packet.dst, packet);
                                 let _ = reply_tx.send(link.send(packet).await);
                             }
                             HandlerEvent::BroadcastPacket(payload, reply_tx) => {
+                                debug!("Broadcasting packet to all links, {:?}", payload);
                                 let futures = links.iter().map(|(dst, link)| link.send(Packet {
                                     src: id,
                                     dst: *dst,
