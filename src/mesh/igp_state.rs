@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, collections::{HashMap, hash_map::Entry}, sync::Arc, time::{Duration, Instant}, u32};
 
 use anyhow::Result;
+use futures::future::join_all;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -281,7 +282,13 @@ impl IGPState {
 
     pub(crate) async fn send_hello(&mut self) {
         let mesh = self.mesh.lock().await;
-        let links = mesh.get_links().await;
+        let links = match mesh.get_links().await {
+            Ok(links) => links,
+            Err(err) => {
+                warn!("Failed to get links for sending IGP Hello: {}", err);
+                return;
+            },
+        };
         for link in links {
             let cost = self.costs.entry(link)
                 .and_modify(|cost| {
@@ -429,7 +436,7 @@ impl IGPState {
                 futures.push(mesh.send_packet_link(*neigh, IGPPayload::RouteRequest { dst: *dst }));
             }
         }
-        let results = futures::future::join_all(futures).await;
+        let results = join_all(futures).await;
         for result in results {
             if let Err(err) = result {
                 warn!("Failed to send RouteRequest: {}", err);

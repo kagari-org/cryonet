@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
+async-trait = "0.1.89"
 dyn-clone = "1.0.20"
 futures = "0.3.31"
 serde = { version = "1.0.228", features = ["derive"] }

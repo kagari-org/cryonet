@@ -3,7 +3,7 @@
 use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::{sync::{oneshot, Mutex}, time::interval};
-use tracing::{info, warn};
+use tracing::{error, warn};
 
 use crate::mesh::{igp_payload::IGPPayload, LinkEvent};
 
@@ -123,20 +123,16 @@ impl IGP {
             } 
         });
     }
-
-    pub(crate) fn stop(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            if let Err(_) = stop.send(()) {
-                warn!("IGP stop signal receiver already dropped");
-            }
-        } else {
-            info!("IGP already stopped");
-        }
-    }
 }
 
 impl Drop for IGP {
     fn drop(&mut self) {
-        self.stop();
+        if let Some(stop) = self.stop.take() {
+            if let Err(_) = stop.send(()) {
+                error!("IGP stop signal receiver already dropped");
+            }
+        } else {
+            error!("IGP already stopped");
+        }
     }
 }

@@ -6,4 +6,6 @@ use crate::mesh::packet::NodeId;
 pub(crate) enum Error {
     #[error("No link to node {0:X}")]
     NoSuchLink(NodeId),
+    #[error("Route to node {0:X} is unreachable")]
+    Unreachable(NodeId),
 }
