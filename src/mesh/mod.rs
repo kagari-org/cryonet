@@ -242,9 +242,9 @@ impl Mesh {
                             }
                             packet.ttl -= 1;
                             let result: Result<()> = try {
-                                let (reply_tx, reply_rx) = oneshot::channel();
+                                let (reply_tx, _reply_rx) = oneshot::channel();
+                                // ignore reply_rx to avoid deadlock
                                 handler_event_tx.send(HandlerEvent::SendPacket(packet, reply_tx)).await?;
-                                reply_rx.await??;
                             };
                             if let Err(err) = result {
                                 warn!("Failed to forward packet to {}", err);

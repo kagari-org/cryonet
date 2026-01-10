@@ -67,7 +67,7 @@ impl IGPState {
                     warn!("Ignoring unexpected HelloReply with seq {:?} from {:X}", seq, src);
                     return Ok(());
                 }
-                let rtt = time.duration_since(cost.start).as_millis();
+                let rtt = time.duration_since(cost.start).as_millis() + 100;
                 let origin = cost.cost;
                 if cost.cost == u32::MAX {
                     cost.cost = rtt as u32;
