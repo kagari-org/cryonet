@@ -138,7 +138,6 @@ impl Mesh {
         rx
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn remove_dispatchee(&self, rx: &mut mpsc::Receiver<Packet>) {
         let mut dispatchees = self.dispatchees.lock().await;
         rx.close();
