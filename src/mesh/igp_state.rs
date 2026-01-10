@@ -97,10 +97,7 @@ impl IGPState {
                 let route = self.routes.iter().find(|((d, _), r)| d == dst && r.selected);
                 // ignore when we don't have a route to dst
                 if let Some((_, route)) = route {
-                    mesh.broadcast_packet_local(IGPPayload::Update {
-                        dst: *dst,
-                        metric: SeqMetric { metric: route.computed_metric, ..route.metric },
-                    }).await?;
+                    mesh.broadcast_packet_local(generate_update(route)).await?;
                 }
             },
 
@@ -125,19 +122,13 @@ impl IGPState {
                     },
                 };
                 if *seq <= route.metric.seq {
-                    mesh.broadcast_packet_local(IGPPayload::Update {
-                        dst: *dst,
-                        metric: SeqMetric { metric: route.computed_metric, ..route.metric },
-                    }).await?;
+                    mesh.broadcast_packet_local(generate_update(route)).await?;
                     return Ok(());
                 }
                 if *dst == mesh.id {
                     // if the route is from ourself
                     route.metric.seq += Seq(1);
-                    mesh.broadcast_packet_local(IGPPayload::Update {
-                        dst: *dst,
-                        metric: SeqMetric { metric: route.computed_metric, ..route.metric },
-                    }).await?;
+                    mesh.broadcast_packet_local(generate_update(route)).await?;
                     return Ok(());
                 }
                 // forward the request
@@ -208,8 +199,7 @@ impl IGPState {
 
 
             IGPPayload::Update { metric, dst } => {
-                let cost = self.costs.get(&src);
-                let computed_metric = match (cost, metric.metric) {
+                let computed_metric = match (self.costs.get(&src), metric.metric) {
                     (_, u32::MAX) => u32::MAX,
                     (None, _) => {
                         warn!("Unexpected missing cost for {:X}", src);
@@ -270,10 +260,7 @@ impl IGPState {
                     }
                     // trigger update
                     let mesh = self.mesh.lock().await;
-                    mesh.broadcast_packet_local(IGPPayload::Update {
-                        dst: *dst,
-                        metric: SeqMetric { metric: route.computed_metric, ..route.metric },
-                    }).await?;
+                    mesh.broadcast_packet_local(generate_update(route)).await?;
                 }
 
                 self.select().await;
@@ -366,10 +353,7 @@ impl IGPState {
                         let mesh = self.mesh.lock().await;
                         mesh.set_route(**dst, best.0.from).await;
                         if source.0.metric.abs_diff(origin.0.metric) > self.update_threshold {
-                            let result = mesh.broadcast_packet_local(IGPPayload::Update {
-                                dst: **dst,
-                                metric: source.0,
-                            }).await;
+                            let result = mesh.broadcast_packet_local(generate_update(best.0)).await;
                             if let Err(err) = result {
                                 warn!("Failed to broadcast Update for {:X}: {}", dst, err);
                             }
@@ -391,21 +375,25 @@ impl IGPState {
 
     pub(crate) async fn dump(&mut self, neigh: Option<NodeId>) {
         // add self route
-        self.routes.insert((self.id, 0), Route {
-            metric: SeqMetric {
+        self.routes.entry((self.id, self.id))
+            .and_modify(|route| route.timeout = Instant::now() + self.route_timeout)
+            .or_insert_with(|| Route {
+                metric: SeqMetric {
+                    seq: Seq(0),
+                    metric: 0,
+                },
+                computed_metric: 0,
+                dst: self.id,
+                from: self.id,
+                timeout: Instant::now() + self.route_timeout,
+                selected: true,
+            });
+        self.sources.entry(self.id)
+            .and_modify(|source| source.1 = Instant::now() + self.source_timeout)
+            .or_insert_with(|| (SeqMetric {
                 seq: Seq(0),
                 metric: 0,
-            },
-            computed_metric: 0,
-            dst: 0,
-            from: self.id,
-            timeout: Instant::now() + self.route_timeout,
-            selected: true,
-        });
-        self.sources.insert(self.id, (SeqMetric {
-            seq: Seq(0),
-            metric: 0,
-        }, Instant::now() + self.source_timeout));
+            }, Instant::now() + self.source_timeout));
 
         self.select().await;
 
@@ -424,10 +412,7 @@ impl IGPState {
                     warn!("Source for {:X} missing during RouteDump, inserting", dst);
                 },
             }
-            let update = IGPPayload::Update {
-                metric: route.metric,
-                dst: *dst,
-            };
+            let update = generate_update(route);
             let result = match neigh {
                 Some(neigh) => mesh.send_packet_link(neigh, update).await,
                 None => mesh.broadcast_packet_local(update).await,
@@ -463,5 +448,15 @@ impl IGPState {
         }
         drop(mesh);
         self.select().await;
+    }
+}
+
+fn generate_update(route: &Route) -> IGPPayload {
+    IGPPayload::Update {
+        dst: route.dst,
+        metric: SeqMetric {
+            seq: route.metric.seq,
+            metric: route.computed_metric,
+        },
     }
 }

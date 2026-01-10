@@ -14,7 +14,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use tokio::{io::{AsyncRead, AsyncWrite}, net::TcpListener, sync::Mutex, time::sleep};
     use tokio_tungstenite::{WebSocketStream, accept_async, connect_async, tungstenite::Message};
-    use tracing::{Level, debug};
+    use tracing::{Level, debug, info};
 
     use crate::mesh::{Link, Mesh, igp::IGP, packet::{Packet, Payload}};
 
@@ -60,6 +60,7 @@ mod tests {
 
         loop {
             let _ = &igp;
+            info!("sending packet");
             if let Err(err) = mesh.lock().await.send_packet(2, P("Hello, World!".to_string())).await {
                 dbg!(err);
             }
@@ -119,7 +120,7 @@ mod tests {
         loop {
             let _ = &igp;
             if let Some(packet) = recv.recv().await {
-                debug!("p: {:?}", packet);
+                info!("p: {:?}", packet);
             }
         }
     }
