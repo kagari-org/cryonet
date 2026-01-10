@@ -31,8 +31,16 @@ pub(crate) struct Mesh {
 
 #[async_trait]
 pub(crate) trait Link: Send + Sync {
-    async fn recv(&mut self) -> Result<Packet>;
-    async fn send(&mut self, packet: Packet) -> Result<()>;
+    async fn recv(&mut self) -> std::result::Result<Packet, LinkError>;
+    async fn send(&mut self, packet: Packet) -> std::result::Result<(), LinkError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum LinkError {
+    #[error("Link closed")]
+    Closed,
+    #[error("Unknown error: {0}")]
+    Unknown(#[from] anyhow::Error),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -216,16 +224,23 @@ impl Mesh {
             let mut links: HashMap<NodeId, Box<dyn Link>> = HashMap::new();
             loop {
                 select! {
-                    packet = async {
-                        let mut futures: Vec<_> = links.values_mut().map(|link| link.recv()).collect();
+                    (packet, link) = async {
+                        let mut futures: Vec<_> = links
+                            .values_mut()
+                            .map(|link| link.recv())
+                            .collect();
                         futures.push(Box::pin(pending())); // to avoid empty select_all
-                        let (packet, _, _) = select_all(futures).await;
-                        packet
+                        let (packet, i, _) = select_all(futures).await;
+                        (packet, *links.keys().nth(i).unwrap())
                      } => {
                         let mut packet = match packet {
                             Ok(packet) => packet,
-                            Err(err) => {
-                                // TODO: may remove link on closure
+                            Err(LinkError::Closed) => {
+                                warn!("Link to {:X} closed", link);
+                                let _ = handler_event_tx.send(HandlerEvent::RemoveLink(link, oneshot::channel().0)).await;
+                                continue;
+                            }
+                            Err(LinkError::Unknown(err)) => {
                                 warn!("Failed to receive packet: {}", err);
                                 continue;
                             }
@@ -241,11 +256,8 @@ impl Mesh {
                                 continue;
                             }
                             packet.ttl -= 1;
-                            let result: Result<()> = try {
-                                let (reply_tx, _reply_rx) = oneshot::channel();
-                                // ignore reply_rx to avoid deadlock
-                                handler_event_tx.send(HandlerEvent::SendPacket(packet, reply_tx)).await?;
-                            };
+                            // ignore reply_rx to avoid deadlock
+                            let result = handler_event_tx.send(HandlerEvent::SendPacket(packet, oneshot::channel().0)).await;
                             if let Err(err) = result {
                                 warn!("Failed to forward packet to {}", err);
                             }
@@ -274,33 +286,66 @@ impl Mesh {
                             }
                             HandlerEvent::SendPacket(packet, reply_tx) => {
                                 let routes = routes.lock().await;
-                                let Some(route) = routes.get(&packet.dst) else {
+                                let Some(next_hop) = routes.get(&packet.dst) else {
                                     let _ = reply_tx.send(Err(anyhow!(Error::Unreachable(packet.dst))));
                                     continue;
                                 };
-                                let Some(link) = links.get_mut(route) else {
-                                    let _ = reply_tx.send(Err(anyhow!(Error::NoSuchLink(*route))));
+                                let Some(link) = links.get_mut(next_hop) else {
+                                    let _ = reply_tx.send(Err(anyhow!(Error::NoSuchLink(*next_hop))));
                                     continue;
                                 };
-                                debug!("Sending packet to {:X} via link {:X}, {:?}", packet.dst, route, packet);
-                                let _ = reply_tx.send(link.send(packet).await);
+                                debug!("Sending packet to {:X} via link {:X}, {:?}", packet.dst, next_hop, packet);
+                                let result = match link.send(packet).await {
+                                    Ok(()) => Ok(()),
+                                    Err(LinkError::Unknown(e)) => Err(anyhow!(e)),
+                                    Err(err@LinkError::Closed) => {
+                                        let _ = handler_event_tx.send(
+                                            HandlerEvent::RemoveLink(*next_hop, oneshot::channel().0),
+                                        ).await;
+                                        Err(anyhow!(err))
+                                    },
+                                };
+                                let _ = reply_tx.send(result);
                             }
                             HandlerEvent::SendPacketLink(packet, reply_tx) => {
-                                let Some(link) = links.get_mut(&packet.dst) else {
-                                    let _ = reply_tx.send(Err(anyhow!(Error::NoSuchLink(packet.dst))));
+                                let dst = packet.dst;
+                                let Some(link) = links.get_mut(&dst) else {
+                                    let _ = reply_tx.send(Err(anyhow!(Error::NoSuchLink(dst))));
                                     continue;
                                 };
-                                debug!("Sending packet to {:X} via direct link, {:?}", packet.dst, packet);
-                                let _ = reply_tx.send(link.send(packet).await);
+                                debug!("Sending packet to {:X} via direct link, {:?}", dst, packet);
+                                let result = match link.send(packet).await {
+                                    Ok(()) => Ok(()),
+                                    Err(LinkError::Unknown(e)) => Err(anyhow!(e)),
+                                    Err(err@LinkError::Closed) => {
+                                        let _ = handler_event_tx.send(
+                                            HandlerEvent::RemoveLink(dst, oneshot::channel().0),
+                                        ).await;
+                                        Err(anyhow!(err))
+                                    },
+                                };
+                                let _ = reply_tx.send(result);
                             }
                             HandlerEvent::BroadcastPacket(payload, reply_tx) => {
                                 debug!("Broadcasting packet to all links, {:?}", payload);
-                                let futures = links.iter_mut().map(|(dst, link)| link.send(Packet {
-                                    src: id,
-                                    dst: *dst,
-                                    ttl: 16,
-                                    payload: dyn_clone::clone_box(&*payload),
-                                })).collect::<Vec<_>>();
+                                let futures = links.iter_mut().map(|(dst, link)| async {
+                                    let result = link.send(Packet {
+                                        src: id,
+                                        dst: *dst,
+                                        ttl: 16,
+                                        payload: dyn_clone::clone_box(&*payload),
+                                    }).await;
+                                    match result {
+                                        Ok(()) => Ok(()),
+                                        Err(LinkError::Unknown(e)) => Err(anyhow!(e)),
+                                        Err(err@LinkError::Closed) => {
+                                            let _ = handler_event_tx.send(
+                                                HandlerEvent::RemoveLink(*dst, oneshot::channel().0),
+                                            ).await;
+                                            Err(anyhow!(err))
+                                        },
+                                    }
+                                }).collect::<Vec<_>>();
                                 let results = join_all(futures).await
                                     .into_iter()
                                     .collect::<Result<Vec<_>, _>>()
@@ -378,7 +423,7 @@ impl Drop for Mesh {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use anyhow::{Result, bail};
+    use anyhow::{anyhow, Result};
     use async_trait::async_trait;
     use futures::{SinkExt, StreamExt};
     use serde::{Deserialize, Serialize};
@@ -386,21 +431,22 @@ mod tests {
     use tokio_tungstenite::{WebSocketStream, accept_async, connect_async, tungstenite::Message};
     use tracing::{Level, info};
 
-    use crate::mesh::{Link, Mesh, igp::IGP, packet::{Packet, Payload}};
+    use crate::mesh::{Link, LinkError, Mesh, igp::IGP, packet::{Packet, Payload}};
 
     struct L<T>(WebSocketStream<T>);
     #[async_trait]
     impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> Link for L<T> {
-        async fn recv(&mut self) -> Result<Packet> {
+        async fn recv(&mut self) -> Result<Packet, LinkError> {
             let packet = match self.0.next().await {
-                None => bail!("connection closed"),
-                Some(packet) => packet?,
+                None => Err(LinkError::Closed)?,
+                Some(Err(e)) => Err(LinkError::Unknown(anyhow!(e)))?,
+                Some(Ok(packet)) => packet.into_data(),
             };
-            Ok(serde_json::from_slice(&packet.into_data())?)
+            Ok(serde_json::from_slice(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?)
         }
-        async fn send(&mut self, packet: Packet) -> Result<()> {
-            let data = serde_json::to_vec(&packet)?;
-            self.0.send(Message::binary(data)).await?;
+        async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
+            let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?;
+            self.0.send(Message::binary(data)).await.map_err(|e| LinkError::Unknown(anyhow!(e)))?;
             Ok(())
         }
     }
