@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
                                 .map(|id| id.to_str().map(|id| id.parse::<NodeId>()))???;
                             let link = WebSocketLink::new(ws);
                             mesh.lock().await.add_link(neigh_id, Box::new(link)).await?;
-                            writeln!(stdout, "Connected to {} (Node ID: {})", address, neigh_id)?;
+                            writeln!(stdout, "Connected to {} (Node ID: {:X})", address, neigh_id)?;
                         };
                         if let Err(err) = result {
                             writeln!(stdout, "Failed to connect to {}: {}", address, err)?;
@@ -182,30 +182,42 @@ async fn main() -> Result<()> {
                         let mut seq = Seq(0);
                         let mut ticker = interval(Duration::from_secs(1));
                         loop {
-                            ticker.tick().await;
-                            let start = Instant::now();
-                            let result = mesh.lock().await.send_packet(dst, PingPayload::Ping(seq)).await;
-                            if let Err(err) = result {
-                                writeln!(stdout, "Failed to send ping to {:X}: {}", dst, err)?;
-                                break;
-                            }
-                            // TODO: add timeout
-                            let Some(packet) = recv.recv().await else {
-                                writeln!(stdout, "Ping receiver closed")?;
-                                break;
-                            };
-                            let payload = (packet.payload.as_ref() as &dyn std::any::Any)
-                                .downcast_ref::<PingPayload>().unwrap();
-                            match payload {
-                                PingPayload::Pong(s) if *s == seq => {
-                                    let rtt = Instant::now().duration_since(start);
-                                    writeln!(stdout, "Ping {:X}: seq={}, rtt={}ms",
-                                        packet.src, s.0, rtt.as_millis())?;
+                            select! {
+                                line = rl.readline() => {
+                                    match line? {
+                                        ReadlineEvent::Eof | ReadlineEvent::Interrupted => {
+                                            writeln!(stdout, "")?;
+                                            break
+                                        },
+                                        ReadlineEvent::Line(_) => {},
+                                    };
+                                }
+                                _ = ticker.tick() => {
+                                    let start = Instant::now();
+                                    let result = mesh.lock().await.send_packet(dst, PingPayload::Ping(seq)).await;
+                                    if let Err(err) = result {
+                                        writeln!(stdout, "Failed to send ping to {:X}: {}", dst, err)?;
+                                        break;
+                                    }
+                                    // TODO: add timeout
+                                    let Some(packet) = recv.recv().await else {
+                                        writeln!(stdout, "Ping receiver closed")?;
+                                        break;
+                                    };
+                                    let payload = (packet.payload.as_ref() as &dyn std::any::Any)
+                                        .downcast_ref::<PingPayload>().unwrap();
+                                    match payload {
+                                        PingPayload::Pong(s) if *s == seq => {
+                                            let rtt = Instant::now().duration_since(start);
+                                            writeln!(stdout, "Ping {:X}: seq={}, rtt={}ms",
+                                                packet.src, s.0, rtt.as_millis())?;
+                                        },
+                                        // ignore other packets
+                                        _ => {},
+                                    };
                                     rl.flush()?;
                                     seq += Seq(1);
                                 },
-                                // ignore other packets
-                                _ => {},
                             };
                         }
                         mesh.lock().await.remove_dispatchee(&mut recv).await;
@@ -214,25 +226,38 @@ async fn main() -> Result<()> {
                         let mut recv = mesh.lock().await.add_dispatchee(|packet|
                             (packet.payload.as_ref() as &dyn std::any::Any).is::<PingPayload>()).await;
                         loop {
-                            let Some(packet) = recv.recv().await else {
-                                writeln!(stdout, "Pong receiver closed")?;
-                                break;
-                            };
-                            let payload = (packet.payload.as_ref() as &dyn std::any::Any)
-                                .downcast_ref::<PingPayload>().unwrap();
-                            match payload {
-                                PingPayload::Ping(s) => {
-                                    let result = mesh.lock().await.send_packet(packet.src, PingPayload::Pong(*s)).await;
-                                    if let Err(err) = result {
-                                        writeln!(stdout, "Failed to send pong to {:X}: {}", packet.src, err)?;
-                                    } else {
-                                        writeln!(stdout, "Pong {:X}: seq={}", packet.src, s.0)?;
-                                    }
-                                    rl.flush()?;
+                            select!{
+                                line = rl.readline() => {
+                                    match line? {
+                                        ReadlineEvent::Eof | ReadlineEvent::Interrupted => {
+                                            writeln!(stdout, "")?;
+                                            break
+                                        },
+                                        ReadlineEvent::Line(_) => {},
+                                    };
                                 },
-                                // ignore other packets
-                                _ => {},
-                            };
+                                packet = recv.recv() => {
+                                    let Some(packet) = packet else {
+                                        writeln!(stdout, "Pong receiver closed")?;
+                                        break;
+                                    };
+                                    let payload = (packet.payload.as_ref() as &dyn std::any::Any)
+                                        .downcast_ref::<PingPayload>().unwrap();
+                                    match payload {
+                                        PingPayload::Ping(s) => {
+                                            let result = mesh.lock().await.send_packet(packet.src, PingPayload::Pong(*s)).await;
+                                            if let Err(err) = result {
+                                                writeln!(stdout, "Failed to send pong to {:X}: {}", packet.src, err)?;
+                                            } else {
+                                                writeln!(stdout, "Pong {:X}: seq={}", packet.src, s.0)?;
+                                            }
+                                            rl.flush()?;
+                                        },
+                                        // ignore other packets
+                                        _ => {},
+                                    };
+                                },
+                            }
                         }
                         mesh.lock().await.remove_dispatchee(&mut recv).await;
                     },
