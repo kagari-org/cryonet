@@ -209,6 +209,7 @@ impl Mesh {
         routes.clone()
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn subscribe_route_events(&self) -> broadcast::Receiver<RouteEvent> {
         self.route_event_tx.subscribe()
     }

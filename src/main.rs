@@ -27,6 +27,11 @@ struct Args {
 enum Rl {
     #[clap(alias = "c")]
     Connect { address: String },
+    #[clap(alias = "d")]
+    Disconnect {
+        #[clap(value_parser = maybe_hex::<NodeId>)]
+        id: NodeId,
+    },
     #[clap(alias = "l")]
     Links,
     #[clap(alias = "r")]
@@ -139,6 +144,14 @@ async fn main() -> Result<()> {
                         };
                         if let Err(err) = result {
                             writeln!(stdout, "Failed to connect to {}: {}", address, err)?;
+                        }
+                    },
+                    Rl::Disconnect { id } => {
+                        let result = mesh.lock().await.remove_link(id).await;
+                        if let Err(err) = result {
+                            writeln!(stdout, "Failed to disconnect from {:X}: {}", id, err)?;
+                        } else {
+                            writeln!(stdout, "Disconnected from {:X}", id)?;
                         }
                     },
                     Rl::Links => {
