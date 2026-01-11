@@ -8,4 +8,6 @@ pub(crate) enum Error {
     NoSuchLink(NodeId),
     #[error("Route to node {0:X} is unreachable")]
     Unreachable(NodeId),
+    #[error("Unauthorized")]
+    Unauthorized,
 }
