@@ -421,6 +421,7 @@ impl IGP {
     async fn select(&mut self) {
         let mut routes = HashMap::new();
         for ((dst, neigh), route) in &mut self.routes {
+            route.selected = false;
             routes.entry(*dst).or_insert((dst, Vec::new())).1.push((route, neigh));
         }
         for (dst, routes) in routes.values_mut() {
@@ -436,8 +437,14 @@ impl IGP {
                         self.mesh.lock().await.remove_route(**dst);
                         // no reachable route
                     } else {
+                        // here should be unreachable, but just in case
+                        let mut mesh = self.mesh.lock().await;
                         source.insert((best.0.metric, Instant::now() + self.source_timeout));
-                        self.mesh.lock().await.set_route(**dst, best.0.from);
+                        mesh.set_route(**dst, best.0.from);
+                        let result = mesh.broadcast_packet_local(generate_update(best.0)).await;
+                        if let Err(err) = result {
+                            warn!("Failed to broadcast Update for {:X}: {}", dst, err);
+                        }
                     }
                 },
                 Entry::Occupied(mut source) => {
