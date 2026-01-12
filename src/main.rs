@@ -225,7 +225,7 @@ async fn main() -> Result<()> {
             }
         }
     }
-    drop(igp);
+    igp.lock().await.stop().await;
     mesh.lock().await.stop()?;
     Ok(())
 }

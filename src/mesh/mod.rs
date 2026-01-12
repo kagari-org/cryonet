@@ -12,8 +12,6 @@ use crate::errors::Error;
 pub(crate) mod seq;
 pub(crate) mod packet;
 pub(crate) mod igp;
-pub(crate) mod igp_payload;
-pub(crate) mod igp_state;
 
 pub(crate) struct Mesh {
     pub(crate) id: NodeId,
