@@ -1,6 +1,6 @@
 // inspired by RFC 8966
 
-use std::{any::Any, cmp::Ordering, collections::{HashMap, hash_map::Entry}, sync::Arc, time::{Duration, Instant}};
+use std::{any::Any, cmp::Ordering, collections::{HashMap, hash_map::Entry}, fmt::Display, sync::Arc, time::{Duration, Instant}};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,7 @@ pub(crate) struct IGP {
 #[typetag::serde]
 impl Payload for IGPPayload {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum IGPPayload {
+enum IGPPayload {
     Hello { seq: Seq },
     HelloReply { seq: Seq },
     RouteRequest { dst: NodeId }, // only used when route is about to expire
@@ -48,24 +48,40 @@ pub(crate) enum IGPPayload {
     },
 }
 
-pub(crate) struct Cost {
-    pub(crate) seq: Seq,
-    pub(crate) start: Instant,
-    pub(crate) cost: u32,
+struct Cost {
+    seq: Seq,
+    start: Instant,
+    cost: u32,
 }
 
-pub(crate) struct RouteRequest {
-    pub(crate) seq: Seq,
-    pub(crate) expiry: Instant,
+struct RouteRequest {
+    seq: Seq,
+    expiry: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Route {
-    pub(crate) metric: SeqMetric,
-    pub(crate) computed_metric: u32,
-    pub(crate) dst: NodeId,
-    pub(crate) from: NodeId,
-    pub(crate) timeout: Instant,
-    pub(crate) selected: bool,
+    metric: SeqMetric,
+    computed_metric: u32,
+    dst: NodeId,
+    from: NodeId,
+    timeout: Instant,
+    selected: bool,
+}
+
+impl Display for Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "to {:X} via {:X}, advertised metric {}, seq {}, metric {}, selected: {}",
+            self.dst,
+            self.from,
+            self.metric.metric,
+            self.metric.seq,
+            self.computed_metric,
+            self.selected,
+        )
+    }
 }
 
 impl IGP {
@@ -551,6 +567,10 @@ impl IGP {
         }
         drop(mesh);
         self.select().await;
+    }
+
+    pub(crate) fn get_routes(&self) -> Vec<Route> {
+        self.routes.values().cloned().collect()
     }
 
     pub(crate) async fn stop(&mut self) {

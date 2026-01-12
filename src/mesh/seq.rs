@@ -1,9 +1,15 @@
-use std::{cmp::Ordering, ops::{Add, AddAssign, Sub, SubAssign}};
+use std::{cmp::Ordering, fmt::Display, ops::{Add, AddAssign, Sub, SubAssign}};
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Seq(pub(crate) u16);
+
+impl Display for Seq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 impl Add for Seq {
     type Output = Seq;

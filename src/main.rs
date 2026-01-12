@@ -35,6 +35,8 @@ enum Rl {
     Links,
     #[clap(alias = "r")]
     Routes,
+    #[clap(alias = "ir")]
+    IGPRoutes,
     Ping {
         #[clap(value_parser = maybe_hex::<NodeId>)]
         dst: NodeId,
@@ -133,6 +135,17 @@ async fn main() -> Result<()> {
                         };
                         if let Err(err) = result {
                             writeln!(stdout, "Failed to get routes: {}", err)?;
+                        }
+                    },
+                    Rl::IGPRoutes => {
+                        let routes = igp.lock().await.get_routes();
+                        if routes.is_empty() {
+                            writeln!(stdout, "No IGP routes available")?;
+                            continue;
+                        }
+                        writeln!(stdout, "IGP Routes:")?;
+                        for route in routes {
+                            writeln!(stdout, "  - {}", route)?;
                         }
                     },
                     Rl::Ping { dst } => {
