@@ -1,11 +1,11 @@
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, sync::{Arc, Weak}};
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use futures::future::{join_all, pending, select_all};
+use futures::future::join_all;
 use packet::{NodeId, Packet, Payload};
-use tokio::{select, sync::{Mutex, broadcast, mpsc, oneshot}};
-use tracing::{debug, warn};
+use tokio::{select, sync::{Mutex, broadcast, mpsc}};
+use tracing::{debug, error, warn};
 
 use crate::errors::Error;
 
@@ -18,21 +18,25 @@ pub(crate) mod igp_state;
 pub(crate) struct Mesh {
     pub(crate) id: NodeId,
 
-    routes: Arc<Mutex<HashMap<NodeId, NodeId>>>,
+    mesh: Weak<Mutex<Mesh>>,
+
+    link_send: HashMap<NodeId, Box<dyn LinkSend>>,
+    link_recv_stop: HashMap<NodeId, mpsc::UnboundedSender<()>>,
+    routes: HashMap<NodeId, NodeId>,
+    dispatchees: Vec<(Box<dyn Fn(&Packet) -> bool + Send + Sync>, mpsc::Sender<Packet>)>,
 
     handler_event_tx: mpsc::UnboundedSender<HandlerEvent>,
-    dispatcher_event_tx: mpsc::UnboundedSender<DispatcherEvent>,
-
-    dispatchees: Arc<Mutex<Vec<(Box<dyn Fn(&Packet) -> bool + Send + Sync>, mpsc::Sender<Packet>)>>>,
-
-    link_event_tx: broadcast::Sender<LinkEvent>,
-    route_event_tx: broadcast::Sender<RouteEvent>,
+    mesh_event_tx: broadcast::Sender<MeshEvent>,
 }
 
 #[async_trait]
-pub(crate) trait Link: Send + Sync {
-    async fn recv(&mut self) -> std::result::Result<Packet, LinkError>;
+pub(crate) trait LinkSend: Send + Sync {
     async fn send(&mut self, packet: Packet) -> std::result::Result<(), LinkError>;
+}
+
+#[async_trait]
+pub(crate) trait LinkRecv: Send + Sync {
+    async fn recv(&mut self) -> std::result::Result<Packet, LinkError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -45,227 +49,38 @@ pub(crate) enum LinkError {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum LinkEvent {
-    Up(NodeId),
-    Down(NodeId),
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum RouteEvent {
-    Added(NodeId, NodeId),
-    Removed(NodeId, NodeId),
+pub(crate) enum MeshEvent {
+    LinkUp(NodeId),
+    LinkDown(NodeId),
+    RouteAdded(NodeId, NodeId),
+    RouteRemoved(NodeId, NodeId),
 }
 
 enum HandlerEvent {
-    AddLink(NodeId, Box<dyn Link>, oneshot::Sender<Result<()>>),
-    RemoveLink(NodeId, oneshot::Sender<Result<()>>),
-    ListLinks(oneshot::Sender<Result<Vec<NodeId>>>),
-    SendPacket(Packet, oneshot::Sender<Result<()>>),
-    SendPacketLink(Packet, oneshot::Sender<Result<()>>),
-    BroadcastPacket(Box<dyn Payload>, oneshot::Sender<Result<()>>),
-    Stop,
-}
-
-enum DispatcherEvent {
+    ReceivedPacket {
+        from: NodeId,
+        packet: Result<Packet, LinkError>,
+    },
     Stop,
 }
 
 impl Mesh {
-    pub(crate) fn new(id: NodeId) -> Self {
-        let (handler_event_tx, handler_event_rx) = mpsc::unbounded_channel();
-        let (dispatcher_event_tx, dispatcher_event_rx) = mpsc::unbounded_channel();
-
-        let (dispatch_tx, dispatch_rx) = mpsc::channel(64);
-
-        let mesh = Mesh {
+    pub(crate) fn new(id: NodeId) -> Arc<Mutex<Self>> {
+        let (handler_event_tx, mut handler_event_rx) = mpsc::unbounded_channel();
+        let mesh = Arc::new_cyclic(|mesh| Mutex::new(Mesh {
             id,
-            routes: Arc::new(Mutex::new(HashMap::new())),
+            mesh: mesh.clone(),
+            link_send: HashMap::new(),
+            link_recv_stop: HashMap::new(),
+            routes: HashMap::new(),
+            dispatchees: Vec::new(),
             handler_event_tx: handler_event_tx.clone(),
-            dispatcher_event_tx,
-            dispatchees: Arc::new(Mutex::new(Vec::new())),
-            link_event_tx: broadcast::Sender::new(16),
-            route_event_tx: broadcast::Sender::new(16),
-        };
-        mesh.handle_links(
-            dispatch_tx,
-            handler_event_tx,
-            handler_event_rx,
-        );
-        mesh.dispatch(
-            dispatch_rx,
-            dispatcher_event_rx,
-        );
-
-        mesh
-    }
-
-    pub(crate) async fn send_packet<P: Payload>(&self, dst: NodeId, payload: P) -> Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.handler_event_tx.send(HandlerEvent::SendPacket(Packet {
-            src: self.id,
-            dst,
-            ttl: 16,
-            payload: Box::new(payload),
-        }, reply_tx))?;
-        reply_rx.await?
-    }
-
-    pub(crate) async fn send_packet_link<P: Payload>(&self, dst: NodeId, payload: P) -> Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.handler_event_tx.send(HandlerEvent::SendPacketLink(Packet {
-            src: self.id,
-            dst,
-            ttl: 16,
-            payload: Box::new(payload),
-        }, reply_tx))?;
-        reply_rx.await?
-    }
-
-    pub(crate) async fn broadcast_packet_local<P: Payload>(&self, payload: P) -> Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.handler_event_tx.send(HandlerEvent::BroadcastPacket(Box::new(payload), reply_tx))?;
-        reply_rx.await?
-    }
-
-    pub(crate) async fn add_dispatchee<F>(&self, filter: F) -> mpsc::Receiver<Packet>
-    where
-        F: Fn(&Packet) -> bool + Send + Sync + 'static,
-    {
-        let (tx, rx) = mpsc::channel(64);
-        let mut dispatchees = self.dispatchees.lock().await;
-        dispatchees.push((Box::new(filter), tx));
-        rx
-    }
-
-    pub(crate) async fn remove_dispatchee(&self, rx: &mut mpsc::Receiver<Packet>) {
-        let mut dispatchees = self.dispatchees.lock().await;
-        rx.close();
-        dispatchees.retain(|(_, tx)| !tx.is_closed());
-    }
-
-    // link api
-    pub(crate) async fn add_link(&self, dst: NodeId, link: Box<dyn Link>) -> Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        debug!("Adding link to {:X}", dst);
-        self.handler_event_tx.send(HandlerEvent::AddLink(dst, link, reply_tx))?;
-        reply_rx.await??;
-        let _ = self.link_event_tx.send(LinkEvent::Up(dst));
-        Ok(())
-    }
-
-    pub(crate) async fn remove_link(&self, dst: NodeId) -> Result<()> {
-        let mut routes = self.routes.lock().await;
-        routes.retain(|_, &mut v| v != dst);
-        let (reply_tx, reply_rx) = oneshot::channel();
-        debug!("Removing link to {:X}", dst);
-        self.handler_event_tx.send(HandlerEvent::RemoveLink(dst, reply_tx))?;
-        reply_rx.await??;
-        let _ = self.link_event_tx.send(LinkEvent::Down(dst));
-        Ok(())
-    }
-
-    pub(crate) async fn get_links(&self) -> Result<Vec<NodeId>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.handler_event_tx.send(HandlerEvent::ListLinks(reply_tx))?;
-        reply_rx.await?
-    }
-
-    pub(crate) async fn subscribe_link_events(&self) -> broadcast::Receiver<LinkEvent> {
-        self.link_event_tx.subscribe()
-    }
-
-    // route api
-    pub(crate) async fn set_route(&self, dst: NodeId, next_hop: NodeId) {
-        if dst == self.id {
-            // skip routes to self
-            return;
-        }
-        let Ok(links) = self.get_links().await else {
-            warn!("Failed to get links when setting route to {:X} via {:X}", dst, next_hop);
-            return;
-        };
-        let mut routes = self.routes.lock().await;
-        if !links.contains(&next_hop) {
-            warn!("Tried to set route to {:X} via non-existent link {:X}", dst, next_hop);
-            return;
-        }
-        debug!("Setting route to {:X} via next hop {:X}", dst, next_hop);
-        routes.insert(dst, next_hop);
-        let _ = self.route_event_tx.send(RouteEvent::Added(dst, next_hop));
-    }
-
-    pub(crate) async fn remove_route(&self, dst: NodeId) {
-        let mut routes = self.routes.lock().await;
-        debug!("Removing route to {:X}", dst);
-        let route = routes.remove(&dst);
-        if let Some(next_hop) = route {
-            let _ = self.route_event_tx.send(RouteEvent::Removed(dst, next_hop));
-        }
-    }
-
-    pub(crate) async fn get_routes(&self) -> HashMap<NodeId, NodeId> {
-        let routes = self.routes.lock().await;
-        routes.clone()
-    }
-
-    #[allow(dead_code)]
-    pub(crate) async fn subscribe_route_events(&self) -> broadcast::Receiver<RouteEvent> {
-        self.route_event_tx.subscribe()
-    }
-
-    // forward logic
-    fn handle_links(
-        &self,
-        dispatch: mpsc::Sender<Packet>,
-        handler_event_tx: mpsc::UnboundedSender<HandlerEvent>,
-        mut handler_event_rx: mpsc::UnboundedReceiver<HandlerEvent>,
-    ) {
-        let id = self.id;
-        let routes = self.routes.clone();
+            mesh_event_tx: broadcast::Sender::new(16),
+        }));
+        let mesh2 = mesh.clone();
         tokio::spawn(async move {
-            let mut links: HashMap<NodeId, Box<dyn Link>> = HashMap::new();
             loop {
                 select! {
-                    (packet, link) = async {
-                        let mut futures: Vec<_> = links
-                            .values_mut()
-                            .map(|link| link.recv())
-                            .collect();
-                        futures.push(Box::pin(pending())); // to avoid empty select_all
-                        let (packet, i, _) = select_all(futures).await;
-                        (packet, *links.keys().nth(i).unwrap())
-                     } => {
-                        let mut packet = match packet {
-                            Ok(packet) => packet,
-                            Err(LinkError::Closed) => {
-                                warn!("Link to {:X} closed", link);
-                                let _ = handler_event_tx.send(HandlerEvent::RemoveLink(link, oneshot::channel().0));
-                                continue;
-                            }
-                            Err(LinkError::Unknown(err)) => {
-                                warn!("Failed to receive packet: {}", err);
-                                continue;
-                            }
-                        };
-                        debug!("Received packet: {:?}", packet);
-                        if packet.dst == id {
-                            if let Err(err) = dispatch.send(packet).await {
-                                warn!("Failed to forward packet to recv queue: {}", err);
-                            }
-                        } else {
-                            if packet.ttl == 0 {
-                                warn!("Dropping packet to {:X} due to TTL=0", packet.dst);
-                                continue;
-                            }
-                            packet.ttl -= 1;
-                            // ignore reply_rx to avoid deadlock
-                            let result = handler_event_tx.send(HandlerEvent::SendPacket(packet, oneshot::channel().0));
-                            if let Err(err) = result {
-                                warn!("Failed to forward packet to {}", err);
-                            }
-                        }
-                    }
                     packet = handler_event_rx.recv() => {
                         let event = match packet {
                             Some(event) => event,
@@ -275,149 +90,218 @@ impl Mesh {
                             }
                         };
                         match event {
-                            HandlerEvent::AddLink(dst, link, reply_tx) => {
-                                links.insert(dst, link);
-                                let _ = reply_tx.send(Ok(()));
-                            }
-                            HandlerEvent::RemoveLink(dst, reply_tx) => {
-                                links.remove(&dst);
-                                let _ = reply_tx.send(Ok(()));
-                            }
-                            HandlerEvent::ListLinks(reply_tx) => {
-                                let link_list: Vec<NodeId> = links.keys().cloned().collect();
-                                let _ = reply_tx.send(Ok(link_list));
-                            }
-                            HandlerEvent::SendPacket(packet, reply_tx) => {
-                                let routes = routes.lock().await;
-                                let Some(next_hop) = routes.get(&packet.dst) else {
-                                    let _ = reply_tx.send(Err(anyhow!(Error::Unreachable(packet.dst))));
-                                    continue;
-                                };
-                                let Some(link) = links.get_mut(next_hop) else {
-                                    let _ = reply_tx.send(Err(anyhow!(Error::NoSuchLink(*next_hop))));
-                                    continue;
-                                };
-                                debug!("Sending packet to {:X} via link {:X}, {:?}", packet.dst, next_hop, packet);
-                                let result = match link.send(packet).await {
-                                    Ok(()) => Ok(()),
-                                    Err(LinkError::Unknown(e)) => Err(anyhow!(e)),
-                                    Err(err@LinkError::Closed) => {
-                                        let _ = handler_event_tx.send(
-                                            HandlerEvent::RemoveLink(*next_hop, oneshot::channel().0),
-                                        );
-                                        Err(anyhow!(err))
-                                    },
-                                };
-                                let _ = reply_tx.send(result);
-                            }
-                            HandlerEvent::SendPacketLink(packet, reply_tx) => {
-                                let dst = packet.dst;
-                                let Some(link) = links.get_mut(&dst) else {
-                                    let _ = reply_tx.send(Err(anyhow!(Error::NoSuchLink(dst))));
-                                    continue;
-                                };
-                                debug!("Sending packet to {:X} via direct link, {:?}", dst, packet);
-                                let result = match link.send(packet).await {
-                                    Ok(()) => Ok(()),
-                                    Err(LinkError::Unknown(e)) => Err(anyhow!(e)),
-                                    Err(err@LinkError::Closed) => {
-                                        let _ = handler_event_tx.send(
-                                            HandlerEvent::RemoveLink(dst, oneshot::channel().0),
-                                        );
-                                        Err(anyhow!(err))
-                                    },
-                                };
-                                let _ = reply_tx.send(result);
-                            }
-                            HandlerEvent::BroadcastPacket(payload, reply_tx) => {
-                                debug!("Broadcasting packet to all links, {:?}", payload);
-                                let futures = links.iter_mut().map(|(dst, link)| async {
-                                    let result = link.send(Packet {
-                                        src: id,
-                                        dst: *dst,
-                                        ttl: 16,
-                                        payload: dyn_clone::clone_box(&*payload),
-                                    }).await;
-                                    match result {
-                                        Ok(()) => Ok(()),
-                                        Err(LinkError::Unknown(e)) => Err(anyhow!(e)),
-                                        Err(err@LinkError::Closed) => {
-                                            let _ = handler_event_tx.send(
-                                                HandlerEvent::RemoveLink(*dst, oneshot::channel().0),
-                                            );
-                                            Err(anyhow!(err))
-                                        },
-                                    }
-                                }).collect::<Vec<_>>();
-                                let results = join_all(futures).await
-                                    .into_iter()
-                                    .collect::<Result<Vec<_>, _>>()
-                                    .map(|_| ());
-                                let _ = reply_tx.send(results);
-                            }
-                            HandlerEvent::Stop => {
-                                break;
-                            }
+                            HandlerEvent::Stop => break,
+                            HandlerEvent::ReceivedPacket { from, packet } => {
+                                let mut mesh = mesh.lock().await;
+                                if let Err(err) = mesh.handle_packet(from, packet).await {
+                                    warn!("Failed to handle packet from {:X}: {}", from, err);
+                                }
+                            },
                         }
                     }
                 }
             }
             warn!("link handler exiting");
         });
+        mesh2
     }
 
-    fn dispatch(&self,
-        mut dispatch_rx: mpsc::Receiver<Packet>,
-        mut dispatch_event_rx: mpsc::UnboundedReceiver<DispatcherEvent>,
-    ) {
-        let dispatchees = self.dispatchees.clone();
+    async fn send_packet_internal(&mut self, packet: Packet) -> Result<()> {
+        let Some(next_hop) = self.routes.get(&packet.dst) else {
+            return Err(anyhow!(Error::Unreachable(packet.dst)));
+        };
+        let Some(link) = self.link_send.get_mut(next_hop) else {
+            return Err(anyhow!(Error::Unreachable(packet.dst)));
+        };
+        debug!("Sending packet {:?} to {:X} via link {:X}", &packet, packet.dst, next_hop);
+        match link.send(packet).await {
+            res@Err(LinkError::Closed) => {
+                self.remove_link(*next_hop);
+                res
+            },
+            res => res,
+        }?;
+        Ok(())
+    }
+
+    pub(crate) async fn send_packet<P: Payload>(&mut self, dst: NodeId, payload: P) -> Result<()> {
+        self.send_packet_internal(Packet {
+            src: self.id,
+            dst,
+            ttl: 16,
+            payload: Box::new(payload),
+        }).await
+    }
+
+    pub(crate) async fn send_packet_link<P: Payload>(&mut self, dst: NodeId, payload: P) -> Result<()> {
+        let Some(link) = self.link_send.get_mut(&dst) else {
+            return Err(anyhow!(Error::NoSuchLink(dst)));
+        };
+        let packet = Packet {
+            src: self.id,
+            dst,
+            ttl: 16,
+            payload: Box::new(payload),
+        };
+        debug!("Sending packet {:?} to {:X} via direct link", &packet, dst);
+        match link.send(packet).await {
+            Err(LinkError::Closed) => self.remove_link(dst),
+            res => res?,
+        };
+        Ok(())
+    }
+
+    pub(crate) async fn broadcast_packet_local<P: Payload>(&mut self, payload: P) -> Result<()> {
+        debug!("Broadcasting packet {:?} to all links", &payload);
+        let payload = Box::new(payload);
+        let futures = self.link_send.iter_mut().map(|(dst, link)| async {
+            (link.send(Packet {
+                src: self.id,
+                dst: *dst,
+                ttl: 16,
+                payload: dyn_clone::clone_box(&*payload),
+            }).await, *dst)
+        }).collect::<Vec<_>>();
+        let results = join_all(futures).await;
+        for (result, dst) in &results {
+            if let Err(LinkError::Closed) = result {
+                self.remove_link(*dst);
+            }
+        }
+        results.into_iter()
+            .map(|(res, _)| res)
+            .collect::<Result<Vec<_>, _>>()
+            .map(|_| ())?;
+        Ok(())
+    }
+
+    pub(crate) fn add_dispatchee<F>(&mut self, filter: F) -> mpsc::Receiver<Packet>
+    where
+        F: Fn(&Packet) -> bool + Send + Sync + 'static,
+    {
+        let (tx, rx) = mpsc::channel(64);
+        self.dispatchees.push((Box::new(filter), tx));
+        rx
+    }
+
+    pub(crate) fn remove_dispatchee(&mut self, rx: &mut mpsc::Receiver<Packet>) {
+        rx.close();
+        self.dispatchees.retain(|(_, tx)| !tx.is_closed());
+    }
+
+    pub(crate) fn add_link(&mut self, dst: NodeId, send: Box<dyn LinkSend>, mut recv: Box<dyn LinkRecv>) {
+        self.link_send.insert(dst, send);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        self.link_recv_stop.insert(dst, tx);
+        let handler_event_tx = self.handler_event_tx.clone();
+
+        let mesh = self.mesh.upgrade().unwrap();
         tokio::spawn(async move {
             loop {
-                select! {
-                    evt = dispatch_event_rx.recv() => {
-                        match evt {
-                            None => {
-                                warn!("Dispatcher event channel closed");
-                                break;
-                            }
-                            Some(DispatcherEvent::Stop) => {
-                                break;
-                            }
-                        }
-                    },
-                    packet = dispatch_rx.recv() => {
-                        let packet = match packet {
-                            Some(packet) => packet,
-                            None => {
-                                warn!("Dispatcher recv channel closed");
-                                break;
-                            }
-                        };
-                        let dispatchees = dispatchees.lock().await;
-                        for (filter, dispatch) in dispatchees.iter() {
-                            if filter(&packet) {
-                                if let Err(err) = dispatch.send(packet).await {
-                                    warn!("Failed to dispatch packet: {}", err);
-                                }
-                                break;
-                            }
+                tokio::select! {
+                    _ = rx.recv() => {
+                        mesh.lock().await.remove_link(dst);
+                        break;
+                    }
+                    packet = recv.recv() => {
+                        let result = handler_event_tx.send(HandlerEvent::ReceivedPacket {
+                            from: dst,
+                            packet,
+                        });
+                        if let Err(err) = result {
+                            warn!("Failed to send received packet to mesh handler: {}", err);
                         }
                     }
                 }
             }
         });
+        let _ = self.mesh_event_tx.send(MeshEvent::LinkUp(dst));
     }
-}
 
-impl Drop for Mesh {
-    fn drop(&mut self) {
-        let result = self.handler_event_tx.send(HandlerEvent::Stop);
-        if let Err(err) = result {
-            warn!("Failed to send stop signal to mesh handler: {}", err);
+    pub(crate) fn remove_link(&mut self, dst: NodeId) {
+        debug!("Removing link to {:X}", dst);
+        self.routes.retain(|_, &mut v| v != dst);
+        self.link_send.remove(&dst);
+        let ctrl = self.link_recv_stop.remove(&dst);
+        if let Some(ctrl) = ctrl {
+            let _ = ctrl.send(());
         }
-        let result = self.dispatcher_event_tx.send(DispatcherEvent::Stop);
-        if let Err(err) = result {
-            warn!("Failed to send stop signal to mesh dispatcher: {}", err);
+        let _ = self.mesh_event_tx.send(MeshEvent::LinkDown(dst));
+    }
+
+    pub(crate) fn get_links(&self) -> Vec<NodeId> {
+        self.link_send.keys().cloned().collect()
+    }
+
+    pub(crate) fn set_route(&mut self, dst: NodeId, next_hop: NodeId) {
+        if dst == self.id {
+            // skip routes to self
+            return;
         }
+        if !self.link_send.contains_key(&next_hop) {
+            warn!("Tried to set route to {:X} via non-existent link {:X}", dst, next_hop);
+            return;
+        }
+        debug!("Setting route to {:X} via next hop {:X}", dst, next_hop);
+        self.routes.insert(dst, next_hop);
+        let _ = self.mesh_event_tx.send(MeshEvent::RouteAdded(dst, next_hop));
+    }
+
+    pub(crate) fn remove_route(&mut self, dst: NodeId) {
+        debug!("Removing route to {:X}", dst);
+        let route = self.routes.remove(&dst);
+        if let Some(next_hop) = route {
+            let _ = self.mesh_event_tx.send(MeshEvent::RouteRemoved(dst, next_hop));
+        }
+    }
+
+    pub(crate) fn get_routes(&self) -> HashMap<NodeId, NodeId> {
+        self.routes.clone()
+    }
+
+    pub(crate) fn subscribe_mesh_events(&self) -> broadcast::Receiver<MeshEvent> {
+        self.mesh_event_tx.subscribe()
+    }
+
+    async fn handle_packet(&mut self, from: NodeId, packet: Result<Packet, LinkError>) -> Result<()> {
+        let mut packet = match packet {
+            Ok(packet) => packet,
+            Err(LinkError::Closed) => {
+                self.remove_link(from);
+                return Ok(());
+            }
+            Err(LinkError::Unknown(err)) => {
+                warn!("Failed to receive packet: {}", err);
+                return Ok(());
+            }
+        };
+        debug!("Received packet: {:?}", packet);
+        if packet.dst == self.id {
+            for (filter, dispatch) in self.dispatchees.iter() {
+                if filter(&packet) {
+                    if let Err(err) = dispatch.send(packet).await {
+                        warn!("Failed to dispatch packet: {}", err);
+                    }
+                    break;
+                }
+            }
+        } else {
+            if packet.ttl == 0 {
+                warn!("Dropping packet to {:X} due to TTL=0", packet.dst);
+                return Ok(());
+            }
+            packet.ttl -= 1;
+            self.send_packet_internal(packet).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stop(&mut self) -> Result<()> {
+        self.handler_event_tx.send(HandlerEvent::Stop)?;
+        self.link_recv_stop.iter()
+            .map(|(_, tx)| tx.send(()))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|_| ())?;
+        Ok(())
     }
 }

@@ -1,7 +1,6 @@
 use std::{cmp::Ordering, collections::{HashMap, hash_map::Entry}, sync::Arc, time::{Duration, Instant}, u32};
 
 use anyhow::Result;
-use futures::future::join_all;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -51,8 +50,9 @@ impl IGPState {
     ) -> Result<()> {
         match payload {
             IGPPayload::Hello { seq } => {
-                let mesh = self.mesh.lock().await;
-                mesh.send_packet_link(src, IGPPayload::HelloReply { seq: *seq }).await?;
+                self.mesh.lock().await
+                    .send_packet_link(src, IGPPayload::HelloReply { seq: *seq })
+                    .await?;
             },
 
 
@@ -93,7 +93,7 @@ impl IGPState {
 
 
             IGPPayload::RouteRequest { dst } => {
-                let mesh = self.mesh.lock().await;
+                let mut mesh = self.mesh.lock().await;
                 let route = self.routes.iter().find(|((d, _), r)| d == dst && r.selected);
                 // ignore when we don't have a route to dst
                 if let Some((_, route)) = route {
@@ -106,7 +106,7 @@ impl IGPState {
 
 
             IGPPayload::SequenceRequest { seq, dst, ttl } => {
-                let mesh = self.mesh.lock().await;
+                let mut mesh = self.mesh.lock().await;
                 let route = self.routes.iter_mut().find(|((d, _), r)| d == dst && r.selected);
                 let route = match route {
                     Some((_, route)) => {
@@ -259,7 +259,7 @@ impl IGPState {
                         self.requests.remove(dst);
                     }
                     // trigger update
-                    let mesh = self.mesh.lock().await;
+                    let mut mesh = self.mesh.lock().await;
                     mesh.broadcast_packet_local(generate_update(route)).await?;
                 }
 
@@ -270,15 +270,8 @@ impl IGPState {
     }
 
     pub(crate) async fn send_hello(&mut self) {
-        let mesh = self.mesh.lock().await;
-        let links = match mesh.get_links().await {
-            Ok(links) => links,
-            Err(err) => {
-                warn!("Failed to get links for sending IGP Hello: {}", err);
-                return;
-            },
-        };
-        for link in links {
+        let mut mesh = self.mesh.lock().await;
+        for link in mesh.get_links() {
             let cost = self.costs.entry(link)
                 .and_modify(|cost| {
                     cost.seq += Seq(1);
@@ -312,18 +305,18 @@ impl IGPState {
             match self.sources.entry(**dst) {
                 Entry::Vacant(source) => {
                     if best.0.metric.metric == u32::MAX {
-                        self.mesh.lock().await.remove_route(**dst).await;
+                        self.mesh.lock().await.remove_route(**dst);
                         // no reachable route
                     } else {
                         source.insert((best.0.metric, Instant::now() + self.source_timeout));
-                        self.mesh.lock().await.set_route(**dst, best.0.from).await;
+                        self.mesh.lock().await.set_route(**dst, best.0.from);
                     }
                 },
                 Entry::Occupied(mut source) => {
                     let source = source.get_mut();
                     if best.0.metric.metric == u32::MAX || !best.0.metric.feasible(&source.0) {
-                        let mesh = self.mesh.lock().await;
-                        mesh.remove_route(**dst).await;
+                        let mut mesh = self.mesh.lock().await;
+                        mesh.remove_route(**dst);
                         // no reachable route
                         // Don't send retraction. The routes of neighbors will time out eventually.
                         let existing_request = self.requests.get(dst);
@@ -350,8 +343,8 @@ impl IGPState {
                         let origin = *source;
                         *source = (best.0.metric, Instant::now() + self.source_timeout);
                         best.0.selected = true;
-                        let mesh = self.mesh.lock().await;
-                        mesh.set_route(**dst, best.0.from).await;
+                        let mut mesh = self.mesh.lock().await;
+                        mesh.set_route(**dst, best.0.from);
                         if source.0.metric.abs_diff(origin.0.metric) > self.update_threshold {
                             let result = mesh.broadcast_packet_local(generate_update(best.0)).await;
                             if let Err(err) = result {
@@ -365,10 +358,10 @@ impl IGPState {
     }
 
     pub(crate) async fn export(&self) {
-        let mesh = self.mesh.lock().await;
+        let mut mesh = self.mesh.lock().await;
         for ((dst, neigh), route) in &self.routes {
             if route.selected {
-                mesh.set_route(*dst, *neigh).await;
+                mesh.set_route(*dst, *neigh);
             }
         }
     }
@@ -397,7 +390,7 @@ impl IGPState {
 
         self.select().await;
 
-        let mesh = self.mesh.lock().await;
+        let mut mesh = self.mesh.lock().await;
         for ((dst, _), route) in &self.routes {
             if !route.selected {
                 continue;
@@ -429,21 +422,19 @@ impl IGPState {
         self.requests.retain(|_, request| request.expiry > now);
         self.routes.retain(|_, route| !(route.timeout <= now && route.metric.metric == u32::MAX));
 
-        let mesh = self.mesh.lock().await;
-        let mut futures = Vec::new();
+        let mut mesh = self.mesh.lock().await;
         for ((dst, neigh), route) in &mut self.routes {
             if route.timeout <= now {
                 route.metric.metric = u32::MAX;
                 route.computed_metric = u32::MAX;
                 route.timeout = now + self.route_timeout;
                 route.selected = false;
-                futures.push(mesh.send_packet_link(*neigh, IGPPayload::RouteRequest { dst: *dst }));
-            }
-        }
-        let results = join_all(futures).await;
-        for result in results {
-            if let Err(err) = result {
-                warn!("Failed to send RouteRequest: {}", err);
+                let result = mesh
+                    .send_packet_link(*neigh, IGPPayload::RouteRequest { dst: *dst })
+                    .await;
+                if let Err(err) = result {
+                    warn!("Failed to send RouteRequest for {:X}: {}", dst, err);
+                }
             }
         }
         drop(mesh);

@@ -5,7 +5,7 @@ use tokio::{net::{TcpListener, TcpStream}, select, sync::{Mutex, mpsc}, time::in
 use tokio_tungstenite::{accept_hdr_async, connect_async, tungstenite::{client::IntoClientRequest, handshake::server::{Request, Response}}};
 use tracing::{info, warn};
 
-use crate::{connection::link::WebSocketLink, errors::Error, mesh::{Mesh, packet::NodeId}};
+use crate::{connection::link::new_ws_link, errors::Error, mesh::{Mesh, packet::NodeId}};
 
 pub(crate) mod link;
 
@@ -90,11 +90,7 @@ impl ConnManager {
     }
 
     async fn accept(&mut self, (stream, addr): (TcpStream, SocketAddr)) -> Result<()> {
-        let mesh = self.mesh.lock().await;
-        let Ok(links) = mesh.get_links().await else {
-            warn!("Failed to get links from mesh");
-            return Ok(());
-        };
+        let mut mesh = self.mesh.lock().await;
         let mut neigh_id = None;
         let Ok(ws) = accept_hdr_async(stream, |req: &Request, mut res: Response| {
             let reject = |reason: String| Err(Response::builder()
@@ -117,7 +113,7 @@ impl ConnManager {
                 Some(Ok(Ok(id))) => id,
                 _ => return reject("Invalid X-Node-Id header".to_string()),
             };
-            if links.contains(&peer_id) {
+            if mesh.get_links().contains(&peer_id) {
                 return reject("Link to this node already exists".to_string());
             }
             neigh_id = Some(peer_id);
@@ -127,21 +123,17 @@ impl ConnManager {
             info!("Failed to accept WebSocket connection from {}", addr);
             return Ok(());
         };
-        let link = WebSocketLink::new(ws);
-        let result = mesh.add_link(neigh_id.unwrap(), Box::new(link)).await;
-        if let Err(err) = result {
-            info!("Failed to add link from {}: {}", addr, err);
-            return Ok(());
-        }
+        let (sink, stream) = new_ws_link(ws);
+        mesh.add_link(neigh_id.unwrap(), Box::new(sink), Box::new(stream));
         info!("Accepted connection from {}", addr);
         Ok(())
     }
 
     pub(crate) async fn connect(&mut self, server: String) -> Result<()> {
         // lock here to avoid interleaving with incoming connections
-        let mesh = self.mesh.lock().await;
+        let mut mesh = self.mesh.lock().await;
         if let Some(neigh_id) = self.servers.get(&server) {
-            if mesh.get_links().await?.contains(neigh_id) {
+            if mesh.get_links().contains(neigh_id) {
                 return Ok(());
             }
         }
@@ -158,21 +150,19 @@ impl ConnManager {
         let neigh_id = neigh_id.to_str()?.parse::<NodeId>()?;
         self.servers.insert(server.clone(), neigh_id);
 
-        if mesh.get_links().await?.contains(&neigh_id) {
+        if mesh.get_links().contains(&neigh_id) {
             ws_stream.close(None).await?;
             return Ok(());
         }
         
-        let link = WebSocketLink::new(ws_stream);
-        mesh.add_link(neigh_id, Box::new(link)).await?;
+        let (sink, stream) = new_ws_link(ws_stream);
+        mesh.add_link(neigh_id, Box::new(sink), Box::new(stream));
         info!("Connected to server {}", server);
         Ok(())
     }
 
-    pub(crate) async fn disconnect(&mut self, id: NodeId) -> Result<()> {
-        let mesh = self.mesh.lock().await;
-        mesh.remove_link(id).await?;
-        Ok(())
+    pub(crate) async fn disconnect(&mut self, id: NodeId) {
+        self.mesh.lock().await.remove_link(id);
     }
 }
 

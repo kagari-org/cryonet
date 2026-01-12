@@ -1,12 +1,12 @@
 #![feature(try_blocks)]
-use std::{io::Write, net::SocketAddr, sync::Arc, time::{Duration, Instant}};
+use std::{io::Write, net::SocketAddr, time::{Duration, Instant}};
 
 use anyhow::Result;
 use clap::Parser;
 use clap_num::maybe_hex;
 use rustyline_async::{Readline, ReadlineEvent};
 use serde::{Deserialize, Serialize};
-use tokio::{select, sync::Mutex, time::interval};
+use tokio::{select, time::interval};
 
 use crate::{connection::ConnManager, mesh::{Mesh, igp::IGP, packet::{NodeId, Payload}, seq::Seq}};
 
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    let mesh = Arc::new(Mutex::new(Mesh::new(args.id)));
+    let mesh = Mesh::new(args.id);
     let igp = IGP::new(mesh.clone()).await;
     let mgr = ConnManager::new(mesh.clone(), None, vec![], args.listen);
 
@@ -101,15 +101,11 @@ async fn main() -> Result<()> {
                         }
                     },
                     Rl::Disconnect { id } => {
-                        let mut mgr = mgr.lock().await;
-                        if let Err(err) = mgr.disconnect(id).await {
-                            writeln!(stdout, "Failed to disconnect {:X}: {}", id, err)?;
-                        }
+                        mgr.lock().await.disconnect(id).await;
                     },
                     Rl::Links => {
                         let result: Result<()> = try {
-                            let mesh = mesh.lock().await;
-                            let links = mesh.get_links().await?;
+                            let links = mesh.lock().await.get_links();
                             if links.is_empty() {
                                 writeln!(stdout, "No links available")?;
                                 continue;
@@ -125,8 +121,7 @@ async fn main() -> Result<()> {
                     },
                     Rl::Routes => {
                         let result: Result<()> = try {
-                            let mesh = mesh.lock().await;
-                            let routes = mesh.get_routes().await;
+                            let routes = mesh.lock().await.get_routes();
                             if routes.is_empty() {
                                 writeln!(stdout, "No routes available")?;
                                 continue;
@@ -142,7 +137,7 @@ async fn main() -> Result<()> {
                     },
                     Rl::Ping { dst } => {
                         let mut recv = mesh.lock().await.add_dispatchee(|packet|
-                            (packet.payload.as_ref() as &dyn std::any::Any).is::<PingPayload>()).await;
+                            (packet.payload.as_ref() as &dyn std::any::Any).is::<PingPayload>());
 
                         let mut seq = Seq(0);
                         let mut ticker = interval(Duration::from_secs(1));
@@ -185,11 +180,11 @@ async fn main() -> Result<()> {
                                 },
                             };
                         }
-                        mesh.lock().await.remove_dispatchee(&mut recv).await;
+                        mesh.lock().await.remove_dispatchee(&mut recv);
                     },
                     Rl::Pong => {
                         let mut recv = mesh.lock().await.add_dispatchee(|packet|
-                            (packet.payload.as_ref() as &dyn std::any::Any).is::<PingPayload>()).await;
+                            (packet.payload.as_ref() as &dyn std::any::Any).is::<PingPayload>());
                         loop {
                             select!{
                                 line = rl.readline() => {
@@ -224,12 +219,13 @@ async fn main() -> Result<()> {
                                 },
                             }
                         }
-                        mesh.lock().await.remove_dispatchee(&mut recv).await;
+                        mesh.lock().await.remove_dispatchee(&mut recv);
                     },
                 }
             }
         }
     }
     drop(igp);
+    mesh.lock().await.stop()?;
     Ok(())
 }

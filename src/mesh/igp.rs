@@ -5,7 +5,7 @@ use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
 use tokio::{sync::{oneshot, Mutex}, time::interval};
 use tracing::{error, warn};
 
-use crate::mesh::{LinkEvent, igp_payload::IGPPayload};
+use crate::mesh::{MeshEvent, igp_payload::IGPPayload};
 
 use super::{igp_state::IGPState, Mesh};
 
@@ -80,8 +80,8 @@ impl IGP {
         let state = self.state.clone();
 
         let mut packet_rx = mesh.lock().await.add_dispatchee(|packet|
-            (packet.payload.as_ref() as &dyn Any).is::<IGPPayload>()).await;
-        let mut link_event_rx = self.mesh.lock().await.subscribe_link_events().await;
+            (packet.payload.as_ref() as &dyn Any).is::<IGPPayload>());
+        let mut mesh_event_rx = self.mesh.lock().await.subscribe_mesh_events();
         let mut hello_ticker = interval(hello_interval);
         let mut dump_ticker = interval(dump_interval);
         let mut gc_ticker = interval(gc_interval);
@@ -102,7 +102,7 @@ impl IGP {
                             warn!("Failed to handle IGP packet: {}", err);
                         }
                     },
-                    event = link_event_rx.recv() => {
+                    event = mesh_event_rx.recv() => {
                         let event = match event {
                             Ok(event) => event,
                             Err(err) => {
@@ -111,7 +111,7 @@ impl IGP {
                             },
                         };
                         match event {
-                            LinkEvent::Up(_) => {
+                            MeshEvent::LinkUp(_) => {
                                 // re-export routes after unexpected link disconnection
                                 state.lock().await.export().await;
                             },
