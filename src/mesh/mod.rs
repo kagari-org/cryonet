@@ -50,7 +50,7 @@ pub(crate) enum LinkError {
 pub(crate) enum MeshEvent {
     LinkUp(NodeId),
     LinkDown(NodeId),
-    RouteAdded(NodeId, NodeId),
+    RouteSet(NodeId, NodeId),
     RouteRemoved(NodeId, NodeId),
 }
 
@@ -242,7 +242,7 @@ impl Mesh {
         }
         debug!("Setting route to {:X} via next hop {:X}", dst, next_hop);
         self.routes.insert(dst, next_hop);
-        let _ = self.mesh_event_tx.send(MeshEvent::RouteAdded(dst, next_hop));
+        let _ = self.mesh_event_tx.send(MeshEvent::RouteSet(dst, next_hop));
     }
 
     pub(crate) fn remove_route(&mut self, dst: NodeId) {

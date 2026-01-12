@@ -9,8 +9,6 @@ use crate::{connection::link::new_ws_link, errors::Error, mesh::{Mesh, packet::N
 
 pub(crate) mod link;
 
-// TODO: use totp for token generation and validation
-
 pub(crate) struct ConnManager {
     mesh: Arc<Mutex<Mesh>>,
     token: Option<String>,

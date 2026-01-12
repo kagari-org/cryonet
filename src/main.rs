@@ -18,8 +18,12 @@ pub(crate) mod connection;
 struct Args {
     #[clap(value_parser = maybe_hex::<NodeId>)]
     id: NodeId,
+    #[clap(long, short)]
+    token: Option<String>,
     #[clap(long, short, default_value = "0.0.0.0:2333")]
-    listen: SocketAddr
+    listen: SocketAddr,
+    #[clap(long, short, value_delimiter = ',')]
+    servers: Vec<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -60,7 +64,12 @@ async fn main() -> Result<()> {
 
     let mesh = Mesh::new(args.id);
     let igp = IGP::new(mesh.clone()).await;
-    let mgr = ConnManager::new(mesh.clone(), None, vec![], args.listen);
+    let mgr = ConnManager::new(
+        mesh.clone(),
+        args.token,
+        args.servers,
+        args.listen,
+    );
 
     let (mut rl, mut stdout) = Readline::new("> ".to_string())?;
     loop {
