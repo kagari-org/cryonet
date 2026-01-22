@@ -225,6 +225,7 @@ impl IGP {
             IGPPayload::RouteRequest { dst } => {
                 let mut mesh = self.mesh.lock().await;
                 let route = self.routes.iter().find(|((d, _), r)| d == dst && r.selected);
+                // TODO: should send retraction
                 // ignore when we don't have a route to dst
                 if let Some((_, route)) = route {
                     mesh.broadcast_packet_local(generate_update(route)).await?;

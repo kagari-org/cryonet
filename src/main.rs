@@ -13,6 +13,7 @@ use crate::{connection::ConnManager, mesh::{Mesh, igp::IGP, packet::{NodeId, Pay
 pub(crate) mod errors;
 pub(crate) mod mesh;
 pub(crate) mod connection;
+pub(crate) mod fullmesh;
 
 #[derive(Debug, Parser)]
 struct Args {
