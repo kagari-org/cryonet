@@ -1,14 +1,15 @@
 #![feature(try_blocks)]
-use std::{io::Write, net::SocketAddr, time::{Duration, Instant}};
+use std::{any::Any, io::Write, net::SocketAddr, time::{Duration, Instant}};
 
 use anyhow::Result;
 use clap::Parser;
 use clap_num::maybe_hex;
+use rustrtc::RtcConfiguration;
 use rustyline_async::{Readline, ReadlineEvent};
 use serde::{Deserialize, Serialize};
 use tokio::{select, time::interval};
 
-use crate::{connection::ConnManager, mesh::{Mesh, igp::IGP, packet::{NodeId, Payload}, seq::Seq}};
+use crate::{connection::ConnManager, fullmesh::FullMesh, mesh::{Mesh, igp::IGP, packet::{NodeId, Payload}, seq::Seq}};
 
 pub(crate) mod errors;
 pub(crate) mod mesh;
@@ -71,6 +72,12 @@ async fn main() -> Result<()> {
         args.servers,
         args.listen,
     );
+    let fm = FullMesh::new(
+        mesh.clone(),
+        Duration::from_secs(30),
+        5,
+        RtcConfiguration::default(),
+    ).await;
 
     let (mut rl, mut stdout) = Readline::new("> ".to_string())?;
     loop {
@@ -160,7 +167,7 @@ async fn main() -> Result<()> {
                     },
                     Rl::Ping { dst } => {
                         let mut recv = mesh.lock().await.add_dispatchee(|packet|
-                            (packet.payload.as_ref() as &dyn std::any::Any).is::<PingPayload>());
+                            (packet.payload.as_ref() as &dyn Any).is::<PingPayload>());
 
                         let mut seq = Seq(0);
                         let mut ticker = interval(Duration::from_secs(1));
@@ -207,7 +214,7 @@ async fn main() -> Result<()> {
                     },
                     Rl::Pong => {
                         let mut recv = mesh.lock().await.add_dispatchee(|packet|
-                            (packet.payload.as_ref() as &dyn std::any::Any).is::<PingPayload>());
+                            (packet.payload.as_ref() as &dyn Any).is::<PingPayload>());
                         loop {
                             select!{
                                 line = rl.readline() => {
@@ -248,6 +255,7 @@ async fn main() -> Result<()> {
             }
         }
     }
+    fm.lock().await.stop().await;
     igp.lock().await.stop().await;
     mesh.lock().await.stop()?;
     Ok(())
