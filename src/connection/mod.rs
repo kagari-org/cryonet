@@ -13,11 +13,7 @@ pub(crate) struct ConnManager {
     mesh: Arc<Mutex<Mesh>>,
     token: Option<String>,
     servers: HashMap<String, NodeId>,
-    event_tx: mpsc::UnboundedSender<ConnManagerEvent>,
-}
-
-enum ConnManagerEvent {
-    Stop,
+    stop: mpsc::UnboundedSender<()>,
 }
 
 impl ConnManager {
@@ -43,12 +39,12 @@ impl ConnManager {
         listen: SocketAddr,
         connect_interval: Duration,
     ) -> Arc<Mutex<Self>> {
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
         let mgr = Arc::new(Mutex::new(ConnManager {
             mesh: mesh.clone(),
             token,
             servers: HashMap::new(),
-            event_tx,
+            stop: stop_tx,
         }));
         let mgr2 = mgr.clone();
         tokio::spawn(async move {
@@ -56,6 +52,7 @@ impl ConnManager {
             let mut connect_timer = interval(connect_interval);
             loop {
                 select! {
+                    _ = stop_rx.recv() => break,
                     _ = connect_timer.tick() => {
                         let mut mgr = mgr.lock().await;
                         for server in &servers {
@@ -68,17 +65,6 @@ impl ConnManager {
                         let mut mgr = mgr.lock().await;
                         if let Err(err) = mgr.accept((stream, addr)).await {
                             warn!("Failed to accept connection from {}: {}", addr, err);
-                        }
-                    }
-                    event = event_rx.recv() => {
-                        let Some(event) = event else {
-                            break;
-                        };
-                        match event {
-                            ConnManagerEvent::Stop => {
-                                info!("Stopping connection manager");
-                                break;
-                            }
                         }
                     }
                 }
@@ -162,13 +148,9 @@ impl ConnManager {
     pub(crate) async fn disconnect(&mut self, id: NodeId) {
         self.mesh.lock().await.remove_link(id);
     }
-}
 
-impl Drop for ConnManager {
-    fn drop(&mut self) {
-        let result = self.event_tx.send(ConnManagerEvent::Stop);
-        if let Err(err) = result {
-            warn!("Failed to send stop event to connection manager: {}", err);
-        }
+    pub(crate) fn stop(&self) -> Result<()> {
+        self.stop.send(())?;
+        Ok(())
     }
 }

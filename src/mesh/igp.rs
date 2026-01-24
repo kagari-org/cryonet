@@ -2,9 +2,9 @@
 
 use std::{any::Any, cmp::Ordering, collections::{HashMap, hash_map::Entry}, fmt::Display, sync::Arc, time::{Duration, Instant}};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use tokio::{select, sync::{Mutex, oneshot}, time::interval};
+use tokio::{select, sync::{Mutex, mpsc, oneshot}, time::interval};
 use tracing::{info, warn};
 
 use crate::mesh::{MeshEvent, packet::{NodeId, Payload}, seq::{Seq, SeqMetric}};
@@ -26,7 +26,7 @@ pub(crate) struct IGP {
     diameter: u16,
     update_threshold: u32,
 
-    stop: Option<oneshot::Sender<()>>,
+    stop: mpsc::UnboundedSender<()>,
 }
 
 #[typetag::serde]
@@ -110,7 +110,7 @@ impl IGP {
         update_threshold: u32,
         mesh: Arc<Mutex<Mesh>>,
     ) -> Arc<Mutex<Self>> {
-        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
         let igp = Arc::new(Mutex::new(IGP {
             id: mesh.lock().await.id,
             mesh: mesh.clone(),
@@ -123,7 +123,7 @@ impl IGP {
             seqno_request_timeout,
             diameter,
             update_threshold,
-            stop: Some(stop_tx),
+            stop: stop_tx,
         }));
         let igp2 = igp.clone();
         tokio::spawn(async move {
@@ -135,7 +135,7 @@ impl IGP {
             let mut mesh_event_rx = mesh.lock().await.subscribe_mesh_events();
             loop {
                 select! {
-                    _ = &mut stop_rx => break,
+                    _ = stop_rx.recv() => break,
                     _ = hello_ticker.tick() => igp.lock().await.hello().await,
                     _ = dump_ticker.tick() => igp.lock().await.dump(None).await,
                     _ = gc_ticker.tick() => igp.lock().await.gc().await,
@@ -581,10 +581,9 @@ impl IGP {
         self.routes.values().cloned().collect()
     }
 
-    pub(crate) async fn stop(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
-        }
+    pub(crate) fn stop(&mut self) -> Result<()> {
+        self.stop.send(())?;
+        Ok(())
     }
 }
 

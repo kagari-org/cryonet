@@ -3,11 +3,11 @@ use std::{any::Any, collections::HashMap, sync::Arc, time::{Duration, Instant}};
 use anyhow::Result;
 use rustrtc::{IceCandidate, RtcConfiguration};
 use serde::{Deserialize, Serialize};
-use tokio::{select, sync::Mutex, time::interval};
-use tracing::{debug, error, info, warn};
+use tokio::{select, sync::{Mutex, mpsc}, time::interval};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
-use crate::{fullmesh::conn::{PeerConn, PeerConnReceiver}, mesh::{Mesh, packet::{NodeId, Payload}}};
+use crate::{fullmesh::conn::PeerConn, mesh::{Mesh, packet::{NodeId, Payload}}};
 
 pub(crate) mod conn;
 
@@ -18,6 +18,7 @@ pub(crate) struct FullMesh {
     config: RtcConfiguration,
     mesh: Arc<Mutex<Mesh>>,
     peers: HashMap<NodeId, HashMap<Uuid, Peer>>,
+    stop: mpsc::UnboundedSender<()>,
 }
 
 struct Peer {
@@ -31,17 +32,11 @@ struct Peer {
 enum FullMeshPayload {
     Offer(Uuid, String),
     Answer(Uuid, String),
-    // TODO: send candidates
     Candidate(Uuid, String),
 }
 
 #[typetag::serde]
 impl Payload for FullMeshPayload {}
-
-enum FullMeshEvent {
-    AddRecv(NodeId, Uuid, PeerConnReceiver),
-    DelRecv(Uuid),
-}
 
 impl FullMesh {
     pub(crate) async fn new(
@@ -50,6 +45,7 @@ impl FullMesh {
         max_connected: usize,
         config: RtcConfiguration,
     ) -> Arc<Mutex<FullMesh>> {
+        let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
         let fm = Arc::new(Mutex::new(FullMesh {
             id: mesh.lock().await.id,
             timeout,
@@ -57,6 +53,7 @@ impl FullMesh {
             config,
             mesh: mesh.clone(),
             peers: HashMap::new(),
+            stop: stop_tx,
         }));
         let fm2 = fm.clone();
         tokio::spawn(async move {
@@ -64,21 +61,21 @@ impl FullMesh {
                     (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>());
             let mut ticker = interval(Duration::from_secs(10));
             loop {
-                // TODO: loop broke
                 select! {
+                    _ = stop_rx.recv() => break,
                     _ = ticker.tick() => {
                         fm.lock().await.tick().await;
                     },
                     packet = packets.recv() => {
                         let Some(packet) = packet else {
-                            warn!("FullMesh: Packet channel closed");
+                            warn!("packet channel closed");
                             break;
                         };
                         let payload = (packet.payload.as_ref() as &dyn Any)
                             .downcast_ref::<FullMeshPayload>().unwrap();
                         let result = fm.lock().await.handle_packet(packet.src, payload).await;
                         if let Err(err) = result {
-                            warn!("FullMesh: Error handling packet from {}: {}", packet.src, err);
+                            warn!("error handling packet from {}: {}", packet.src, err);
                         }
                     }
                 }
@@ -148,7 +145,7 @@ impl FullMesh {
         let time = Instant::now();
         for (_, peers) in &mut self.peers {
             peers.retain(|_, peer| {
-                let timeouted = time.duration_since(peer.time) < self.timeout;
+                let timeouted = time.duration_since(peer.time) > self.timeout;
                 !timeouted || peer.conn.connected()
             });
         }
@@ -171,7 +168,7 @@ impl FullMesh {
             let mut conn = match conn {
                 Ok(conn) => conn,
                 Err(err) => {
-                    error!("FullMesh: Error creating PeerConn to {}: {}", peer, err);
+                    error!("error creating PeerConn to {}: {}", peer, err);
                     continue;
                 },
             };
@@ -179,14 +176,14 @@ impl FullMesh {
             let offer = match conn.offer().await {
                 Ok(offer) => offer,
                 Err(err) => {
-                    error!("FullMesh: Error creating offer to {}: {}", peer, err);
+                    error!("error creating offer to {}: {}", peer, err);
                     continue;
                 },
             };
             let result = self.mesh.lock().await
                 .send_packet(peer, FullMeshPayload::Offer(id, offer)).await;
             if let Err(err) = result {
-                error!("FullMesh: Error sending offer to {}: {}", peer, err);
+                error!("error sending offer to {}: {}", peer, err);
                 continue;
             }
             conns.insert(id, Peer {
@@ -207,23 +204,24 @@ impl FullMesh {
                 let candidate = match candidate {
                     Ok(candidate) => candidate,
                     Err(err) => {
-                        warn!("FullMesh: Candidate channel closed: {}", err);
+                        warn!("candidate channel closed: {}", err);
                         break;
                     },
                 };
-                debug!("FullMesh: Sending candidate to {}: {:?}", id, candidate);
+                debug!("sending candidate to {}: {:?}", id, candidate);
                 let result = mesh.lock().await.send_packet(
                     id,
                     FullMeshPayload::Candidate(uuid, candidate.to_sdp()),
                 ).await;
                 if let Err(err) = result {
-                    warn!("FullMesh: Error sending candidate to {}: {}", id, err);
+                    warn!("error sending candidate to {}: {}", id, err);
                 }
             }
         });
     }
 
-    pub(crate) async fn stop(&mut self) {
-        // TODO
+    pub(crate) fn stop(&mut self) -> Result<()> {
+        self.stop.send(())?;
+        Ok(())
     }
 }
