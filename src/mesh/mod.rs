@@ -202,12 +202,20 @@ impl Mesh {
                         break;
                     }
                     packet = recv.recv() => {
+                        let mut brk = false;
+                        if let Err(LinkError::Closed) = &packet {
+                            brk = true;
+                        }
                         let result = handler_event_tx.send(HandlerEvent::ReceivedPacket {
                             from: dst,
                             packet,
                         });
                         if let Err(err) = result {
                             warn!("Failed to send received packet to mesh handler: {}", err);
+                            break;
+                        }
+                        if brk {
+                            break;
                         }
                     }
                 }
