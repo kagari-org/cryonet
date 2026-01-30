@@ -8,7 +8,7 @@ use tokio::sync::{broadcast, watch};
 
 pub(crate) struct PeerConn {
     peer: PeerConnection,
-    sender: Arc<PeerConnSender>,
+    sender: PeerConnSender,
 
     state_watcher: watch::Receiver<PeerConnectionState>,
 }
@@ -22,7 +22,7 @@ impl PeerConn {
         Ok(Self {
             state_watcher: peer.subscribe_peer_state(),
             peer,
-            sender: Arc::new(PeerConnSender { source }),
+            sender: PeerConnSender { source: Arc::new(source) },
         })
     }
 
@@ -64,7 +64,7 @@ impl PeerConn {
         Ok(())
     }
 
-    pub(crate) fn sender(&self) -> Arc<PeerConnSender> {
+    pub(crate) fn sender(&self) -> PeerConnSender {
         self.sender.clone()
     }
 
@@ -79,8 +79,9 @@ impl PeerConn {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct PeerConnSender {
-    source: SampleStreamSource,
+    source: Arc<SampleStreamSource>,
 }
 
 pub(crate) struct PeerConnReceiver {

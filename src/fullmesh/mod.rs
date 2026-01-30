@@ -7,7 +7,7 @@ use tokio::{select, sync::{Mutex, Notify, futures::Notified, mpsc}, time::interv
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
-use crate::{fullmesh::conn::PeerConn, mesh::{Mesh, packet::{NodeId, Payload}}};
+use crate::{fullmesh::conn::{PeerConn, PeerConnReceiver, PeerConnSender}, mesh::{Mesh, packet::{NodeId, Payload}}};
 
 pub(crate) mod conn;
 
@@ -173,8 +173,8 @@ impl FullMesh {
         self.peers.retain(|_, conns| !conns.is_empty());
         // check connected
         let peers = self.mesh.lock().await.get_routes().keys().cloned().collect::<Vec<_>>();
-        for peer in peers {
-            let conns = self.peers.entry(peer)
+        for node_id in peers {
+            let conns = self.peers.entry(node_id)
                 .or_insert_with(|| HashMap::new());
             let connected = conns
                 .values()
@@ -204,14 +204,14 @@ impl FullMesh {
                     continue;
                 }
             }
-            if self.id > peer {
+            if self.id > node_id {
                 continue;
             }
             let conn = PeerConn::new(self.config.clone()).await;
             let mut conn = match conn {
                 Ok(conn) => conn,
                 Err(err) => {
-                    error!("error creating PeerConn to {}: {}", peer, err);
+                    error!("error creating PeerConn to {}: {}", node_id, err);
                     continue;
                 },
             };
@@ -219,17 +219,17 @@ impl FullMesh {
             let offer = match conn.offer().await {
                 Ok(offer) => offer,
                 Err(err) => {
-                    error!("error creating offer to {}: {}", peer, err);
+                    error!("error creating offer to {}: {}", node_id, err);
                     continue;
                 },
             };
             let result = self.mesh.lock().await
-                .send_packet(peer, FullMeshPayload::Offer(id, offer)).await;
+                .send_packet(node_id, FullMeshPayload::Offer(id, offer)).await;
             if let Err(err) = result {
-                error!("error sending offer to {}: {}", peer, err);
+                error!("error sending offer to {}: {}", node_id, err);
                 continue;
             }
-            conns.insert(id, create_peer(peer, id, conn, self.this.clone()));
+            conns.insert(id, create_peer(node_id, id, conn, self.this.clone()));
         }
         // select
         for (_, conns) in &mut self.peers {
@@ -304,6 +304,41 @@ impl FullMesh {
         self.refresh.notified()
     }
 
+    pub(crate) fn get_senders(&self) -> HashMap<NodeId, PeerConnSender> {
+        let mut senders = HashMap::new();
+        for (node_id, conns) in &self.peers {
+            for conn in conns.values() {
+                if conn.selected {
+                    senders.insert(*node_id, conn.conn.sender());
+                    break;
+                }
+            }
+        }
+        senders
+    }
+
+    pub(crate) fn get_receivers(&self) -> HashMap<NodeId, Vec<PeerConnReceiver>> {
+        let mut receivers = HashMap::new();
+        for (node_id, conns) in &self.peers {
+            let mut entry = Vec::new();
+            for conn in conns.values() {
+                if !conn.conn.connected() {
+                    continue;
+                }
+                let receiver = match conn.conn.receiver() {
+                    Ok(receiver) => receiver,
+                    Err(err) => {
+                        warn!("error getting receiver from {}: {}", node_id, err);
+                        continue;
+                    },
+                };
+                entry.push(receiver);
+            }
+            receivers.insert(*node_id, entry);
+        }
+        receivers
+    }
+
     pub(crate) fn stop(&mut self) -> Result<()> {
         self.stop.send(())?;
         Ok(())
@@ -311,7 +346,7 @@ impl FullMesh {
 }
 
 fn create_peer(
-    peer: NodeId,
+    node_id: NodeId,
     id: Uuid,
     conn: PeerConn,
     fm: Weak<Mutex<FullMesh>>,
@@ -331,7 +366,7 @@ fn create_peer(
                     };
                     let mut fm = fm.lock().await;
                     let conn = fm.peers
-                        .get_mut(&peer)
+                        .get_mut(&node_id)
                         .and_then(|conns| conns.remove(&id));
                     if let Some(_) = conn {
                         fm.refresh.notify_waiters();
