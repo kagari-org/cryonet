@@ -16,7 +16,7 @@ pub(crate) mod igp;
 pub(crate) struct Mesh {
     pub(crate) id: NodeId,
 
-    mesh: Weak<Mutex<Mesh>>,
+    this: Weak<Mutex<Mesh>>,
 
     link_send: HashMap<NodeId, Box<dyn LinkSend>>,
     link_recv_stop: HashMap<NodeId, mpsc::UnboundedSender<()>>,
@@ -65,9 +65,9 @@ enum HandlerEvent {
 impl Mesh {
     pub(crate) fn new(id: NodeId) -> Arc<Mutex<Self>> {
         let (handler_event_tx, mut handler_event_rx) = mpsc::unbounded_channel();
-        let mesh = Arc::new_cyclic(|mesh| Mutex::new(Mesh {
+        let mesh = Arc::new_cyclic(|this| Mutex::new(Mesh {
             id,
-            mesh: mesh.clone(),
+            this: this.clone(),
             link_send: HashMap::new(),
             link_recv_stop: HashMap::new(),
             routes: HashMap::new(),
@@ -193,11 +193,14 @@ impl Mesh {
         self.link_recv_stop.insert(dst, tx);
         let handler_event_tx = self.handler_event_tx.clone();
 
-        let mesh = self.mesh.upgrade().unwrap();
+        let mesh = self.this.clone();
         tokio::spawn(async move {
             loop {
-                tokio::select! {
+                select! {
                     _ = rx.recv() => {
+                        let Some(mesh) = mesh.upgrade() else {
+                            break;
+                        };
                         mesh.lock().await.remove_link(dst);
                         break;
                     }

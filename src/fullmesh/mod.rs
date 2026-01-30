@@ -1,9 +1,9 @@
-use std::{any::Any, collections::HashMap, sync::Arc, time::{Duration, Instant}};
+use std::{any::Any, collections::HashMap, sync::{Arc, Weak}, time::{Duration, Instant}};
 
 use anyhow::Result;
-use rustrtc::{IceCandidate, RtcConfiguration};
+use rustrtc::{IceCandidate, PeerConnectionState, RtcConfiguration};
 use serde::{Deserialize, Serialize};
-use tokio::{select, sync::{Mutex, mpsc}, time::interval};
+use tokio::{select, sync::{Mutex, Notify, futures::Notified, mpsc}, time::interval};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
@@ -18,14 +18,23 @@ pub(crate) struct FullMesh {
     max_connected: usize,
     config: RtcConfiguration,
     mesh: Arc<Mutex<Mesh>>,
-    peers: HashMap<NodeId, HashMap<Uuid, Peer>>,
+    peers: HashMap<NodeId, HashMap<Uuid, Conn>>,
     stop: mpsc::UnboundedSender<()>,
+    refresh: Notify,
+
+    this: Weak<Mutex<FullMesh>>,
 }
 
-struct Peer {
+struct Conn {
     selected: bool,
     time: Instant,
     conn: PeerConn,
+}
+
+impl Drop for Conn {
+    fn drop(&mut self) {
+        self.conn.close();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,8 +69,9 @@ impl FullMesh {
         config: RtcConfiguration,
     ) -> Arc<Mutex<FullMesh>> {
         let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
-        let fm = Arc::new(Mutex::new(FullMesh {
-            id: mesh.lock().await.id,
+        let id = mesh.lock().await.id;
+        let fm = Arc::new_cyclic(|this| Mutex::new(FullMesh {
+            id,
             timeout,
             discard_timeout,
             max_connected,
@@ -69,6 +79,8 @@ impl FullMesh {
             mesh: mesh.clone(),
             peers: HashMap::new(),
             stop: stop_tx,
+            refresh: Notify::new(),
+            this: this.clone(),
         }));
         let fm2 = fm.clone();
         tokio::spawn(async move {
@@ -119,31 +131,27 @@ impl FullMesh {
                 self.start_peer_loop(src, *id, &conn);
                 let origin = self.peers.entry(src)
                     .or_insert_with(|| HashMap::new())
-                    .insert(*id, Peer {
-                        selected: false,
-                        time: Instant::now(),
-                        conn,
-                    });
+                    .insert(*id, create_peer(src, *id, conn, self.this.clone()));
                 if origin.is_some() {
                     error!("overwriting existing PeerConn for node {} id {}", src, id);
                 }
             },
             FullMeshPayload::Answer(id, answer) if self.id < src => {
-                let peer = self.peers.get(&src).and_then(|peers| peers.get(id));
-                let Some(peer) = peer else {
+                let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
+                let Some(conn) = conn else {
                     error!("no PeerConn found for node {} id {}, ignoring", src, id);
                     return Ok(());
                 };
-                peer.conn.answered(answer).await?;
-                self.start_peer_loop(src, *id, &peer.conn);
+                conn.conn.answered(answer).await?;
+                self.start_peer_loop(src, *id, &conn.conn);
             },
             FullMeshPayload::Candidate(id, candidate) => {
-                let peer = self.peers.get(&src).and_then(|peers| peers.get(id));
-                let Some(peer) = peer else {
+                let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
+                let Some(conn) = conn else {
                     error!("no PeerConn found for node {} id {}, ignoring", src, id);
                     return Ok(());
                 };
-                peer.conn.add_ice_candidate(IceCandidate::from_sdp(candidate)?).await?;
+                conn.conn.add_ice_candidate(IceCandidate::from_sdp(candidate)?).await?;
             },
             _ => {
                 warn!("unexpected packet type from node {}, ignoring", src);
@@ -156,13 +164,13 @@ impl FullMesh {
     async fn tick(&mut self) {
         // gc
         let time = Instant::now();
-        for (_, peers) in &mut self.peers {
-            peers.retain(|_, peer| {
-                let timeouted = time.duration_since(peer.time) > self.timeout;
-                !timeouted || peer.conn.connected()
+        for (_, conns) in &mut self.peers {
+            conns.retain(|_, conn| {
+                let timeouted = time.duration_since(conn.time) > self.timeout;
+                !timeouted || conn.conn.connected()
             });
         }
-        self.peers.retain(|_, peers| !peers.is_empty());
+        self.peers.retain(|_, conns| !conns.is_empty());
         // check connected
         let peers = self.mesh.lock().await.get_routes().keys().cloned().collect::<Vec<_>>();
         for peer in peers {
@@ -190,8 +198,7 @@ impl FullMesh {
                         if conns.get(id).unwrap().selected {
                             continue;
                         }
-                        let peer = conns.remove(id).unwrap();
-                        peer.conn.close();
+                        conns.remove(id);
                     }
                 } else {
                     continue;
@@ -222,11 +229,7 @@ impl FullMesh {
                 error!("error sending offer to {}: {}", peer, err);
                 continue;
             }
-            conns.insert(id, Peer {
-                selected: false,
-                time: Instant::now(),
-                conn,
-            });
+            conns.insert(id, create_peer(peer, id, conn, self.this.clone()));
         }
         // select
         for (_, conns) in &mut self.peers {
@@ -234,25 +237,42 @@ impl FullMesh {
                 // unreachable
                 continue;
             }
-            let mut newest: Option<&mut Peer> = None;
-            for (_, conn) in conns {
-                conn.selected = false;
-                if !conn.conn.connected() {
+            let old = conns.iter().find_map(|(id, peer)| if peer.selected {
+                Some(*id)
+            } else {
+                None
+            });
+            let mut newest: Option<(&Uuid, &mut Conn)> = None;
+            for conn in conns {
+                conn.1.selected = false;
+                if !conn.1.conn.connected() {
                     continue;
                 }
                 if let Some(ref n) = newest {
-                    if conn.time > n.time {
+                    if conn.1.time > n.1.time {
                         newest = Some(conn);
                     }
                 } else {
                     newest = Some(conn);
                 }
             }
-            if let Some(conn) = newest {
-                conn.selected = true;
+            match (old, newest) {
+                (None, Some(select)) => {
+                    select.1.selected = true;
+                    self.refresh.notify_waiters();
+                },
+                (Some(_), None) => {
+                    self.refresh.notify_waiters();
+                },
+                (Some(old), Some(select)) => {
+                    select.1.selected = true;
+                    if old != *select.0 {
+                        self.refresh.notify_waiters();
+                    }
+                },
+                _ => {}
             }
         }
-        // TODO: notify
     }
 
     fn start_peer_loop(&self, id: NodeId, uuid: Uuid, peer: &PeerConn) {
@@ -280,8 +300,50 @@ impl FullMesh {
         });
     }
 
+    pub(crate) fn refresh_notified(&self) -> Notified<'_> {
+        self.refresh.notified()
+    }
+
     pub(crate) fn stop(&mut self) -> Result<()> {
         self.stop.send(())?;
         Ok(())
+    }
+}
+
+fn create_peer(
+    peer: NodeId,
+    id: Uuid,
+    conn: PeerConn,
+    fm: Weak<Mutex<FullMesh>>,
+) -> Conn {
+    let mut state = conn.subscribe_state();
+    tokio::spawn(async move {
+        loop {
+            let Ok(_) = state.changed().await else {
+                break;
+            };
+            let s = *state.borrow_and_update();
+            use PeerConnectionState::*;
+            match s {
+                Disconnected | Failed | Closed => {
+                    let Some(fm) = fm.upgrade() else {
+                        break;
+                    };
+                    let mut fm = fm.lock().await;
+                    let conn = fm.peers
+                        .get_mut(&peer)
+                        .and_then(|conns| conns.remove(&id));
+                    if let Some(_) = conn {
+                        fm.refresh.notify_waiters();
+                    }
+                },
+                _ => {}
+            }
+        }
+    });
+    Conn {
+        selected: false,
+        time: Instant::now(),
+        conn,
     }
 }

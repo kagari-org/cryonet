@@ -26,6 +26,10 @@ impl PeerConn {
         })
     }
 
+    pub(crate) fn subscribe_state(&self) -> watch::Receiver<PeerConnectionState> {
+        self.peer.subscribe_peer_state()
+    }
+
     pub(crate) fn connected(&self) -> bool {
         let status = *self.state_watcher.borrow();
         status == PeerConnectionState::Connected
