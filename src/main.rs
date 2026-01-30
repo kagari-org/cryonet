@@ -1,5 +1,5 @@
 #![feature(try_blocks)]
-use std::{future::pending, net::SocketAddr, time::Duration};
+use std::{future::pending, net::SocketAddr};
 
 use anyhow::Result;
 use clap::Parser;
@@ -40,8 +40,6 @@ async fn main() -> Result<()> {
     );
     let fm = FullMesh::new(
         mesh.clone(),
-        Duration::from_secs(30),
-        5,
         RtcConfiguration::default(),
     ).await;
 

@@ -14,6 +14,7 @@ pub(crate) mod conn;
 pub(crate) struct FullMesh {
     id: NodeId,
     timeout: Duration,
+    discard_timeout: Duration,
     max_connected: usize,
     config: RtcConfiguration,
     mesh: Arc<Mutex<Mesh>>,
@@ -22,7 +23,6 @@ pub(crate) struct FullMesh {
 }
 
 struct Peer {
-    id: Uuid,
     selected: bool,
     time: Instant,
     conn: PeerConn,
@@ -41,7 +41,21 @@ impl Payload for FullMeshPayload {}
 impl FullMesh {
     pub(crate) async fn new(
         mesh: Arc<Mutex<Mesh>>,
+        config: RtcConfiguration,
+    ) -> Arc<Mutex<FullMesh>> {
+        Self::new_with_parameters(
+            mesh,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            5,
+            config,
+        ).await
+    }
+
+    pub(crate) async fn new_with_parameters(
+        mesh: Arc<Mutex<Mesh>>,
         timeout: Duration,
+        discard_timeout: Duration,
         max_connected: usize,
         config: RtcConfiguration,
     ) -> Arc<Mutex<FullMesh>> {
@@ -49,6 +63,7 @@ impl FullMesh {
         let fm = Arc::new(Mutex::new(FullMesh {
             id: mesh.lock().await.id,
             timeout,
+            discard_timeout,
             max_connected,
             config,
             mesh: mesh.clone(),
@@ -105,7 +120,6 @@ impl FullMesh {
                 let origin = self.peers.entry(src)
                     .or_insert_with(|| HashMap::new())
                     .insert(*id, Peer {
-                        id: *id,
                         selected: false,
                         time: Instant::now(),
                         conn,
@@ -141,7 +155,6 @@ impl FullMesh {
 
     async fn tick(&mut self) {
         // gc
-        // TODO: also drop connected peers after some time
         let time = Instant::now();
         for (_, peers) in &mut self.peers {
             peers.retain(|_, peer| {
@@ -149,6 +162,7 @@ impl FullMesh {
                 !timeouted || peer.conn.connected()
             });
         }
+        self.peers.retain(|_, peers| !peers.is_empty());
         // check connected
         let peers = self.mesh.lock().await.get_routes().keys().cloned().collect::<Vec<_>>();
         for peer in peers {
@@ -159,7 +173,29 @@ impl FullMesh {
                 .filter(|conn| conn.conn.connected())
                 .count();
             if connected >= self.max_connected {
-                continue;
+                let newest = conns.values()
+                    .max_by(|x, y| x.time.cmp(&y.time))
+                    .unwrap();
+                if newest.time.elapsed() > self.discard_timeout {
+                    let mut entries = conns.iter().collect::<Vec<_>>();
+                    entries.sort_by(|x, y| x.1.time.cmp(&y.1.time));
+                    let sorted = entries
+                        .iter()
+                        .map(|(id, _)| (**id).clone())
+                        .collect::<Vec<_>>();
+                    for id in sorted.iter() {
+                        if conns.len() <= self.max_connected - 1 {
+                            break;
+                        }
+                        if conns.get(id).unwrap().selected {
+                            continue;
+                        }
+                        let peer = conns.remove(id).unwrap();
+                        peer.conn.close();
+                    }
+                } else {
+                    continue;
+                }
             }
             if self.id > peer {
                 continue;
@@ -187,12 +223,36 @@ impl FullMesh {
                 continue;
             }
             conns.insert(id, Peer {
-                id,
                 selected: false,
                 time: Instant::now(),
                 conn,
             });
         }
+        // select
+        for (_, conns) in &mut self.peers {
+            if conns.is_empty() {
+                // unreachable
+                continue;
+            }
+            let mut newest: Option<&mut Peer> = None;
+            for (_, conn) in conns {
+                conn.selected = false;
+                if !conn.conn.connected() {
+                    continue;
+                }
+                if let Some(ref n) = newest {
+                    if conn.time > n.time {
+                        newest = Some(conn);
+                    }
+                } else {
+                    newest = Some(conn);
+                }
+            }
+            if let Some(conn) = newest {
+                conn.selected = true;
+            }
+        }
+        // TODO: notify
     }
 
     fn start_peer_loop(&self, id: NodeId, uuid: Uuid, peer: &PeerConn) {

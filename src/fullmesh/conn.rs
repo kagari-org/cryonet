@@ -69,6 +69,10 @@ impl PeerConn {
             .ok_or_else(|| anyhow!("unexpected missing receiver"))?.track();
         Ok(PeerConnReceiver { track })
     }
+
+    pub(crate) fn close(&self) {
+        self.peer.close();
+    }
 }
 
 pub(crate) struct PeerConnSender {
