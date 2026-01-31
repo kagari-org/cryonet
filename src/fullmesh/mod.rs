@@ -3,13 +3,14 @@ use std::{any::Any, collections::HashMap, sync::{Arc, Weak}, time::{Duration, In
 use anyhow::Result;
 use rustrtc::{IceCandidate, PeerConnectionState, RtcConfiguration};
 use serde::{Deserialize, Serialize};
-use tokio::{select, sync::{Mutex, Notify, futures::Notified, mpsc}, time::interval};
+use tokio::{select, sync::{Mutex, broadcast::{self, error::RecvError}, mpsc}, time::interval};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use crate::{fullmesh::conn::{PeerConn, PeerConnReceiver, PeerConnSender}, mesh::{Mesh, packet::{NodeId, Payload}}};
 
 pub(crate) mod conn;
+pub(crate) mod tun;
 
 pub(crate) struct FullMesh {
     id: NodeId,
@@ -20,7 +21,7 @@ pub(crate) struct FullMesh {
     mesh: Arc<Mutex<Mesh>>,
     peers: HashMap<NodeId, HashMap<Uuid, Conn>>,
     stop: mpsc::UnboundedSender<()>,
-    refresh: Notify,
+    refresh: broadcast::Sender<()>,
 
     this: Weak<Mutex<FullMesh>>,
 }
@@ -79,7 +80,7 @@ impl FullMesh {
             mesh: mesh.clone(),
             peers: HashMap::new(),
             stop: stop_tx,
-            refresh: Notify::new(),
+            refresh: broadcast::channel(1).0,
             this: this.clone(),
         }));
         let fm2 = fm.clone();
@@ -135,6 +136,7 @@ impl FullMesh {
                 if origin.is_some() {
                     error!("overwriting existing PeerConn for node {} id {}", src, id);
                 }
+                let _ = self.refresh.send(());
             },
             FullMeshPayload::Answer(id, answer) if self.id < src => {
                 let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
@@ -144,6 +146,7 @@ impl FullMesh {
                 };
                 conn.conn.answered(answer).await?;
                 self.start_peer_loop(src, *id, &conn.conn);
+                let _ = self.refresh.send(());
             },
             FullMeshPayload::Candidate(id, candidate) => {
                 let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
@@ -170,7 +173,6 @@ impl FullMesh {
                 !timeouted || conn.conn.connected()
             });
         }
-        self.peers.retain(|_, conns| !conns.is_empty());
         // check connected
         let peers = self.mesh.lock().await.get_routes().keys().cloned().collect::<Vec<_>>();
         for node_id in peers {
@@ -191,14 +193,15 @@ impl FullMesh {
                         .iter()
                         .map(|(id, _)| (**id).clone())
                         .collect::<Vec<_>>();
-                    for id in sorted.iter() {
+                    for id in sorted {
                         if conns.len() <= self.max_connected - 1 {
                             break;
                         }
-                        if conns.get(id).unwrap().selected {
+                        if conns.get(&id).unwrap().selected {
                             continue;
                         }
-                        conns.remove(id);
+                        conns.remove(&id);
+                        let _ = self.refresh.send(());
                     }
                 } else {
                     continue;
@@ -234,7 +237,6 @@ impl FullMesh {
         // select
         for (_, conns) in &mut self.peers {
             if conns.is_empty() {
-                // unreachable
                 continue;
             }
             let old = conns.iter().find_map(|(id, peer)| if peer.selected {
@@ -242,32 +244,31 @@ impl FullMesh {
             } else {
                 None
             });
-            let mut newest: Option<(&Uuid, &mut Conn)> = None;
-            for conn in conns {
-                conn.1.selected = false;
-                if !conn.1.conn.connected() {
-                    continue;
-                }
-                if let Some(ref n) = newest {
-                    if conn.1.time > n.1.time {
-                        newest = Some(conn);
-                    }
-                } else {
-                    newest = Some(conn);
-                }
+            for conn in conns.values_mut() {
+                conn.selected = false;
             }
-            match (old, newest) {
+            let mut connected = conns.iter_mut()
+                .filter(|conn| conn.1.conn.connected())
+                .collect::<Vec<_>>();
+            connected.sort_by(|x, y| y.1.time.cmp(&x.1.time));
+            let best = match connected.len() {
+                0 => None,
+                1 => Some(&mut connected[0]),
+                // delay connection selection
+                _ => Some(&mut connected[1]),
+            };
+            match (old, best) {
                 (None, Some(select)) => {
                     select.1.selected = true;
-                    self.refresh.notify_waiters();
+                    let _ = self.refresh.send(());
                 },
                 (Some(_), None) => {
-                    self.refresh.notify_waiters();
+                    let _ = self.refresh.send(());
                 },
                 (Some(old), Some(select)) => {
                     select.1.selected = true;
                     if old != *select.0 {
-                        self.refresh.notify_waiters();
+                        let _ = self.refresh.send(());
                     }
                 },
                 _ => {}
@@ -283,6 +284,10 @@ impl FullMesh {
                 let candidate = candidate.recv().await;
                 let candidate = match candidate {
                     Ok(candidate) => candidate,
+                    Err(RecvError::Lagged(_)) => {
+                        warn!("candidate channel lagged for {}", id);
+                        continue;
+                    },
                     Err(err) => {
                         warn!("candidate channel closed: {}", err);
                         break;
@@ -300,8 +305,8 @@ impl FullMesh {
         });
     }
 
-    pub(crate) fn refresh_notified(&self) -> Notified<'_> {
-        self.refresh.notified()
+    pub(crate) fn subscribe_refresh(&self) -> broadcast::Receiver<()> {
+        self.refresh.subscribe()
     }
 
     pub(crate) fn get_senders(&self) -> HashMap<NodeId, PeerConnSender> {
@@ -369,7 +374,7 @@ fn create_peer(
                         .get_mut(&node_id)
                         .and_then(|conns| conns.remove(&id));
                     if let Some(_) = conn {
-                        fm.refresh.notify_waiters();
+                        let _ = fm.refresh.send(());
                     }
                 },
                 _ => {}

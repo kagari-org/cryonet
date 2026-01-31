@@ -330,10 +330,7 @@ impl IGP {
             IGPPayload::Update { metric, dst } => {
                 let computed_metric = match (self.costs.get(&src), metric.metric) {
                     (_, u32::MAX) => u32::MAX,
-                    (None, _) => {
-                        warn!("Unexpected missing cost for {:X}", src);
-                        u32::MAX - 1
-                    },
+                    (None, _) => u32::MAX - 1,
                     (Some(cost), metric) => metric.saturating_add(cost.cost),
                 };
 

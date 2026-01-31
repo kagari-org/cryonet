@@ -6,7 +6,7 @@ use clap::Parser;
 use clap_num::maybe_hex;
 use rustrtc::RtcConfiguration;
 
-use crate::{connection::ConnManager, fullmesh::FullMesh, mesh::{Mesh, igp::IGP, packet::NodeId}};
+use crate::{connection::ConnManager, fullmesh::{FullMesh, tun::TunManager}, mesh::{Mesh, igp::IGP, packet::NodeId}};
 
 pub(crate) mod errors;
 pub(crate) mod mesh;
@@ -42,8 +42,10 @@ async fn main() -> Result<()> {
         mesh.clone(),
         RtcConfiguration::default(),
     ).await;
+    let tm = TunManager::new(fm.clone()).await;
 
     pending::<()>().await;
+    tm.lock().await.stop();
     fm.lock().await.stop()?;
     mgr.lock().await.stop()?;
     igp.lock().await.stop()?;
