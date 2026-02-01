@@ -188,6 +188,11 @@ impl Mesh {
     }
 
     pub(crate) fn add_link(&mut self, dst: NodeId, send: Box<dyn LinkSend>, mut recv: Box<dyn LinkRecv>) {
+        if self.link_send.contains_key(&dst) {
+            debug!("Link to {:X} already exists, removing old link", dst);
+            self.remove_link(dst);
+        }
+
         self.link_send.insert(dst, send);
         let (tx, mut rx) = mpsc::unbounded_channel();
         self.link_recv_stop.insert(dst, tx);
