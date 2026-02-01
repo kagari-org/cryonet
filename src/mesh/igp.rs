@@ -228,10 +228,13 @@ impl IGP {
             IGPPayload::RouteRequest { dst } => {
                 let mut mesh = self.mesh.lock().await;
                 let route = self.routes.iter().find(|((d, _), r)| d == dst && r.selected);
-                // TODO: should send retraction
-                // ignore when we don't have a route to dst
-                if let Some((_, route)) = route {
-                    mesh.broadcast_packet_local(generate_update(route)).await?;
+                match route {
+                    Some((_, route)) => {
+                        mesh.broadcast_packet_local(generate_update(route)).await?;
+                    },
+                    None => {
+                        mesh.broadcast_packet_local(generate_retraction(*dst)).await?;
+                    },
                 }
             },
 
@@ -382,6 +385,7 @@ impl IGP {
                     },
                 }
 
+                // check seqno requests
                 let route = &self.routes[&(*dst, src)];                
                 if let Some(seqno_request) = self.requests.get(dst) {
                     if metric.seq >= seqno_request.seq {
@@ -593,6 +597,16 @@ fn generate_update(route: &Route) -> IGPPayload {
         metric: SeqMetric {
             seq: route.metric.seq,
             metric: route.computed_metric,
+        },
+    }
+}
+
+fn generate_retraction(dst: NodeId) -> IGPPayload {
+    IGPPayload::Update {
+        dst,
+        metric: SeqMetric {
+            seq: Seq(0),
+            metric: u32::MAX,
         },
     }
 }
