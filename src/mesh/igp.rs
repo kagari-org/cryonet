@@ -5,7 +5,7 @@ use std::{any::Any, cmp::Ordering, collections::{HashMap, hash_map::Entry}, fmt:
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::{select, sync::{Mutex, mpsc}, time::interval};
-use tracing::{info, warn};
+use tracing::{debug, error, warn};
 
 use crate::mesh::{MeshEvent, packet::{NodeId, Payload}, seq::{Seq, SeqMetric}};
 
@@ -141,7 +141,7 @@ impl IGP {
                     _ = gc_ticker.tick() => igp.lock().await.gc().await,
                     packet = packet_rx.recv() => {
                         let Some(packet) = packet else {
-                            warn!("IGP packet receiver closed");
+                            error!("IGP packet receiver closed unexpectedly");
                             break;
                         };
                         let igp_payload = (packet.payload.as_ref() as &dyn Any)
@@ -150,14 +150,14 @@ impl IGP {
                             .handle_packet(packet.src, igp_payload)
                             .await;
                         if let Err(err) = result {
-                            warn!("Failed to handle IGP packet: {}", err);
+                            warn!("Failed to handle IGP packet from node {:X}: {}", packet.src, err);
                         }
                     },
                     event = mesh_event_rx.recv() => {
                         let event = match event {
                             Ok(event) => event,
                             Err(err) => {
-                                warn!("Failed to receive IGP link event: {}", err);
+                                error!("Failed to receive mesh event: {}", err);
                                 break;
                             },
                         };
@@ -190,12 +190,12 @@ impl IGP {
             IGPPayload::HelloReply { seq } => {
                 let time = Instant::now();
                 let Entry::Occupied(mut cost) = self.costs.entry(src) else {
-                    warn!("Received unexpected HelloReply from {:X}", src);
+                    warn!("Received unexpected HelloReply from node {:X}", src);
                     return Ok(());
                 };
                 let cost = cost.get_mut();
                 if cost.seq != *seq {
-                    warn!("Ignoring unexpected HelloReply with seq {:?} from {:X}", seq, src);
+                    debug!("Ignoring HelloReply with mismatched seq {:?} from node {:X}", seq, src);
                     return Ok(());
                 }
                 let rtt = time.duration_since(cost.start).as_millis() + 100;
@@ -240,13 +240,13 @@ impl IGP {
                 let route = match route {
                     Some((_, route)) => {
                         if route.metric.metric == u32::MAX {
-                            warn!("The route to {:X} is unreachable, dropping SequenceRequest", dst);
+                            debug!("Route to node {:X} is unreachable, dropping SequenceRequest", dst);
                             return Ok(());
                         }
                         route
                     },
                     None => {
-                        warn!("Routes to {:X} not found, dropping SequenceRequest", dst);
+                        debug!("No route to node {:X}, dropping SequenceRequest", dst);
                         return Ok(());
                     },
                 };
@@ -262,20 +262,20 @@ impl IGP {
                 }
                 // forward the request
                 if *ttl == 0 {
-                    warn!("TTL expired for SequenceRequest to {:X}, dropping", dst);
+                    debug!("SequenceRequest to node {:X} expired: TTL=0", dst);
                     return Ok(());
                 }
                 let source = match self.sources.get(dst) {
                     Some(source) => source,
                     None => {
-                        warn!("Unexpected missing source for {:X}, dropping SequenceRequest", dst);
+                        warn!("Missing source for node {:X}, dropping SequenceRequest", dst);
                         return Ok(());
                     },
                 };
                 let existing_request = self.requests.get(dst);
                 if let Some(existing_request) = existing_request {
                     if *seq <= existing_request.seq && Instant::now() < existing_request.expiry {
-                        info!("Supressing SequenceRequest for {:X} with seq {:?}", dst, seq);
+                        debug!("Suppressing duplicate SequenceRequest for node {:X} with seq {:?}", dst, seq);
                         return Ok(());
                     }
                 }
@@ -323,7 +323,7 @@ impl IGP {
                     mesh.send_packet_link(route.from, payload).await?;
                     return Ok(());
                 }
-                warn!("No alternative route to {:X} found, dropping SequenceRequest", dst);
+                debug!("No alternative route to node {:X}, dropping SequenceRequest", dst);
             },
 
 
@@ -360,7 +360,7 @@ impl IGP {
                         let source = match source {
                             Some(source) => source,
                             None => {
-                                warn!("Unexpected missing source for {:X}, dropping Update", dst);
+                                warn!("Missing source for node {:X}, dropping Update", dst);
                                 return Ok(());
                             },
                         };
@@ -411,7 +411,7 @@ impl IGP {
             let result = mesh.send_packet_link(link,
                 IGPPayload::Hello { seq: cost.seq }).await;
             if let Err(err) = result {
-                warn!("Failed to send IGP Hello to {:X}: {}", link, err);
+                warn!("Failed to send Hello to node {:X}: {}", link, err);
             }
         }
     }
@@ -441,7 +441,7 @@ impl IGP {
                         mesh.set_route(**dst, best.0.from);
                         let result = mesh.broadcast_packet_local(generate_update(best.0)).await;
                         if let Err(err) = result {
-                            warn!("Failed to broadcast Update for {:X}: {}", dst, err);
+                            warn!("Failed to broadcast Update for node {:X}: {}", dst, err);
                         }
                     }
                 },
@@ -456,7 +456,7 @@ impl IGP {
                         let seq = source.0.seq + Seq(1);
                         if let Some(existing_request) = existing_request {
                             if seq <= existing_request.seq && Instant::now() < existing_request.expiry {
-                                info!("Supressing SequenceRequest for {:X} with seq {:?}", dst, seq);
+                                debug!("Suppressing duplicate SequenceRequest for node {:X} with seq {:?}", dst, seq);
                                 return;
                             }
                         }
@@ -470,7 +470,7 @@ impl IGP {
                             ttl: self.diameter,
                         }).await;
                         if let Err(err) = result {
-                            warn!("Failed to broadcast SequenceRequest for {:X}: {}", dst, err);
+                            warn!("Failed to broadcast SequenceRequest for node {:X}: {}", dst, err);
                         }
                     } else {
                         let origin = *source;
@@ -481,7 +481,7 @@ impl IGP {
                         if source.0.metric.abs_diff(origin.0.metric) > self.update_threshold {
                             let result = mesh.broadcast_packet_local(generate_update(best.0)).await;
                             if let Err(err) = result {
-                                warn!("Failed to broadcast Update for {:X}: {}", dst, err);
+                                warn!("Failed to broadcast Update for node {:X}: {}", dst, err);
                             }
                         }
                     }
@@ -535,7 +535,7 @@ impl IGP {
                 },
                 Entry::Vacant(vacant_entry) => {
                     vacant_entry.insert((route.metric, Instant::now() + self.source_timeout));
-                    warn!("Source for {:X} missing during RouteDump, inserting", dst);
+                    warn!("Missing source for node {:X} during RouteDump, inserting", dst);
                 },
             }
             let update = generate_update(route);
@@ -544,7 +544,7 @@ impl IGP {
                 None => mesh.broadcast_packet_local(update).await,
             };
             if let Err(err) = result {
-                warn!("Failed to send RouteDump for {:X}: {}", dst, err);
+                warn!("Failed to send RouteDump for node {:X}: {}", dst, err);
             }
         }
     }
@@ -566,7 +566,7 @@ impl IGP {
                     .send_packet_link(*neigh, IGPPayload::RouteRequest { dst: *dst })
                     .await;
                 if let Err(err) = result {
-                    warn!("Failed to send RouteRequest for {:X}: {}", dst, err);
+                    warn!("Failed to send RouteRequest for node {:X}: {}", dst, err);
                 }
             }
         }
@@ -574,6 +574,7 @@ impl IGP {
         self.select().await;
     }
 
+    #[allow(dead_code)]
     pub(crate) fn get_routes(&self) -> Vec<Route> {
         self.routes.values().cloned().collect()
     }

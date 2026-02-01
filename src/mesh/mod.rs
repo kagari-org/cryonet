@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use futures::future::join_all;
 use packet::{NodeId, Packet, Payload};
 use tokio::{select, sync::{Mutex, broadcast, mpsc}};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::errors::Error;
 
@@ -82,24 +82,21 @@ impl Mesh {
                     packet = handler_event_rx.recv() => {
                         let event = match packet {
                             Some(event) => event,
-                            None => {
-                                warn!("handler event channel closed");
-                                break;
-                            }
+                            None => break,
                         };
                         match event {
                             HandlerEvent::Stop => break,
                             HandlerEvent::ReceivedPacket { from, packet } => {
                                 let mut mesh = mesh.lock().await;
                                 if let Err(err) = mesh.handle_packet(from, packet).await {
-                                    warn!("Failed to handle packet from {:X}: {}", from, err);
+                                    warn!("Failed to handle packet from node {:X}: {}", from, err);
                                 }
                             },
                         }
                     }
                 }
             }
-            warn!("link handler exiting");
+            info!("Mesh handler stopped");
         });
         mesh2
     }
@@ -182,6 +179,7 @@ impl Mesh {
         rx
     }
 
+    #[allow(dead_code)]
     pub(crate) fn remove_dispatchee(&mut self, rx: &mut mpsc::Receiver<Packet>) {
         rx.close();
         self.dispatchees.retain(|(_, tx)| !tx.is_closed());
@@ -189,7 +187,7 @@ impl Mesh {
 
     pub(crate) fn add_link(&mut self, dst: NodeId, send: Box<dyn LinkSend>, mut recv: Box<dyn LinkRecv>) {
         if self.link_send.contains_key(&dst) {
-            debug!("Link to {:X} already exists, removing old link", dst);
+            debug!("Link to node {:X} already exists, removing old link", dst);
             self.remove_link(dst);
         }
 
@@ -219,7 +217,7 @@ impl Mesh {
                             packet,
                         });
                         if let Err(err) = result {
-                            warn!("Failed to send received packet to mesh handler: {}", err);
+                            error!("Failed to send packet to mesh handler: {}", err);
                             break;
                         }
                         if brk {
@@ -233,7 +231,7 @@ impl Mesh {
     }
 
     pub(crate) fn remove_link(&mut self, dst: NodeId) {
-        debug!("Removing link to {:X}", dst);
+        debug!("Removing link to node {:X}", dst);
         self.routes.retain(|_, &mut v| v != dst);
         self.link_send.remove(&dst);
         let ctrl = self.link_recv_stop.remove(&dst);
@@ -253,16 +251,16 @@ impl Mesh {
             return;
         }
         if !self.link_send.contains_key(&next_hop) {
-            warn!("Tried to set route to {:X} via non-existent link {:X}", dst, next_hop);
+            warn!("Cannot set route to node {:X}: next hop {:X} does not exist", dst, next_hop);
             return;
         }
-        debug!("Setting route to {:X} via next hop {:X}", dst, next_hop);
+        debug!("Setting route: {:X} via {:X}", dst, next_hop);
         self.routes.insert(dst, next_hop);
         let _ = self.mesh_event_tx.send(MeshEvent::RouteSet(dst, next_hop));
     }
 
     pub(crate) fn remove_route(&mut self, dst: NodeId) {
-        debug!("Removing route to {:X}", dst);
+        debug!("Removing route to node {:X}", dst);
         let route = self.routes.remove(&dst);
         if let Some(next_hop) = route {
             let _ = self.mesh_event_tx.send(MeshEvent::RouteRemoved(dst, next_hop));
@@ -285,7 +283,7 @@ impl Mesh {
                 return Ok(());
             }
             Err(LinkError::Unknown(err)) => {
-                warn!("Failed to receive packet: {}", err);
+                warn!("Error receiving packet: {}", err);
                 return Ok(());
             }
         };
@@ -294,14 +292,14 @@ impl Mesh {
             for (filter, dispatch) in self.dispatchees.iter() {
                 if filter(&packet) {
                     if let Err(err) = dispatch.send(packet).await {
-                        warn!("Failed to dispatch packet: {}", err);
+                        warn!("Failed to dispatch packet to handler: {}", err);
                     }
                     break;
                 }
             }
         } else {
             if packet.ttl == 0 {
-                warn!("Dropping packet to {:X} due to TTL=0", packet.dst);
+                debug!("Dropping packet to node {:X}: TTL expired", packet.dst);
                 return Ok(());
             }
             packet.ttl -= 1;

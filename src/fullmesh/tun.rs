@@ -142,12 +142,12 @@ async fn receive(
                     let packet = match packet {
                         Ok(packet) => packet,
                         Err(err) => {
-                            error!("receive error from {}: {}", node_id, err);
+                            error!("Failed to receive from node {:X}: {}", node_id, err);
                             break;
                         },
                     };
                     if let Err(err) = device.send(&packet).await {
-                        error!("tun write error for {}: {}", node_id, err);
+                        error!("Failed to write to TUN device for node {:X}: {}", node_id, err);
                         break;
                     }
                 },
@@ -181,13 +181,13 @@ async fn send(
                     let size = match size {
                         Ok(size) => size,
                         Err(err) => {
-                            error!("tun read error for {}: {}", node_id, err);
+                            error!("Failed to read from TUN device for node {:X}: {}", node_id, err);
                             break;
                         },
                     };
                     let bytes = Bytes::copy_from_slice(&packet[..size]);
                     if let Err(err) = sender.send(bytes).await {
-                        error!("send error to {}: {}", node_id, err);
+                        error!("Failed to send to node {:X}: {}", node_id, err);
                         break;
                     }
                 },

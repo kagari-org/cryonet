@@ -96,14 +96,14 @@ impl FullMesh {
                     },
                     packet = packets.recv() => {
                         let Some(packet) = packet else {
-                            warn!("packet channel closed");
+                            error!("FullMesh packet channel closed unexpectedly");
                             break;
                         };
                         let payload = (packet.payload.as_ref() as &dyn Any)
                             .downcast_ref::<FullMeshPayload>().unwrap();
                         let result = fm.lock().await.handle_packet(packet.src, payload).await;
                         if let Err(err) = result {
-                            warn!("error handling packet from {}: {}", packet.src, err);
+                            warn!("Failed to handle packet from node {:X}: {}", packet.src, err);
                         }
                     }
                 }
@@ -118,7 +118,7 @@ impl FullMesh {
         payload: &FullMeshPayload,
     ) -> Result<()> {
         if src == self.id {
-            error!("unexpected packet from self, ignoring");
+            error!("Received packet from self (node {:X}), ignoring", self.id);
             return Ok(());
         }
         match payload {
@@ -134,14 +134,14 @@ impl FullMesh {
                     .or_insert_with(|| HashMap::new())
                     .insert(*id, create_peer(src, *id, conn, self.this.clone()));
                 if origin.is_some() {
-                    error!("overwriting existing PeerConn for node {} id {}", src, id);
+                    warn!("Overwriting existing PeerConn for node {:X} id {}", src, id);
                 }
                 let _ = self.refresh.send(());
             },
             FullMeshPayload::Answer(id, answer) if self.id < src => {
                 let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
                 let Some(conn) = conn else {
-                    error!("no PeerConn found for node {} id {}, ignoring", src, id);
+                    warn!("No PeerConn found for node {:X} id {}, ignoring", src, id);
                     return Ok(());
                 };
                 conn.conn.answered(answer).await?;
@@ -151,13 +151,13 @@ impl FullMesh {
             FullMeshPayload::Candidate(id, candidate) => {
                 let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
                 let Some(conn) = conn else {
-                    error!("no PeerConn found for node {} id {}, ignoring", src, id);
+                    warn!("No PeerConn found for node {:X} id {}, ignoring", src, id);
                     return Ok(());
                 };
                 conn.conn.add_ice_candidate(IceCandidate::from_sdp(candidate)?).await?;
             },
             _ => {
-                warn!("unexpected packet type from node {}, ignoring", src);
+                warn!("Unexpected packet type from node {:X}, ignoring", src);
                 return Ok(());
             },
         };
@@ -214,7 +214,7 @@ impl FullMesh {
             let mut conn = match conn {
                 Ok(conn) => conn,
                 Err(err) => {
-                    error!("error creating PeerConn to {}: {}", node_id, err);
+                    error!("Failed to create PeerConn to node {:X}: {}", node_id, err);
                     continue;
                 },
             };
@@ -222,14 +222,14 @@ impl FullMesh {
             let offer = match conn.offer().await {
                 Ok(offer) => offer,
                 Err(err) => {
-                    error!("error creating offer to {}: {}", node_id, err);
+                    error!("Failed to create offer to node {:X}: {}", node_id, err);
                     continue;
                 },
             };
             let result = self.mesh.lock().await
                 .send_packet(node_id, FullMeshPayload::Offer(id, offer)).await;
             if let Err(err) = result {
-                error!("error sending offer to {}: {}", node_id, err);
+                error!("Failed to send offer to node {:X}: {}", node_id, err);
                 continue;
             }
             conns.insert(id, create_peer(node_id, id, conn, self.this.clone()));
@@ -284,22 +284,19 @@ impl FullMesh {
                 let candidate = candidate.recv().await;
                 let candidate = match candidate {
                     Ok(candidate) => candidate,
-                    Err(RecvError::Lagged(_)) => {
-                        warn!("candidate channel lagged for {}", id);
-                        continue;
-                    },
+                    Err(RecvError::Lagged(_)) => continue,
                     Err(err) => {
-                        warn!("candidate channel closed: {}", err);
+                        debug!("Candidate channel closed for node {:X}: {}", id, err);
                         break;
                     },
                 };
-                debug!("sending candidate to {}: {:?}", id, candidate);
+                debug!("Sending candidate to node {:X}: {:?}", id, candidate);
                 let result = mesh.lock().await.send_packet(
                     id,
                     FullMeshPayload::Candidate(uuid, candidate.to_sdp()),
                 ).await;
                 if let Err(err) = result {
-                    warn!("error sending candidate to {}: {}", id, err);
+                    warn!("Failed to send candidate to node {:X}: {}", id, err);
                 }
             }
         });
@@ -333,7 +330,7 @@ impl FullMesh {
                 let receiver = match conn.conn.receiver() {
                     Ok(receiver) => receiver,
                     Err(err) => {
-                        warn!("error getting receiver from {}: {}", node_id, err);
+                        warn!("Failed to get receiver from node {:X}: {}", node_id, err);
                         continue;
                     },
                 };

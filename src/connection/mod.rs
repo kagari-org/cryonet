@@ -104,12 +104,13 @@ impl ConnManager {
             res.headers_mut().insert("X-NodeId", mesh.id.to_string().parse().unwrap());
             Ok(res)
         }).await else {
-            info!("Failed to accept WebSocket connection from {}", addr);
+            warn!("Failed to accept WebSocket connection from {}", addr);
             return Ok(());
         };
+        let neigh_id = neigh_id.unwrap();
         let (sink, stream) = new_ws_link(ws);
-        mesh.add_link(neigh_id.unwrap(), Box::new(sink), Box::new(stream));
-        info!("Accepted connection from {}", addr);
+        mesh.add_link(neigh_id, Box::new(sink), Box::new(stream));
+        info!("Accepted connection from {} (node {:X})", addr, neigh_id);
         Ok(())
     }
 
@@ -141,10 +142,11 @@ impl ConnManager {
         
         let (sink, stream) = new_ws_link(ws_stream);
         mesh.add_link(neigh_id, Box::new(sink), Box::new(stream));
-        info!("Connected to server {}", server);
+        info!("Connected to server {} (node {:X})", server, neigh_id);
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn disconnect(&mut self, id: NodeId) {
         self.mesh.lock().await.remove_link(id);
     }
