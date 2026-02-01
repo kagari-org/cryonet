@@ -4,7 +4,7 @@ use std::{any::Any, cmp::Ordering, collections::{HashMap, hash_map::Entry}, fmt:
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tokio::{select, sync::{Mutex, mpsc}, time::interval};
+use tokio::{select, sync::{Mutex, Notify}, time::interval};
 use tracing::{debug, error, warn};
 
 use crate::mesh::{MeshEvent, packet::{NodeId, Payload}, seq::{Seq, SeqMetric}};
@@ -26,7 +26,7 @@ pub(crate) struct IGP {
     diameter: u16,
     update_threshold: u32,
 
-    stop: mpsc::UnboundedSender<()>,
+    stop: Arc<Notify>,
 }
 
 #[typetag::serde]
@@ -110,7 +110,8 @@ impl IGP {
         update_threshold: u32,
         mesh: Arc<Mutex<Mesh>>,
     ) -> Arc<Mutex<Self>> {
-        let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+        let stop = Arc::new(Notify::new());
+        let stop_rx = stop.clone();
         let igp = Arc::new(Mutex::new(IGP {
             id: mesh.lock().await.id,
             mesh: mesh.clone(),
@@ -123,7 +124,7 @@ impl IGP {
             seqno_request_timeout,
             diameter,
             update_threshold,
-            stop: stop_tx,
+            stop,
         }));
         let igp2 = igp.clone();
         tokio::spawn(async move {
@@ -133,9 +134,11 @@ impl IGP {
             let mut packet_rx = mesh.lock().await.add_dispatchee(|packet|
                 (packet.payload.as_ref() as &dyn Any).is::<IGPPayload>());
             let mut mesh_event_rx = mesh.lock().await.subscribe_mesh_events();
+            let notified = stop_rx.notified();
+            tokio::pin!(notified);
             loop {
                 select! {
-                    _ = stop_rx.recv() => break,
+                    _ = &mut notified => break,
                     _ = hello_ticker.tick() => igp.lock().await.hello().await,
                     _ = dump_ticker.tick() => igp.lock().await.dump(None).await,
                     _ = gc_ticker.tick() => igp.lock().await.gc().await,
@@ -579,9 +582,8 @@ impl IGP {
         self.routes.values().cloned().collect()
     }
 
-    pub(crate) fn stop(&mut self) -> Result<()> {
-        self.stop.send(())?;
-        Ok(())
+    pub(crate) fn stop(&mut self) {
+        self.stop.notify_waiters();
     }
 }
 

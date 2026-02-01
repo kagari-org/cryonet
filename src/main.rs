@@ -46,9 +46,9 @@ async fn main() -> Result<()> {
 
     pending::<()>().await;
     tm.lock().await.stop();
-    fm.lock().await.stop()?;
-    mgr.lock().await.stop()?;
-    igp.lock().await.stop()?;
-    mesh.lock().await.stop()?;
+    fm.lock().await.stop();
+    mgr.lock().await.stop();
+    igp.lock().await.stop();
+    mesh.lock().await.stop();
     Ok(())
 }

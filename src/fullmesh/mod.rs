@@ -3,7 +3,7 @@ use std::{any::Any, collections::HashMap, sync::{Arc, Weak}, time::{Duration, In
 use anyhow::Result;
 use rustrtc::{IceCandidate, PeerConnectionState, RtcConfiguration};
 use serde::{Deserialize, Serialize};
-use tokio::{select, sync::{Mutex, broadcast::{self, error::RecvError}, mpsc}, time::interval};
+use tokio::{select, sync::{Mutex, Notify, broadcast::{self, error::RecvError}}, time::interval};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
@@ -20,7 +20,7 @@ pub(crate) struct FullMesh {
     config: RtcConfiguration,
     mesh: Arc<Mutex<Mesh>>,
     peers: HashMap<NodeId, HashMap<Uuid, Conn>>,
-    stop: mpsc::UnboundedSender<()>,
+    stop: Arc<Notify>,
     refresh: broadcast::Sender<()>,
 
     this: Weak<Mutex<FullMesh>>,
@@ -69,7 +69,8 @@ impl FullMesh {
         max_connected: usize,
         config: RtcConfiguration,
     ) -> Arc<Mutex<FullMesh>> {
-        let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+        let stop = Arc::new(Notify::new());
+        let stop_rx = stop.clone();
         let id = mesh.lock().await.id;
         let fm = Arc::new_cyclic(|this| Mutex::new(FullMesh {
             id,
@@ -79,7 +80,7 @@ impl FullMesh {
             config,
             mesh: mesh.clone(),
             peers: HashMap::new(),
-            stop: stop_tx,
+            stop,
             refresh: broadcast::channel(1).0,
             this: this.clone(),
         }));
@@ -88,9 +89,11 @@ impl FullMesh {
             let mut packets = fm.lock().await.mesh.lock().await.add_dispatchee(|packet|
                     (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>());
             let mut ticker = interval(Duration::from_secs(10));
+            let notified = stop_rx.notified();
+            tokio::pin!(notified);
             loop {
                 select! {
-                    _ = stop_rx.recv() => break,
+                    _ = &mut notified => break,
                     _ = ticker.tick() => {
                         fm.lock().await.tick().await;
                     },
@@ -341,9 +344,8 @@ impl FullMesh {
         receivers
     }
 
-    pub(crate) fn stop(&mut self) -> Result<()> {
-        self.stop.send(())?;
-        Ok(())
+    pub(crate) fn stop(&mut self) {
+        self.stop.notify_waiters();
     }
 }
 

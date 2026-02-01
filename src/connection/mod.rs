@@ -1,7 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Result;
-use tokio::{net::{TcpListener, TcpStream}, select, sync::{Mutex, mpsc}, time::interval};
+use tokio::{net::{TcpListener, TcpStream}, select, sync::{Mutex, Notify}, time::interval};
 use tokio_tungstenite::{accept_hdr_async, connect_async, tungstenite::{client::IntoClientRequest, handshake::server::{Request, Response}}};
 use tracing::{info, warn};
 
@@ -13,7 +13,7 @@ pub(crate) struct ConnManager {
     mesh: Arc<Mutex<Mesh>>,
     token: Option<String>,
     servers: HashMap<String, NodeId>,
-    stop: mpsc::UnboundedSender<()>,
+    stop: Arc<Notify>,
 }
 
 impl ConnManager {
@@ -39,20 +39,23 @@ impl ConnManager {
         listen: SocketAddr,
         connect_interval: Duration,
     ) -> Arc<Mutex<Self>> {
-        let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+        let stop = Arc::new(Notify::new());
+        let stop_rx = stop.clone();
         let mgr = Arc::new(Mutex::new(ConnManager {
             mesh: mesh.clone(),
             token,
             servers: HashMap::new(),
-            stop: stop_tx,
+            stop,
         }));
         let mgr2 = mgr.clone();
         tokio::spawn(async move {
             let listener = TcpListener::bind(listen).await.unwrap();
             let mut connect_timer = interval(connect_interval);
+            let notified = stop_rx.notified();
+            tokio::pin!(notified);
             loop {
                 select! {
-                    _ = stop_rx.recv() => break,
+                    _ = &mut notified => break,
                     _ = connect_timer.tick() => {
                         let mut mgr = mgr.lock().await;
                         for server in &servers {
@@ -151,8 +154,7 @@ impl ConnManager {
         self.mesh.lock().await.remove_link(id);
     }
 
-    pub(crate) fn stop(&self) -> Result<()> {
-        self.stop.send(())?;
-        Ok(())
+    pub(crate) fn stop(&self) {
+        self.stop.notify_waiters();
     }
 }

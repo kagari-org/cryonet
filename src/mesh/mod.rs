@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::future::join_all;
 use packet::{NodeId, Packet, Payload};
-use tokio::{select, sync::{Mutex, broadcast, mpsc}};
+use tokio::{select, sync::{Mutex, Notify, broadcast, mpsc}};
 use tracing::{debug, error, info, warn};
 
 use crate::errors::Error;
@@ -19,12 +19,14 @@ pub(crate) struct Mesh {
     this: Weak<Mutex<Mesh>>,
 
     link_send: HashMap<NodeId, Box<dyn LinkSend>>,
-    link_recv_stop: HashMap<NodeId, mpsc::UnboundedSender<()>>,
+    link_recv_stop: HashMap<NodeId, Arc<Notify>>,
     routes: HashMap<NodeId, NodeId>,
     dispatchees: Vec<(Box<dyn Fn(&Packet) -> bool + Send + Sync>, mpsc::Sender<Packet>)>,
 
-    handler_event_tx: mpsc::UnboundedSender<HandlerEvent>,
+    packets_tx: mpsc::Sender<(NodeId, Result<Packet, LinkError>)>,
     mesh_event_tx: broadcast::Sender<MeshEvent>,
+
+    stop: Arc<Notify>,
 }
 
 #[async_trait]
@@ -54,17 +56,11 @@ pub(crate) enum MeshEvent {
     RouteRemoved(NodeId, NodeId),
 }
 
-enum HandlerEvent {
-    ReceivedPacket {
-        from: NodeId,
-        packet: Result<Packet, LinkError>,
-    },
-    Stop,
-}
-
 impl Mesh {
     pub(crate) fn new(id: NodeId) -> Arc<Mutex<Self>> {
-        let (handler_event_tx, mut handler_event_rx) = mpsc::unbounded_channel();
+        let (packets_tx, mut packets_rx) = mpsc::channel(1024);
+        let stop = Arc::new(Notify::new());
+        let stop_rx = stop.clone();
         let mesh = Arc::new_cyclic(|this| Mutex::new(Mesh {
             id,
             this: this.clone(),
@@ -72,26 +68,25 @@ impl Mesh {
             link_recv_stop: HashMap::new(),
             routes: HashMap::new(),
             dispatchees: Vec::new(),
-            handler_event_tx: handler_event_tx.clone(),
+            packets_tx: packets_tx.clone(),
             mesh_event_tx: broadcast::Sender::new(16),
+            stop,
         }));
         let mesh2 = mesh.clone();
         tokio::spawn(async move {
+            let notified = stop_rx.notified();
+            tokio::pin!(notified);
             loop {
                 select! {
-                    packet = handler_event_rx.recv() => {
-                        let event = match packet {
-                            Some(event) => event,
+                    _ = &mut notified => break,
+                    packet = packets_rx.recv() => {
+                        let (from, packet) = match packet {
+                            Some(packet) => packet,
                             None => break,
                         };
-                        match event {
-                            HandlerEvent::Stop => break,
-                            HandlerEvent::ReceivedPacket { from, packet } => {
-                                let mut mesh = mesh.lock().await;
-                                if let Err(err) = mesh.handle_packet(from, packet).await {
-                                    warn!("Failed to handle packet from node {:X}: {}", from, err);
-                                }
-                            },
+                        let mut mesh = mesh.lock().await;
+                        if let Err(err) = mesh.handle_packet(from, packet).await {
+                            warn!("Failed to handle packet from node {:X}: {}", from, err);
                         }
                     }
                 }
@@ -192,15 +187,18 @@ impl Mesh {
         }
 
         self.link_send.insert(dst, send);
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        self.link_recv_stop.insert(dst, tx);
-        let handler_event_tx = self.handler_event_tx.clone();
+        let stop = Arc::new(Notify::new());
+        let stop_rx = stop.clone();
+        self.link_recv_stop.insert(dst, stop);
+        let packets_tx = self.packets_tx.clone();
 
         let mesh = self.this.clone();
         tokio::spawn(async move {
+            let notified = stop_rx.notified();
+            tokio::pin!(notified);
             loop {
                 select! {
-                    _ = rx.recv() => {
+                    _ = &mut notified => {
                         let Some(mesh) = mesh.upgrade() else {
                             break;
                         };
@@ -212,11 +210,7 @@ impl Mesh {
                         if let Err(LinkError::Closed) = &packet {
                             brk = true;
                         }
-                        let result = handler_event_tx.send(HandlerEvent::ReceivedPacket {
-                            from: dst,
-                            packet,
-                        });
-                        if let Err(err) = result {
+                        if let Err(err) = packets_tx.send((dst, packet)).await {
                             error!("Failed to send packet to mesh handler: {}", err);
                             break;
                         }
@@ -236,7 +230,7 @@ impl Mesh {
         self.link_send.remove(&dst);
         let ctrl = self.link_recv_stop.remove(&dst);
         if let Some(ctrl) = ctrl {
-            let _ = ctrl.send(());
+            ctrl.notify_waiters();
         }
         let _ = self.mesh_event_tx.send(MeshEvent::LinkDown(dst));
     }
@@ -308,12 +302,10 @@ impl Mesh {
         Ok(())
     }
 
-    pub(crate) fn stop(&mut self) -> Result<()> {
-        self.handler_event_tx.send(HandlerEvent::Stop)?;
-        self.link_recv_stop.iter()
-            .map(|(_, tx)| tx.send(()))
-            .collect::<Result<Vec<_>, _>>()
-            .map(|_| ())?;
-        Ok(())
+    pub(crate) fn stop(&mut self) {
+        self.stop.notify_waiters();
+        for (_, stop) in &self.link_recv_stop {
+            stop.notify_waiters();
+        }
     }
 }
