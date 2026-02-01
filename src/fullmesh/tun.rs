@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::{Arc, Weak}};
 use bytes::Bytes;
 use futures::future::select_all;
 use tokio::{select, sync::{Mutex, Notify, broadcast::error::RecvError}, task::JoinHandle};
-use tracing::error;
+use tracing::{debug, error};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::{fullmesh::FullMesh, mesh::packet::NodeId};
@@ -142,7 +142,7 @@ async fn receive(
                     let packet = match packet {
                         Ok(packet) => packet,
                         Err(err) => {
-                            error!("Failed to receive from node {:X}: {}", node_id, err);
+                            debug!("Failed to receive from node {:X}: {}", node_id, err);
                             break;
                         },
                     };

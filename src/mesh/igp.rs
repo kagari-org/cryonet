@@ -1,6 +1,6 @@
 // inspired by RFC 8966
 
-use std::{any::Any, cmp::Ordering, collections::{HashMap, hash_map::Entry}, fmt::Display, sync::Arc, time::{Duration, Instant}};
+use std::{any::Any, cmp::Ordering, collections::{HashMap, hash_map::Entry}, fmt::Display, sync::Arc, time::{Duration, Instant}, u32};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -169,6 +169,13 @@ impl IGP {
                                 // re-export routes after unexpected link disconnection
                                 igp.lock().await.export().await;
                             },
+                            MeshEvent::LinkDown(node_id) => {
+                                let mut igp = igp.lock().await;
+                                if let Some(cost) = igp.costs.get_mut(&node_id) {
+                                    cost.cost = u32::MAX;
+                                }
+                                igp.update_route_costs(node_id, u32::MAX).await;
+                            }
                             _ => {},
                         };
                     },
@@ -211,17 +218,8 @@ impl IGP {
                     cost.cost = ((836 * cost.cost as u128 + 164 * rtt) / 1000) as u32;
                 }
                 if cost.cost != origin {
-                    let mut changed = false;
-                    for ((_, neigh), route) in &mut self.routes {
-                        if *neigh != src {
-                            continue;
-                        }
-                        route.computed_metric = route.metric.metric.saturating_add(cost.cost);
-                        changed = true;
-                    }
-                    if changed {
-                        self.select().await;
-                    }
+                    let cost = cost.cost;
+                    self.update_route_costs(src, cost).await;
                 }
             },
 
@@ -374,7 +372,12 @@ impl IGP {
                             // ignore
                             return Ok(())
                         }
-                        route.metric = *metric;
+                        // ignore seq of retraction update
+                        if metric.metric == u32::MAX {
+                            route.metric.metric = u32::MAX;
+                        } else {
+                            route.metric = *metric;
+                        }
                         route.computed_metric = computed_metric;
                         if metric.metric != u32::MAX {
                             route.timeout = Instant::now() + self.route_timeout;
@@ -420,6 +423,20 @@ impl IGP {
             if let Err(err) = result {
                 warn!("Failed to send Hello to node {:X}: {}", link, err);
             }
+        }
+    }
+
+    async fn update_route_costs(&mut self, node_id: NodeId, cost: u32) {
+        let mut changed = false;
+        for ((_, neigh), route) in &mut self.routes {
+            if *neigh != node_id {
+                continue;
+            }
+            route.computed_metric = route.metric.metric.saturating_add(cost);
+            changed = true;
+        }
+        if changed {
+            self.select().await;
         }
     }
 
