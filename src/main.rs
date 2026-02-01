@@ -6,7 +6,7 @@ use clap::Parser;
 use clap_num::maybe_hex;
 use rustrtc::RtcConfiguration;
 
-use crate::{connection::ConnManager, fullmesh::{FullMesh, tun::TunManager}, mesh::{Mesh, igp::IGP, packet::NodeId}};
+use crate::{connection::ConnManager, fullmesh::{FullMesh, tun::TunManager}, mesh::{Mesh, igp::Igp, packet::NodeId}};
 
 pub(crate) mod errors;
 pub(crate) mod mesh;
@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let mesh = Mesh::new(args.id);
-    let igp = IGP::new(mesh.clone()).await;
+    let igp = Igp::new(mesh.clone()).await;
     let mgr = ConnManager::new(
         mesh.clone(),
         args.token,

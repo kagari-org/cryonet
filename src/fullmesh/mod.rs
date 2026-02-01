@@ -134,7 +134,7 @@ impl FullMesh {
                 ).await?;
                 self.start_peer_loop(src, *id, &conn);
                 let origin = self.peers.entry(src)
-                    .or_insert_with(|| HashMap::new())
+                    .or_default()
                     .insert(*id, create_peer(src, *id, conn, self.this.clone()));
                 if origin.is_some() {
                     warn!("Overwriting existing PeerConn for node {:X} id {}", src, id);
@@ -170,7 +170,7 @@ impl FullMesh {
     async fn tick(&mut self) {
         // gc
         let time = Instant::now();
-        for (_, conns) in &mut self.peers {
+        for conns in self.peers.values_mut() {
             conns.retain(|_, conn| {
                 let timeouted = time.duration_since(conn.time) > self.timeout;
                 !timeouted || conn.conn.connected()
@@ -179,8 +179,7 @@ impl FullMesh {
         // check connected
         let peers = self.mesh.lock().await.get_routes().keys().cloned().collect::<Vec<_>>();
         for node_id in peers {
-            let conns = self.peers.entry(node_id)
-                .or_insert_with(|| HashMap::new());
+            let conns = self.peers.entry(node_id).or_default();
             let connected = conns
                 .values()
                 .filter(|conn| conn.conn.connected())
@@ -194,10 +193,10 @@ impl FullMesh {
                     entries.sort_by(|x, y| x.1.time.cmp(&y.1.time));
                     let sorted = entries
                         .iter()
-                        .map(|(id, _)| (**id).clone())
+                        .map(|(id, _)| **id)
                         .collect::<Vec<_>>();
                     for id in sorted {
-                        if conns.len() <= self.max_connected - 1 {
+                        if conns.len() < self.max_connected {
                             break;
                         }
                         if conns.get(&id).unwrap().selected {
@@ -238,7 +237,7 @@ impl FullMesh {
             conns.insert(id, create_peer(node_id, id, conn, self.this.clone()));
         }
         // select
-        for (_, conns) in &mut self.peers {
+        for conns in self.peers.values_mut() {
             if conns.is_empty() {
                 continue;
             }
@@ -372,7 +371,7 @@ fn create_peer(
                     let conn = fm.peers
                         .get_mut(&node_id)
                         .and_then(|conns| conns.remove(&id));
-                    if let Some(_) = conn {
+                    if conn.is_some() {
                         let _ = fm.refresh.send(());
                     }
                 },

@@ -21,6 +21,7 @@ pub(crate) struct Mesh {
     link_send: HashMap<NodeId, Box<dyn LinkSend>>,
     link_recv_stop: HashMap<NodeId, Arc<Notify>>,
     routes: HashMap<NodeId, NodeId>,
+    #[allow(clippy::type_complexity)]
     dispatchees: Vec<(Box<dyn Fn(&Packet) -> bool + Send + Sync>, mpsc::Sender<Packet>)>,
 
     packets_tx: mpsc::Sender<(NodeId, Result<Packet, LinkError>)>,
@@ -304,7 +305,7 @@ impl Mesh {
 
     pub(crate) fn stop(&mut self) {
         self.stop.notify_waiters();
-        for (_, stop) in &self.link_recv_stop {
+        for stop in self.link_recv_stop.values() {
             stop.notify_waiters();
         }
     }

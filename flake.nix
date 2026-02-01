@@ -16,7 +16,9 @@
         RUSTC_BOOTSTRAP = "1";
         inputsFrom = [ self'.packages.default ];
         buildInputs = with pkgs; [];
-        nativeBuildInputs = with pkgs; [];
+        nativeBuildInputs = with pkgs; [
+          clippy
+        ];
       };
     };
   };

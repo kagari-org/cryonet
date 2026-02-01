@@ -1,6 +1,6 @@
 // inspired by RFC 8966
 
-use std::{any::Any, cmp::Ordering, collections::{HashMap, hash_map::Entry}, fmt::Display, sync::Arc, time::{Duration, Instant}, u32};
+use std::{any::Any, cmp::Ordering, collections::{HashMap, hash_map::Entry}, fmt::Display, sync::Arc, time::{Duration, Instant}};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use crate::mesh::{MeshEvent, packet::{NodeId, Payload}, seq::{Seq, SeqMetric}};
 
 use super::Mesh;
 
-pub(crate) struct IGP {
+pub(crate) struct Igp {
     id: NodeId,
     mesh: Arc<Mutex<Mesh>>,
 
@@ -84,7 +84,7 @@ impl Display for Route {
     }
 }
 
-impl IGP {
+impl Igp {
     pub(crate) async fn new(mesh: Arc<Mutex<Mesh>>) -> Arc<Mutex<Self>> {
         Self::new_with_parameters(
             Duration::from_secs(4),
@@ -99,6 +99,7 @@ impl IGP {
         ).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn new_with_parameters(
         hello_interval: Duration,
         dump_interval: Duration,
@@ -112,7 +113,7 @@ impl IGP {
     ) -> Arc<Mutex<Self>> {
         let stop = Arc::new(Notify::new());
         let stop_rx = stop.clone();
-        let igp = Arc::new(Mutex::new(IGP {
+        let igp = Arc::new(Mutex::new(Igp {
             id: mesh.lock().await.id,
             mesh: mesh.clone(),
             costs: HashMap::new(),
@@ -277,11 +278,9 @@ impl IGP {
                     },
                 };
                 let existing_request = self.requests.get(dst);
-                if let Some(existing_request) = existing_request {
-                    if *seq <= existing_request.seq && Instant::now() < existing_request.expiry {
-                        debug!("Suppressing duplicate SequenceRequest for node {:X} with seq {:?}", dst, seq);
-                        return Ok(());
-                    }
+                if let Some(existing_request) = existing_request && *seq <= existing_request.seq && Instant::now() < existing_request.expiry {
+                    debug!("Suppressing duplicate SequenceRequest for node {:X} with seq {:?}", dst, seq);
+                    return Ok(());
                 }
                 self.requests.insert(*dst, RouteRequest {
                     seq: *seq,
@@ -478,12 +477,11 @@ impl IGP {
                         // Don't send retraction. The routes of neighbors will time out eventually.
                         let existing_request = self.requests.get(dst);
                         let seq = source.0.seq + Seq(1);
-                        if let Some(existing_request) = existing_request {
-                            if seq <= existing_request.seq && Instant::now() < existing_request.expiry {
+                        if let Some(existing_request) = existing_request
+                            && seq <= existing_request.seq && Instant::now() < existing_request.expiry {
                                 debug!("Suppressing duplicate SequenceRequest for node {:X} with seq {:?}", dst, seq);
                                 return;
                             }
-                        }
                         self.requests.insert(**dst, RouteRequest {
                             seq,
                             expiry: Instant::now() + self.seqno_request_timeout,

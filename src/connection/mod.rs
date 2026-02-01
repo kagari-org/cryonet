@@ -120,10 +120,8 @@ impl ConnManager {
     pub(crate) async fn connect(&mut self, server: String) -> Result<()> {
         // lock here to avoid interleaving with incoming connections
         let mut mesh = self.mesh.lock().await;
-        if let Some(neigh_id) = self.servers.get(&server) {
-            if mesh.get_links().contains(neigh_id) {
-                return Ok(());
-            }
+        if let Some(neigh_id) = self.servers.get(&server) && mesh.get_links().contains(neigh_id) {
+            return Ok(());
         }
 
         let mut req = server.clone().into_client_request()?;
