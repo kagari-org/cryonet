@@ -1,4 +1,8 @@
-use std::{cmp::Ordering, fmt::Display, ops::{Add, AddAssign, Sub, SubAssign}};
+use std::{
+    cmp::Ordering,
+    fmt::Display,
+    ops::{Add, AddAssign, Sub, SubAssign},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -66,10 +70,10 @@ pub(crate) struct SeqMetric {
 impl SeqMetric {
     pub(crate) fn feasible(&self, &rhs: &Self) -> bool {
         if self.seq > rhs.seq || self.metric == u32::MAX {
-            return true
+            return true;
         }
         if self.seq == rhs.seq && self.metric <= rhs.metric {
-            return true
+            return true;
         }
         false
     }

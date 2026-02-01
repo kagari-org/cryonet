@@ -1,6 +1,6 @@
 use std::{any::Any, fmt::Debug};
 
-use dyn_clone::{clone_trait_object, DynClone};
+use dyn_clone::{DynClone, clone_trait_object};
 use serde::{Deserialize, Serialize};
 
 pub(crate) type NodeId = u32;

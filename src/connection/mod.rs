@@ -1,11 +1,26 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Result;
-use tokio::{net::{TcpListener, TcpStream}, select, sync::{Mutex, Notify}, time::interval};
-use tokio_tungstenite::{accept_hdr_async, connect_async, tungstenite::{client::IntoClientRequest, handshake::server::{Request, Response}}};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    select,
+    sync::{Mutex, Notify},
+    time::interval,
+};
+use tokio_tungstenite::{
+    accept_hdr_async, connect_async,
+    tungstenite::{
+        client::IntoClientRequest,
+        handshake::server::{Request, Response},
+    },
+};
 use tracing::{info, warn};
 
-use crate::{connection::link::new_ws_link, errors::Error, mesh::{Mesh, packet::NodeId}};
+use crate::{
+    connection::link::new_ws_link,
+    errors::Error,
+    mesh::{Mesh, packet::NodeId},
+};
 
 pub(crate) mod link;
 
@@ -23,13 +38,7 @@ impl ConnManager {
         servers: Vec<String>,
         listen: SocketAddr,
     ) -> Arc<Mutex<Self>> {
-        Self::new_with_parameters(
-            mesh,
-            token,
-            servers,
-            listen,
-            Duration::from_secs(8),
-        )
+        Self::new_with_parameters(mesh, token, servers, listen, Duration::from_secs(8))
     }
 
     pub(crate) fn new_with_parameters(
@@ -80,20 +89,19 @@ impl ConnManager {
         let mut mesh = self.mesh.lock().await;
         let mut neigh_id = None;
         let Ok(ws) = accept_hdr_async(stream, |req: &Request, mut res: Response| {
-            let reject = |reason: String| Err(Response::builder()
-                .status(400)
-                .body(Some(reason))
-                .unwrap());
+            let reject =
+                |reason: String| Err(Response::builder().status(400).body(Some(reason)).unwrap());
             if let Some(token) = &self.token {
                 let Some(auth) = req.headers().get("Authorization") else {
                     return reject("Missing Authorization header".to_string());
                 };
                 match auth.to_str() {
-                    Ok(s) if s == token => {},
+                    Ok(s) if s == token => {}
                     _ => return reject("Invalid Authorization token".to_string()),
                 };
             }
-            let peer_id = match req.headers()
+            let peer_id = match req
+                .headers()
                 .get("X-NodeId")
                 .map(|id| id.to_str().map(|id| id.parse::<NodeId>()))
             {
@@ -104,9 +112,12 @@ impl ConnManager {
                 return reject("Link to this node already exists".to_string());
             }
             neigh_id = Some(peer_id);
-            res.headers_mut().insert("X-NodeId", mesh.id.to_string().parse().unwrap());
+            res.headers_mut()
+                .insert("X-NodeId", mesh.id.to_string().parse().unwrap());
             Ok(res)
-        }).await else {
+        })
+        .await
+        else {
             warn!("Failed to accept WebSocket connection from {}", addr);
             return Ok(());
         };
@@ -120,12 +131,15 @@ impl ConnManager {
     pub(crate) async fn connect(&mut self, server: String) -> Result<()> {
         // lock here to avoid interleaving with incoming connections
         let mut mesh = self.mesh.lock().await;
-        if let Some(neigh_id) = self.servers.get(&server) && mesh.get_links().contains(neigh_id) {
+        if let Some(neigh_id) = self.servers.get(&server)
+            && mesh.get_links().contains(neigh_id)
+        {
             return Ok(());
         }
 
         let mut req = server.clone().into_client_request()?;
-        req.headers_mut().insert("X-NodeId", mesh.id.to_string().parse()?);
+        req.headers_mut()
+            .insert("X-NodeId", mesh.id.to_string().parse()?);
         if let Some(token) = &self.token {
             req.headers_mut().insert("Authorization", token.parse()?);
         }
@@ -140,7 +154,7 @@ impl ConnManager {
             ws_stream.close(None).await?;
             return Ok(());
         }
-        
+
         let (sink, stream) = new_ws_link(ws_stream);
         mesh.add_link(neigh_id, Box::new(sink), Box::new(stream));
         info!("Connected to server {} (node {:X})", server, neigh_id);

@@ -1,13 +1,31 @@
-use std::{any::Any, collections::HashMap, sync::{Arc, Weak}, time::{Duration, Instant}};
+use std::{
+    any::Any,
+    collections::HashMap,
+    sync::{Arc, Weak},
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use rustrtc::{IceCandidate, PeerConnectionState, RtcConfiguration};
 use serde::{Deserialize, Serialize};
-use tokio::{select, sync::{Mutex, Notify, broadcast::{self, error::RecvError}}, time::interval};
+use tokio::{
+    select,
+    sync::{
+        Mutex, Notify,
+        broadcast::{self, error::RecvError},
+    },
+    time::interval,
+};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
-use crate::{fullmesh::conn::{PeerConn, PeerConnReceiver, PeerConnSender}, mesh::{Mesh, packet::{NodeId, Payload}}};
+use crate::{
+    fullmesh::conn::{PeerConn, PeerConnReceiver, PeerConnSender},
+    mesh::{
+        Mesh,
+        packet::{NodeId, Payload},
+    },
+};
 
 pub(crate) mod conn;
 pub(crate) mod tun;
@@ -59,7 +77,8 @@ impl FullMesh {
             Duration::from_secs(60),
             5,
             config,
-        ).await
+        )
+        .await
     }
 
     pub(crate) async fn new_with_parameters(
@@ -72,22 +91,25 @@ impl FullMesh {
         let stop = Arc::new(Notify::new());
         let stop_rx = stop.clone();
         let id = mesh.lock().await.id;
-        let fm = Arc::new_cyclic(|this| Mutex::new(FullMesh {
-            id,
-            timeout,
-            discard_timeout,
-            max_connected,
-            config,
-            mesh: mesh.clone(),
-            peers: HashMap::new(),
-            stop,
-            refresh: broadcast::channel(1).0,
-            this: this.clone(),
-        }));
+        let fm = Arc::new_cyclic(|this| {
+            Mutex::new(FullMesh {
+                id,
+                timeout,
+                discard_timeout,
+                max_connected,
+                config,
+                mesh: mesh.clone(),
+                peers: HashMap::new(),
+                stop,
+                refresh: broadcast::channel(1).0,
+                this: this.clone(),
+            })
+        });
         let fm2 = fm.clone();
         tokio::spawn(async move {
-            let mut packets = fm.lock().await.mesh.lock().await.add_dispatchee(|packet|
-                    (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>());
+            let mut packets = fm.lock().await.mesh.lock().await.add_dispatchee(|packet| {
+                (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>()
+            });
             let mut ticker = interval(Duration::from_secs(10));
             let notified = stop_rx.notified();
             tokio::pin!(notified);
@@ -115,11 +137,7 @@ impl FullMesh {
         fm2
     }
 
-    async fn handle_packet(
-        &mut self,
-        src: NodeId,
-        payload: &FullMeshPayload,
-    ) -> Result<()> {
+    async fn handle_packet(&mut self, src: NodeId, payload: &FullMeshPayload) -> Result<()> {
         if src == self.id {
             error!("Received packet from self (node {:X}), ignoring", self.id);
             return Ok(());
@@ -128,19 +146,22 @@ impl FullMesh {
             FullMeshPayload::Offer(id, offer) if self.id > src => {
                 let mut conn = PeerConn::new(self.config.clone()).await?;
                 let answer = conn.answer(offer).await?;
-                self.mesh.lock().await.send_packet(
-                    src,
-                    FullMeshPayload::Answer(*id, answer.to_string()),
-                ).await?;
+                self.mesh
+                    .lock()
+                    .await
+                    .send_packet(src, FullMeshPayload::Answer(*id, answer.to_string()))
+                    .await?;
                 self.start_peer_loop(src, *id, &conn);
-                let origin = self.peers.entry(src)
+                let origin = self
+                    .peers
+                    .entry(src)
                     .or_default()
                     .insert(*id, create_peer(src, *id, conn, self.this.clone()));
                 if origin.is_some() {
                     warn!("Overwriting existing PeerConn for node {:X} id {}", src, id);
                 }
                 let _ = self.refresh.send(());
-            },
+            }
             FullMeshPayload::Answer(id, answer) if self.id < src => {
                 let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
                 let Some(conn) = conn else {
@@ -150,19 +171,21 @@ impl FullMesh {
                 conn.conn.answered(answer).await?;
                 self.start_peer_loop(src, *id, &conn.conn);
                 let _ = self.refresh.send(());
-            },
+            }
             FullMeshPayload::Candidate(id, candidate) => {
                 let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
                 let Some(conn) = conn else {
                     warn!("No PeerConn found for node {:X} id {}, ignoring", src, id);
                     return Ok(());
                 };
-                conn.conn.add_ice_candidate(IceCandidate::from_sdp(candidate)?).await?;
-            },
+                conn.conn
+                    .add_ice_candidate(IceCandidate::from_sdp(candidate)?)
+                    .await?;
+            }
             _ => {
                 warn!("Unexpected packet type from node {:X}, ignoring", src);
                 return Ok(());
-            },
+            }
         };
         Ok(())
     }
@@ -177,24 +200,23 @@ impl FullMesh {
             });
         }
         // check connected
-        let peers = self.mesh.lock().await.get_routes().keys().cloned().collect::<Vec<_>>();
+        let peers = self
+            .mesh
+            .lock()
+            .await
+            .get_routes()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
         for node_id in peers {
             let conns = self.peers.entry(node_id).or_default();
-            let connected = conns
-                .values()
-                .filter(|conn| conn.conn.connected())
-                .count();
+            let connected = conns.values().filter(|conn| conn.conn.connected()).count();
             if connected >= self.max_connected {
-                let newest = conns.values()
-                    .max_by(|x, y| x.time.cmp(&y.time))
-                    .unwrap();
+                let newest = conns.values().max_by(|x, y| x.time.cmp(&y.time)).unwrap();
                 if newest.time.elapsed() > self.discard_timeout {
                     let mut entries = conns.iter().collect::<Vec<_>>();
                     entries.sort_by(|x, y| x.1.time.cmp(&y.1.time));
-                    let sorted = entries
-                        .iter()
-                        .map(|(id, _)| **id)
-                        .collect::<Vec<_>>();
+                    let sorted = entries.iter().map(|(id, _)| **id).collect::<Vec<_>>();
                     for id in sorted {
                         if conns.len() < self.max_connected {
                             break;
@@ -218,7 +240,7 @@ impl FullMesh {
                 Err(err) => {
                     error!("Failed to create PeerConn to node {:X}: {}", node_id, err);
                     continue;
-                },
+                }
             };
             let id = Uuid::new_v4();
             let offer = match conn.offer().await {
@@ -226,10 +248,14 @@ impl FullMesh {
                 Err(err) => {
                     error!("Failed to create offer to node {:X}: {}", node_id, err);
                     continue;
-                },
+                }
             };
-            let result = self.mesh.lock().await
-                .send_packet(node_id, FullMeshPayload::Offer(id, offer)).await;
+            let result = self
+                .mesh
+                .lock()
+                .await
+                .send_packet(node_id, FullMeshPayload::Offer(id, offer))
+                .await;
             if let Err(err) = result {
                 error!("Failed to send offer to node {:X}: {}", node_id, err);
                 continue;
@@ -241,15 +267,14 @@ impl FullMesh {
             if conns.is_empty() {
                 continue;
             }
-            let old = conns.iter().find_map(|(id, peer)| if peer.selected {
-                Some(*id)
-            } else {
-                None
-            });
+            let old = conns
+                .iter()
+                .find_map(|(id, peer)| if peer.selected { Some(*id) } else { None });
             for conn in conns.values_mut() {
                 conn.selected = false;
             }
-            let mut connected = conns.iter_mut()
+            let mut connected = conns
+                .iter_mut()
                 .filter(|conn| conn.1.conn.connected())
                 .collect::<Vec<_>>();
             connected.sort_by(|x, y| y.1.time.cmp(&x.1.time));
@@ -263,16 +288,16 @@ impl FullMesh {
                 (None, Some(select)) => {
                     select.1.selected = true;
                     let _ = self.refresh.send(());
-                },
+                }
                 (Some(_), None) => {
                     let _ = self.refresh.send(());
-                },
+                }
                 (Some(old), Some(select)) => {
                     select.1.selected = true;
                     if old != *select.0 {
                         let _ = self.refresh.send(());
                     }
-                },
+                }
                 _ => {}
             }
         }
@@ -290,13 +315,14 @@ impl FullMesh {
                     Err(err) => {
                         debug!("Candidate channel closed for node {:X}: {}", id, err);
                         break;
-                    },
+                    }
                 };
                 debug!("Sending candidate to node {:X}: {:?}", id, candidate);
-                let result = mesh.lock().await.send_packet(
-                    id,
-                    FullMeshPayload::Candidate(uuid, candidate.to_sdp()),
-                ).await;
+                let result = mesh
+                    .lock()
+                    .await
+                    .send_packet(id, FullMeshPayload::Candidate(uuid, candidate.to_sdp()))
+                    .await;
                 if let Err(err) = result {
                     warn!("Failed to send candidate to node {:X}: {}", id, err);
                 }
@@ -334,7 +360,7 @@ impl FullMesh {
                     Err(err) => {
                         warn!("Failed to get receiver from node {:X}: {}", node_id, err);
                         continue;
-                    },
+                    }
                 };
                 entry.push(receiver);
             }
@@ -348,12 +374,7 @@ impl FullMesh {
     }
 }
 
-fn create_peer(
-    node_id: NodeId,
-    id: Uuid,
-    conn: PeerConn,
-    fm: Weak<Mutex<FullMesh>>,
-) -> Conn {
+fn create_peer(node_id: NodeId, id: Uuid, conn: PeerConn, fm: Weak<Mutex<FullMesh>>) -> Conn {
     let mut state = conn.subscribe_state();
     tokio::spawn(async move {
         loop {
@@ -368,13 +389,14 @@ fn create_peer(
                         break;
                     };
                     let mut fm = fm.lock().await;
-                    let conn = fm.peers
+                    let conn = fm
+                        .peers
                         .get_mut(&node_id)
                         .and_then(|conns| conns.remove(&id));
                     if conn.is_some() {
                         let _ = fm.refresh.send(());
                     }
-                },
+                }
                 _ => {}
             }
         }

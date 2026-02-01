@@ -1,9 +1,15 @@
-
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
-use rustrtc::{IceCandidate, PeerConnection, PeerConnectionState, RtcConfiguration, RtpCodecParameters, SdpType, SessionDescription, media::{AudioFrame, AudioStreamTrack, MediaKind, SampleStreamSource, SampleStreamTrack, sample_track}};
+use rustrtc::{
+    IceCandidate, PeerConnection, PeerConnectionState, RtcConfiguration, RtpCodecParameters,
+    SdpType, SessionDescription,
+    media::{
+        AudioFrame, AudioStreamTrack, MediaKind, SampleStreamSource, SampleStreamTrack,
+        sample_track,
+    },
+};
 use tokio::sync::{broadcast, watch};
 
 pub(crate) struct PeerConn {
@@ -22,7 +28,9 @@ impl PeerConn {
         Ok(Self {
             state_watcher: peer.subscribe_peer_state(),
             peer,
-            sender: PeerConnSender { source: Arc::new(source) },
+            sender: PeerConnSender {
+                source: Arc::new(source),
+            },
         })
     }
 
@@ -69,8 +77,10 @@ impl PeerConn {
     }
 
     pub(crate) fn receiver(&self) -> Result<PeerConnReceiver> {
-        let track = self.peer.get_transceivers()[0].receiver()
-            .ok_or_else(|| anyhow!("unexpected missing receiver"))?.track();
+        let track = self.peer.get_transceivers()[0]
+            .receiver()
+            .ok_or_else(|| anyhow!("unexpected missing receiver"))?
+            .track();
         Ok(PeerConnReceiver { track })
     }
 
@@ -90,10 +100,12 @@ pub(crate) struct PeerConnReceiver {
 
 impl PeerConnSender {
     pub(crate) async fn send(&self, data: Bytes) -> Result<()> {
-        self.source.send_audio(AudioFrame {
-            data,
-            ..Default::default()
-        }).await?;
+        self.source
+            .send_audio(AudioFrame {
+                data,
+                ..Default::default()
+            })
+            .await?;
         Ok(())
     }
 }
