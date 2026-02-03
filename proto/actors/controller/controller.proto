@@ -1,0 +1,12 @@
+syntax = "proto3";
+package actors.controller;
+option go_package = "github.com/kagari-org/cryonet/gen/actors/controller";
+
+import "channel/channel.proto";
+
+message ICheck {}
+
+message OAlive {
+  string        from  = 1;
+  channel.Alive alive = 2;
+}

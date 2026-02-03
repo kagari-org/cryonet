@@ -1,0 +1,12 @@
+syntax = "proto3";
+package actors.alive;
+option go_package = "github.com/kagari-org/cryonet/gen/actors/alive";
+
+import "channel/channel.proto";
+
+message ICheck {}
+
+message OAlive {
+  string from_pid = 1;
+  string from     = 2;
+}

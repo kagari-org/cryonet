@@ -1,0 +1,145 @@
+package cryonet
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/kagari-org/cryonet/gen/actors/alive"
+	"github.com/kagari-org/cryonet/gen/actors/peer"
+	"github.com/kagari-org/cryonet/gen/actors/router"
+	"github.com/kagari-org/cryonet/gen/channel"
+	goakt "github.com/tochemey/goakt/v3/actor"
+	gerrors "github.com/tochemey/goakt/v3/errors"
+	"github.com/tochemey/goakt/v3/goaktpb"
+)
+
+type Alive struct {
+	checkScheduleId string
+	table           map[string]*AliveItem
+}
+
+type AliveItem struct {
+	peerId string
+	time   time.Time
+}
+
+func SpawnAlive(parent *goakt.PID) (*goakt.PID, error) {
+	return parent.SpawnChild(
+		context.Background(),
+		"alive",
+		&Alive{
+			checkScheduleId: uuid.NewString(),
+			table:           make(map[string]*AliveItem),
+		},
+		goakt.WithLongLived(),
+		goakt.WithSupervisor(goakt.NewSupervisor(
+			goakt.WithAnyErrorDirective(goakt.ResumeDirective),
+		)),
+	)
+}
+
+var _ goakt.Actor = (*Alive)(nil)
+
+func (a *Alive) PreStart(ctx *goakt.Context) error { return nil }
+func (a *Alive) PostStop(ctx *goakt.Context) error {
+	ctx.ActorSystem().CancelSchedule(a.checkScheduleId)
+	return nil
+}
+
+func (a *Alive) Receive(ctx *goakt.ReceiveContext) {
+	switch msg := ctx.Message().(type) {
+	case *goaktpb.PostStart:
+		ctx.Tell(ctx.Self(), &alive.ICheck{})
+		ctx.ActorSystem().Schedule(
+			context.Background(),
+			&alive.ICheck{},
+			ctx.Self(),
+			Config.CheckInterval,
+		)
+	case *alive.ICheck:
+		ctx.Logger().Debug("alive check")
+		actors := ctx.ActorSystem().Actors()
+		for _, actor := range actors {
+			if ws, ok := actor.Actor().(*PeerWS); ok {
+				if _, ok := a.table[actor.Name()]; !ok {
+					a.table[actor.Name()] = &AliveItem{
+						peerId: ws.peerId,
+						time:   time.Now(),
+					}
+				}
+			} else if ice, ok := actor.Actor().(*PeerICE); ok {
+				if _, ok := a.table[actor.Name()]; !ok {
+					a.table[actor.Name()] = &AliveItem{
+						peerId: ice.peerId,
+						time:   time.Now(),
+					}
+				}
+			}
+		}
+		for id, item := range a.table {
+			_, pid, err := ctx.ActorSystem().ActorOf(ctx.Context(), id)
+			if err != nil && !errors.Is(err, gerrors.ErrActorNotFound) {
+				ctx.Logger().Error(err)
+				continue
+			}
+			if err != nil {
+				delete(a.table, id)
+				continue
+			}
+			if time.Since(item.time) > Config.PeerTimeout {
+				delete(a.table, id)
+				ctx.Tell(pid, &peer.OStop{})
+			}
+		}
+
+		_, rtr, err := ctx.ActorSystem().ActorOf(ctx.Context(), "router")
+		if err != nil {
+			panic("unreachable")
+		}
+		peers := make([]string, 0, len(a.table))
+		for _, item := range a.table {
+			peers = append(peers, item.peerId)
+		}
+		ctx.Logger().Debug("sending alive ", peers)
+		// send alive packet to self to bootstrap ice connections
+		ctx.Tell(rtr, &router.OSendPacket{
+			Link: router.Link_ANY,
+			Packet: &channel.Packet{
+				From: Config.Id,
+				To:   Config.Id,
+				Payload: &channel.Packet_Alive{
+					Alive: &channel.Alive{
+						Peers: peers,
+					},
+				},
+			},
+		})
+		// send alive to all peers
+		for pid, item := range a.table {
+			ctx.Logger().Debug("sending alive to ", pid)
+			ctx.Tell(rtr, &router.OSendPacket{
+				Link:        router.Link_SPECIFIC,
+				SpecificPid: pid,
+				Packet: &channel.Packet{
+					From: Config.Id,
+					To:   item.peerId,
+					Payload: &channel.Packet_Alive{
+						Alive: &channel.Alive{
+							Peers: peers,
+						},
+					},
+				},
+			})
+		}
+	case *alive.OAlive:
+		ctx.Logger().Debug("alive from ", msg.From, ", pid ", msg.FromPid)
+		a.table[msg.FromPid] = &AliveItem{
+			peerId: msg.From,
+			time:   time.Now(),
+		}
+	default:
+		ctx.Unhandled()
+	}
+}

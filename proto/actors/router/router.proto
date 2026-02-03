@@ -1,0 +1,27 @@
+syntax = "proto3";
+package actors.router;
+option go_package = "github.com/kagari-org/cryonet/gen/actors/router";
+
+import "channel/channel.proto";
+
+message IAlive {
+  string        from_pid = 1;
+  channel.Alive alive    = 2;
+}
+
+enum Link {
+  ANY      = 0;
+  LOCAL    = 1;
+  FORWARD  = 3;
+  SPECIFIC = 4;
+}
+
+message OSendPacket {
+  Link           link         = 1;
+  string         specific_pid = 2;
+  channel.Packet packet       = 3;
+}
+
+message ORecvPacket {
+  channel.Packet packet = 1;
+}
