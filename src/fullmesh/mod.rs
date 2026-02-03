@@ -6,7 +6,8 @@ use std::{
 };
 
 use anyhow::Result;
-use rustrtc::{IceCandidate, PeerConnectionState, RtcConfiguration};
+use cidr::AnyIpCidr;
+use rustrtc::{IceCandidate, PeerConnectionState, RtcConfiguration, SdpType, SessionDescription};
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,
@@ -36,6 +37,8 @@ pub(crate) struct FullMesh {
     discard_timeout: Duration,
     max_connected: usize,
     config: RtcConfiguration,
+    candidate_filter_prefix: Option<AnyIpCidr>,
+
     mesh: Arc<Mutex<Mesh>>,
     peers: HashMap<NodeId, HashMap<Uuid, Conn>>,
     stop: Arc<Notify>,
@@ -70,6 +73,7 @@ impl FullMesh {
     pub(crate) async fn new(
         mesh: Arc<Mutex<Mesh>>,
         config: RtcConfiguration,
+        candidate_filter_prefix: Option<AnyIpCidr>,
     ) -> Arc<Mutex<FullMesh>> {
         Self::new_with_parameters(
             mesh,
@@ -77,6 +81,7 @@ impl FullMesh {
             Duration::from_secs(60),
             5,
             config,
+            candidate_filter_prefix,
         )
         .await
     }
@@ -87,6 +92,7 @@ impl FullMesh {
         discard_timeout: Duration,
         max_connected: usize,
         config: RtcConfiguration,
+        candidate_filter_prefix: Option<AnyIpCidr>,
     ) -> Arc<Mutex<FullMesh>> {
         let stop = Arc::new(Notify::new());
         let stop_rx = stop.clone();
@@ -98,6 +104,7 @@ impl FullMesh {
                 discard_timeout,
                 max_connected,
                 config,
+                candidate_filter_prefix,
                 mesh: mesh.clone(),
                 peers: HashMap::new(),
                 stop,
@@ -145,13 +152,15 @@ impl FullMesh {
         match payload {
             FullMeshPayload::Offer(id, offer) if self.id > src => {
                 let mut conn = PeerConn::new(self.config.clone()).await?;
+                start_peer_loop(Arc::downgrade(&self.mesh), src, *id, &conn);
+                let mut offer = SessionDescription::parse(SdpType::Offer, offer)?;
+                filter_candidate(&mut offer, &self.candidate_filter_prefix);
                 let answer = conn.answer(offer).await?;
                 self.mesh
                     .lock()
                     .await
                     .send_packet(src, FullMeshPayload::Answer(*id, answer.to_string()))
                     .await?;
-                self.start_peer_loop(src, *id, &conn);
                 let origin = self
                     .peers
                     .entry(src)
@@ -168,8 +177,9 @@ impl FullMesh {
                     warn!("No PeerConn found for node {:X} id {}, ignoring", src, id);
                     return Ok(());
                 };
+                let mut answer = SessionDescription::parse(SdpType::Answer, answer)?;
+                filter_candidate(&mut answer, &self.candidate_filter_prefix);
                 conn.conn.answered(answer).await?;
-                self.start_peer_loop(src, *id, &conn.conn);
                 let _ = self.refresh.send(());
             }
             FullMeshPayload::Candidate(id, candidate) => {
@@ -178,9 +188,11 @@ impl FullMesh {
                     warn!("No PeerConn found for node {:X} id {}, ignoring", src, id);
                     return Ok(());
                 };
-                conn.conn
-                    .add_ice_candidate(IceCandidate::from_sdp(candidate)?)
-                    .await?;
+                let candidate = IceCandidate::from_sdp(candidate)?;
+                if !check_candidate(&candidate, &self.candidate_filter_prefix) {
+                    return Ok(());
+                }
+                conn.conn.add_ice_candidate(candidate).await?;
             }
             _ => {
                 warn!("Unexpected packet type from node {:X}, ignoring", src);
@@ -243,6 +255,7 @@ impl FullMesh {
                 }
             };
             let id = Uuid::new_v4();
+            start_peer_loop(Arc::downgrade(&self.mesh), node_id, id, &conn);
             let offer = match conn.offer().await {
                 Ok(offer) => offer,
                 Err(err) => {
@@ -301,33 +314,6 @@ impl FullMesh {
                 _ => {}
             }
         }
-    }
-
-    fn start_peer_loop(&self, id: NodeId, uuid: Uuid, peer: &PeerConn) {
-        let mesh = self.mesh.clone();
-        let mut candidate = peer.subscribe_candidates();
-        tokio::spawn(async move {
-            loop {
-                let candidate = candidate.recv().await;
-                let candidate = match candidate {
-                    Ok(candidate) => candidate,
-                    Err(RecvError::Lagged(_)) => continue,
-                    Err(err) => {
-                        debug!("Candidate channel closed for node {:X}: {}", id, err);
-                        break;
-                    }
-                };
-                debug!("Sending candidate to node {:X}: {:?}", id, candidate);
-                let result = mesh
-                    .lock()
-                    .await
-                    .send_packet(id, FullMeshPayload::Candidate(uuid, candidate.to_sdp()))
-                    .await;
-                if let Err(err) = result {
-                    warn!("Failed to send candidate to node {:X}: {}", id, err);
-                }
-            }
-        });
     }
 
     pub(crate) fn subscribe_refresh(&self) -> broadcast::Receiver<()> {
@@ -406,4 +392,57 @@ fn create_peer(node_id: NodeId, id: Uuid, conn: PeerConn, fm: Weak<Mutex<FullMes
         time: Instant::now(),
         conn,
     }
+}
+
+fn start_peer_loop(mesh: Weak<Mutex<Mesh>>, id: NodeId, uuid: Uuid, peer: &PeerConn) {
+    let mut candidate = peer.subscribe_candidates();
+    tokio::spawn(async move {
+        loop {
+            let candidate = candidate.recv().await;
+            let candidate = match candidate {
+                Ok(candidate) => candidate,
+                Err(RecvError::Lagged(_)) => continue,
+                Err(err) => {
+                    debug!("Candidate channel closed for node {:X}: {}", id, err);
+                    break;
+                }
+            };
+            debug!("Sending candidate to node {:X}: {:?}", id, candidate);
+            let Some(mesh) = mesh.upgrade() else {
+                break;
+            };
+            let result = mesh
+                .lock()
+                .await
+                .send_packet(id, FullMeshPayload::Candidate(uuid, candidate.to_sdp()))
+                .await;
+            if let Err(err) = result {
+                warn!("Failed to send candidate to node {:X}: {}", id, err);
+            }
+        }
+    });
+}
+
+fn filter_candidate(sdp: &mut SessionDescription, cidr: &Option<AnyIpCidr>) {
+    for sections in &mut sdp.media_sections {
+        sections.attributes.retain(|attr| {
+            if attr.key != "candidate" {
+                return true;
+            }
+            if let Some(val) = &attr.value
+                && let Ok(candidate) = IceCandidate::from_sdp(val)
+                && !check_candidate(&candidate, cidr)
+            {
+                return false;
+            }
+            true
+        });
+    }
+}
+
+fn check_candidate(candidate: &IceCandidate, cidr: &Option<AnyIpCidr>) -> bool {
+    let Some(cidr) = cidr else {
+        return true;
+    };
+    !cidr.contains(&candidate.address.ip())
 }

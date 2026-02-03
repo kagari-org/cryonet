@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use rustrtc::{
     IceCandidate, PeerConnection, PeerConnectionState, RtcConfiguration, RtpCodecParameters,
-    SdpType, SessionDescription,
+    SessionDescription,
     media::{
         AudioFrame, AudioStreamTrack, MediaKind, SampleStreamSource, SampleStreamTrack,
         sample_track,
@@ -49,17 +49,17 @@ impl PeerConn {
         Ok(offer.to_sdp_string())
     }
 
-    pub(crate) async fn answer(&mut self, sdp: &str) -> Result<String> {
-        let offer = SessionDescription::parse(SdpType::Offer, sdp)?;
-        self.peer.set_remote_description(offer).await?;
+    pub(crate) async fn answer(&mut self, sdp: SessionDescription) -> Result<String> {
+        // let offer = SessionDescription::parse(SdpType::Offer, sdp)?;
+        self.peer.set_remote_description(sdp).await?;
         let answer = self.peer.create_answer().await?;
         self.peer.set_local_description(answer.clone())?;
         Ok(answer.to_sdp_string())
     }
 
-    pub(crate) async fn answered(&self, sdp: &str) -> Result<()> {
-        let answer = SessionDescription::parse(SdpType::Answer, sdp)?;
-        self.peer.set_remote_description(answer).await?;
+    pub(crate) async fn answered(&self, sdp: SessionDescription) -> Result<()> {
+        // let answer = SessionDescription::parse(SdpType::Answer, sdp)?;
+        self.peer.set_remote_description(sdp).await?;
         Ok(())
     }
 

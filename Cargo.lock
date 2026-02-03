@@ -350,6 +350,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "cidr"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "579504560394e388085d0c080ea587dfa5c15f7e251b4d5247d1e1a61d1d6928"
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -494,6 +500,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "cidr",
  "clap",
  "clap-num",
  "dyn-clone",

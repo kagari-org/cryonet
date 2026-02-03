@@ -17,6 +17,9 @@ use crate::{fullmesh::FullMesh, mesh::packet::NodeId};
 
 pub(crate) struct TunManager {
     fm: Arc<Mutex<FullMesh>>,
+    interface_prefix: String,
+    enable_packet_information: bool,
+
     devices: HashMap<NodeId, Weak<AsyncDevice>>,
     receivers: HashMap<NodeId, JoinHandle<()>>,
     senders: HashMap<NodeId, JoinHandle<()>>,
@@ -25,17 +28,23 @@ pub(crate) struct TunManager {
 }
 
 impl TunManager {
-    pub(crate) async fn new(fm: Arc<Mutex<FullMesh>>) -> Arc<Mutex<Self>> {
+    pub(crate) async fn new(
+        fm: Arc<Mutex<FullMesh>>,
+        interface_prefix: String,
+        enable_packet_information: bool,
+    ) -> Arc<Mutex<Self>> {
         let mut refresh = fm.lock().await.subscribe_refresh();
         let stop = Arc::new(Notify::new());
         let stop_rx = stop.clone();
 
         let tm = Arc::new(Mutex::new(Self {
             fm,
-            stop,
+            interface_prefix,
+            enable_packet_information,
             devices: HashMap::new(),
             receivers: HashMap::new(),
             senders: HashMap::new(),
+            stop,
         }));
         let tm2 = tm.clone();
 
@@ -63,14 +72,16 @@ impl TunManager {
             (fm.get_receivers(), fm.get_senders())
         };
         let mut create_device = |node_id: NodeId| {
-            fn create_device() -> AsyncDevice {
-                DeviceBuilder::new()
+            let create_device = || {
+                let mut builder = DeviceBuilder::new()
                     .mtu(1280)
-                    .enable(true)
-                    // .packet_information(true)
-                    .build_async()
-                    .unwrap()
-            }
+                    .name(format!("{}{:X}", self.interface_prefix, node_id))
+                    .enable(true);
+                if self.enable_packet_information {
+                    builder = builder.packet_information(true);
+                }
+                builder.build_async().unwrap()
+            };
             match self.devices.get(&node_id) {
                 Some(device) => match device.upgrade() {
                     Some(device) => device,
@@ -94,7 +105,7 @@ impl TunManager {
                 continue;
             }
             let device = create_device(node_id);
-            let handle = tokio::spawn(receive(node_id, self.fm.clone(), device));
+            let handle = tokio::spawn(receive(node_id, Arc::downgrade(&self.fm), device));
             self.receivers.insert(node_id, handle);
         }
         for (node_id, _) in senders {
@@ -104,7 +115,7 @@ impl TunManager {
                 continue;
             }
             let device = create_device(node_id);
-            let handle = tokio::spawn(send(node_id, self.fm.clone(), device));
+            let handle = tokio::spawn(send(node_id, Arc::downgrade(&self.fm), device));
             self.senders.insert(node_id, handle);
         }
     }
@@ -120,9 +131,17 @@ impl Drop for TunManager {
     }
 }
 
-async fn receive(node_id: NodeId, fm: Arc<Mutex<FullMesh>>, device: Arc<AsyncDevice>) {
-    let mut refresh = fm.lock().await.subscribe_refresh();
+async fn receive(node_id: NodeId, fm: Weak<Mutex<FullMesh>>, device: Arc<AsyncDevice>) {
+    let mut refresh = {
+        let Some(fm) = fm.upgrade() else {
+            return;
+        };
+        fm.lock().await.subscribe_refresh()
+    };
     'outer: loop {
+        let Some(fm) = fm.upgrade() else {
+            break;
+        };
         let mut receivers = fm.lock().await.get_receivers();
         let receivers = receivers.remove(&node_id);
         let Some(receivers) = receivers else {
@@ -158,9 +177,17 @@ async fn receive(node_id: NodeId, fm: Arc<Mutex<FullMesh>>, device: Arc<AsyncDev
     }
 }
 
-async fn send(node_id: NodeId, fm: Arc<Mutex<FullMesh>>, device: Arc<AsyncDevice>) {
-    let mut refresh = fm.lock().await.subscribe_refresh();
+async fn send(node_id: NodeId, fm: Weak<Mutex<FullMesh>>, device: Arc<AsyncDevice>) {
+    let mut refresh = {
+        let Some(fm) = fm.upgrade() else {
+            return;
+        };
+        fm.lock().await.subscribe_refresh()
+    };
     'outer: loop {
+        let Some(fm) = fm.upgrade() else {
+            break;
+        };
         let mut senders = fm.lock().await.get_senders();
         let senders = senders.remove(&node_id);
         let Some(sender) = senders else {
