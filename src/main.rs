@@ -21,21 +21,21 @@ pub(crate) mod mesh;
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[clap(value_parser = maybe_hex::<NodeId>)]
+    #[clap(env, value_parser = maybe_hex::<NodeId>)]
     id: NodeId,
-    #[clap(long, short)]
+    #[clap(env, long, short)]
     token: Option<String>,
-    #[clap(long, short, default_value = "0.0.0.0:2333")]
+    #[clap(env, long, short, default_value = "0.0.0.0:2333")]
     listen: SocketAddr,
-    #[clap(long, short, value_delimiter = ',')]
+    #[clap(env, long, short, value_delimiter = ',')]
     servers: Vec<String>,
-    #[clap(long, short, value_parser = parse_rtc_ice_server, value_delimiter = ',')]
+    #[clap(env, long, short, value_parser = parse_rtc_ice_server, value_delimiter = ',')]
     ice_servers: Vec<IceServer>,
-    #[clap(long, short, value_parser = AnyIpCidr::from_str)]
+    #[clap(env, long, short, value_parser = AnyIpCidr::from_str)]
     candidate_filter_prefix: Option<AnyIpCidr>,
-    #[clap(long, default_value = "cn")]
+    #[clap(env, long, default_value = "cn")]
     interface_prefix: String,
-    #[clap(long, default_value_t = false)]
+    #[clap(env, long, default_value_t = false)]
     enable_packet_information: bool,
 }
 
