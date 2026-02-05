@@ -2,11 +2,13 @@
   outputs = inputs@{
     self, nixpkgs, flake-parts,
   }: let
-    cryonet = { rustPlatform }: rustPlatform.buildRustPackage {
+    cryonet = { rustPlatform, pkg-config, openssl }: rustPlatform.buildRustPackage {
       name = "cryonet";
       RUSTC_BOOTSTRAP = "1";
       src = ./.;
       cargoLock.lockFile = ./Cargo.lock;
+      nativeBuildInputs = [ pkg-config ];
+      buildInputs = [ openssl ];
     };
   in flake-parts.lib.mkFlake { inherit inputs; } {
     systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];

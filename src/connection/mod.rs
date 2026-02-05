@@ -68,6 +68,9 @@ impl ConnManager {
                     _ = connect_timer.tick() => {
                         let mut mgr = mgr.lock().await;
                         for server in &servers {
+                            if server.is_empty() {
+                                continue;
+                            }
                             if let Err(err) = mgr.connect(server.clone()).await {
                                 warn!("Failed to connect to server {}: {}", server, err);
                             }
@@ -88,7 +91,7 @@ impl ConnManager {
     async fn accept(&mut self, (stream, addr): (TcpStream, SocketAddr)) -> Result<()> {
         let mut mesh = self.mesh.lock().await;
         let mut neigh_id = None;
-        let Ok(ws) = accept_hdr_async(stream, |req: &Request, mut res: Response| {
+        let result = accept_hdr_async(stream, |req: &Request, mut res: Response| {
             let reject =
                 |reason: String| Err(Response::builder().status(400).body(Some(reason)).unwrap());
             if let Some(token) = &self.token {
@@ -116,10 +119,13 @@ impl ConnManager {
                 .insert("X-NodeId", mesh.id.to_string().parse().unwrap());
             Ok(res)
         })
-        .await
-        else {
-            warn!("Failed to accept WebSocket connection from {}", addr);
-            return Ok(());
+        .await;
+        let ws = match result {
+            Ok(ws) => ws,
+            Err(e) => {
+                warn!("WebSocket handshake failed from {}: {}", addr, e);
+                return Ok(());
+            }
         };
         let neigh_id = neigh_id.unwrap();
         let (sink, stream) = new_ws_link(ws);
