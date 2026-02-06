@@ -13,7 +13,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,
-    sync::{Mutex, Notify},
+    sync::{Mutex, Notify, broadcast::error::RecvError},
     time::interval,
 };
 use tracing::{debug, error, warn};
@@ -171,6 +171,7 @@ impl Igp {
                     event = mesh_event_rx.recv() => {
                         let event = match event {
                             Ok(event) => event,
+                            Err(RecvError::Lagged(_)) => continue,
                             Err(err) => {
                                 error!("Failed to receive mesh event: {}", err);
                                 break;
