@@ -47,10 +47,10 @@ pub(crate) struct FullMesh {
     this: Weak<Mutex<FullMesh>>,
 }
 
-struct Conn {
-    selected: bool,
-    time: Instant,
-    conn: PeerConn,
+pub(crate) struct Conn {
+    pub(crate) selected: bool,
+    pub(crate) time: Instant,
+    pub(crate) conn: PeerConn,
 }
 
 impl Drop for Conn {
@@ -353,6 +353,10 @@ impl FullMesh {
             receivers.insert(*node_id, entry);
         }
         receivers
+    }
+
+    pub(crate) fn get_peers(&self) -> &HashMap<NodeId, HashMap<Uuid, Conn>> {
+        &self.peers
     }
 
     pub(crate) fn stop(&mut self) {

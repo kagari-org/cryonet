@@ -13,10 +13,10 @@ use rustrtc::{
 use tokio::sync::{broadcast, watch};
 
 pub(crate) struct PeerConn {
-    peer: PeerConnection,
-    sender: PeerConnSender,
+    pub(crate) peer: PeerConnection,
+    pub(crate) sender: PeerConnSender,
 
-    state_watcher: watch::Receiver<PeerConnectionState>,
+    pub(crate) state_watcher: watch::Receiver<PeerConnectionState>,
 }
 
 impl PeerConn {
@@ -50,7 +50,6 @@ impl PeerConn {
     }
 
     pub(crate) async fn answer(&mut self, sdp: SessionDescription) -> Result<String> {
-        // let offer = SessionDescription::parse(SdpType::Offer, sdp)?;
         self.peer.set_remote_description(sdp).await?;
         let answer = self.peer.create_answer().await?;
         self.peer.set_local_description(answer.clone())?;
@@ -58,7 +57,6 @@ impl PeerConn {
     }
 
     pub(crate) async fn answered(&self, sdp: SessionDescription) -> Result<()> {
-        // let answer = SessionDescription::parse(SdpType::Answer, sdp)?;
         self.peer.set_remote_description(sdp).await?;
         Ok(())
     }

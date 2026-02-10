@@ -503,6 +503,7 @@ dependencies = [
  "cidr",
  "clap",
  "clap-num",
+ "cryonet-uapi",
  "dyn-clone",
  "futures",
  "rustrtc",
@@ -515,6 +516,14 @@ dependencies = [
  "tracing-subscriber",
  "tun-rs",
  "typetag",
+ "uuid",
+]
+
+[[package]]
+name = "cryonet-uapi"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "uuid",
 ]
 
@@ -687,7 +696,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1744,7 +1753,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1758,9 +1767,9 @@ dependencies = [
 
 [[package]]
 name = "rustrtc"
-version = "0.3.15"
+version = "0.3.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e517aa38d55416fb892842309bf4dddb30527710c8d953918480bb0eff753a6a"
+checksum = "f04dbc61f11ceaadefa488edff54c2524f1fdaa400467e4717d51cd8809e0bce"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2046,7 +2055,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2359,9 +2368,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.19.0"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2e054861b4bd027cd373e18e8d8d8e6548085000e41290d95ce0c373a654b4a"
+checksum = "ee48d38b119b0cd71fe4141b30f5ba9c7c5d9f4e7a3a8b4a674e4b6ef789976f"
 dependencies = [
  "getrandom 0.3.4",
  "js-sys",

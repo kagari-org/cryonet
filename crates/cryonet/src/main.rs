@@ -11,13 +11,14 @@ use tokio::signal::ctrl_c;
 use crate::{
     connection::ConnManager,
     fullmesh::{FullMesh, tun::TunManager},
-    mesh::{Mesh, igp::Igp, packet::NodeId},
+    mesh::{Mesh, igp::Igp, packet::NodeId}, uapi::Uapi,
 };
 
 pub(crate) mod connection;
 pub(crate) mod errors;
 pub(crate) mod fullmesh;
 pub(crate) mod mesh;
+pub(crate) mod uapi;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -37,6 +38,8 @@ struct Args {
     interface_prefix: String,
     #[clap(env, long, default_value_t = false)]
     enable_packet_information: bool,
+    #[clap(env, long, default_value = "cryonet.ctl")]
+    ctl_path: String,
 }
 
 fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
@@ -82,6 +85,12 @@ async fn main() -> Result<()> {
         args.enable_packet_information,
     )
     .await;
+    let uapi = Uapi::new(
+        mesh.clone(),
+        igp.clone(),
+        fm.clone(),
+        args.ctl_path,
+    );
 
     ctrl_c().await?;
 
@@ -90,5 +99,6 @@ async fn main() -> Result<()> {
     mgr.lock().await.stop();
     igp.lock().await.stop();
     mesh.lock().await.stop();
+    uapi.lock().await.stop();
     Ok(())
 }

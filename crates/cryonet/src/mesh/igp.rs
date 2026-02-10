@@ -69,12 +69,12 @@ struct RouteRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Route {
-    metric: SeqMetric,
-    computed_metric: u32,
-    dst: NodeId,
-    from: NodeId,
-    timeout: Instant,
-    selected: bool,
+    pub(crate) metric: SeqMetric,
+    pub(crate) computed_metric: u32,
+    pub(crate) dst: NodeId,
+    pub(crate) from: NodeId,
+    pub(crate) timeout: Instant,
+    pub(crate) selected: bool,
 }
 
 impl Display for Route {
@@ -673,7 +673,6 @@ impl Igp {
         self.select().await;
     }
 
-    #[allow(dead_code)]
     pub(crate) fn get_routes(&self) -> Vec<Route> {
         self.routes.values().cloned().collect()
     }
