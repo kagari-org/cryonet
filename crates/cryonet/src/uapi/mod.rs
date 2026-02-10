@@ -3,10 +3,18 @@ use std::{path::Path, sync::Arc};
 use anyhow::Result;
 use cryonet_uapi::{Conn, ConnState, CryonetUapi, IgpRoute};
 use rustrtc::PeerConnectionState;
-use tokio::{net::UnixDatagram, select, sync::{Mutex, Notify}};
+use tokio::{
+    fs::remove_file,
+    net::UnixDatagram,
+    select,
+    sync::{Mutex, Notify},
+};
 use tracing::error;
 
-use crate::{fullmesh::FullMesh, mesh::{Mesh, igp::Igp}};
+use crate::{
+    fullmesh::FullMesh,
+    mesh::{Mesh, igp::Igp},
+};
 
 pub(crate) struct Uapi {
     mesh: Arc<Mutex<Mesh>>,
@@ -16,12 +24,13 @@ pub(crate) struct Uapi {
 }
 
 impl Uapi {
-    pub(crate) fn new(
+    pub(crate) async fn new(
         mesh: Arc<Mutex<Mesh>>,
         igp: Arc<Mutex<Igp>>,
         fm: Arc<Mutex<FullMesh>>,
         path: String,
     ) -> Arc<Mutex<Self>> {
+        remove_file(&path).await.unwrap();
         let socket = UnixDatagram::bind(path).unwrap();
         let stop = Arc::new(Notify::new());
         let uapi = Arc::new(Mutex::new(Self {
@@ -79,50 +88,63 @@ impl Uapi {
                 let response = GetLinksResponse(links);
                 let bytes = serde_json::to_vec(&response)?;
                 socket.send_to(&bytes, path).await?;
-            },
+            }
             GetRoutes => {
                 let routes = self.mesh.lock().await.get_routes();
                 let response = GetRoutesResponse(routes);
                 let bytes = serde_json::to_vec(&response)?;
                 socket.send_to(&bytes, path).await?;
-            },
+            }
             GetIgpRoutes => {
                 let routes = self.igp.lock().await.get_routes();
-                let routes = routes.into_iter().map(|route| IgpRoute {
-                    seq: route.metric.seq.0,
-                    metric: route.metric.metric,
-                    computed_metric: route.computed_metric,
-                    dst: route.dst,
-                    from: route.from,
-                    selected: route.selected,
-                }).collect();
+                let routes = routes
+                    .into_iter()
+                    .map(|route| IgpRoute {
+                        seq: route.metric.seq.0,
+                        metric: route.metric.metric,
+                        computed_metric: route.computed_metric,
+                        dst: route.dst,
+                        from: route.from,
+                        selected: route.selected,
+                    })
+                    .collect();
                 let response = GetIgpRoutesResponse(routes);
                 let bytes = serde_json::to_vec(&response)?;
                 socket.send_to(&bytes, path).await?;
-            },
+            }
             GetFullMeshPeers => {
                 let fm = self.fm.lock().await;
-                let peers = fm.get_peers().iter().map(|(node_id, conns)| {
-                    let conns = conns.iter().map(|(uuid, conn)| {
-                        use PeerConnectionState::*;
-                        (uuid.clone(), Conn {
-                            selected: conn.selected,
-                            state: match *conn.conn.state_watcher.borrow() {
-                                New => ConnState::New,
-                                Connecting => ConnState::Connecting,
-                                Connected => ConnState::Connected,
-                                Disconnected => ConnState::Disconnected,
-                                Failed => ConnState::Failed,
-                                Closed => ConnState::Closed,
-                            },
-                        })
-                    }).collect();
-                    (*node_id, conns)
-                }).collect();
+                let peers = fm
+                    .get_peers()
+                    .iter()
+                    .map(|(node_id, conns)| {
+                        let conns = conns
+                            .iter()
+                            .map(|(uuid, conn)| {
+                                use PeerConnectionState::*;
+                                (
+                                    *uuid,
+                                    Conn {
+                                        selected: conn.selected,
+                                        state: match *conn.conn.state_watcher.borrow() {
+                                            New => ConnState::New,
+                                            Connecting => ConnState::Connecting,
+                                            Connected => ConnState::Connected,
+                                            Disconnected => ConnState::Disconnected,
+                                            Failed => ConnState::Failed,
+                                            Closed => ConnState::Closed,
+                                        },
+                                    },
+                                )
+                            })
+                            .collect();
+                        (*node_id, conns)
+                    })
+                    .collect();
                 let response = GetFullMeshPeersResponse(peers);
                 let bytes = serde_json::to_vec(&response)?;
                 socket.send_to(&bytes, path).await?;
-            },
+            }
             _ => error!("Unexpected uapi command: {:?}, dropping", cmd),
         };
         Ok(())

@@ -45,9 +45,9 @@ pub(crate) struct Igp {
 }
 
 #[typetag::serde]
-impl Payload for IGPPayload {}
+impl Payload for IgpPayload {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum IGPPayload {
+enum IgpPayload {
     Hello { seq: Seq },
     HelloReply { seq: Seq },
     RouteRequest { dst: NodeId }, // only used when route is about to expire
@@ -144,7 +144,7 @@ impl Igp {
             let mut packet_rx = mesh
                 .lock()
                 .await
-                .add_dispatchee(|packet| (packet.payload.as_ref() as &dyn Any).is::<IGPPayload>());
+                .add_dispatchee(|packet| (packet.payload.as_ref() as &dyn Any).is::<IgpPayload>());
             let mut mesh_event_rx = mesh.lock().await.subscribe_mesh_events();
             let notified = stop_rx.notified();
             tokio::pin!(notified);
@@ -160,7 +160,7 @@ impl Igp {
                             break;
                         };
                         let igp_payload = (packet.payload.as_ref() as &dyn Any)
-                            .downcast_ref::<IGPPayload>().unwrap();
+                            .downcast_ref::<IgpPayload>().unwrap();
                         let result = igp.lock().await
                             .handle_packet(packet.src, igp_payload)
                             .await;
@@ -198,17 +198,17 @@ impl Igp {
         igp2
     }
 
-    async fn handle_packet(&mut self, src: NodeId, payload: &IGPPayload) -> Result<()> {
+    async fn handle_packet(&mut self, src: NodeId, payload: &IgpPayload) -> Result<()> {
         match payload {
-            IGPPayload::Hello { seq } => {
+            IgpPayload::Hello { seq } => {
                 self.mesh
                     .lock()
                     .await
-                    .send_packet_link(src, IGPPayload::HelloReply { seq: *seq })
+                    .send_packet_link(src, IgpPayload::HelloReply { seq: *seq })
                     .await?;
             }
 
-            IGPPayload::HelloReply { seq } => {
+            IgpPayload::HelloReply { seq } => {
                 let time = Instant::now();
                 let Entry::Occupied(mut cost) = self.costs.entry(src) else {
                     warn!("Received unexpected HelloReply from node {:X}", src);
@@ -230,7 +230,7 @@ impl Igp {
                     self.mesh
                         .lock()
                         .await
-                        .send_packet_link(src, IGPPayload::RouteDump)
+                        .send_packet_link(src, IgpPayload::RouteDump)
                         .await?;
                 } else {
                     cost.cost = ((836 * cost.cost as u128 + 164 * rtt) / 1000) as u32;
@@ -241,7 +241,7 @@ impl Igp {
                 }
             }
 
-            IGPPayload::RouteRequest { dst } => {
+            IgpPayload::RouteRequest { dst } => {
                 let mut mesh = self.mesh.lock().await;
                 let route = self
                     .routes
@@ -258,9 +258,9 @@ impl Igp {
                 }
             }
 
-            IGPPayload::RouteDump => self.dump(Some(src)).await,
+            IgpPayload::RouteDump => self.dump(Some(src)).await,
 
-            IGPPayload::SequenceRequest { seq, dst, ttl } => {
+            IgpPayload::SequenceRequest { seq, dst, ttl } => {
                 let mut mesh = self.mesh.lock().await;
                 let route = self
                     .routes
@@ -353,7 +353,7 @@ impl Igp {
                 // ttl decrement
                 let mut payload = payload.clone();
                 match &mut payload {
-                    IGPPayload::SequenceRequest { ttl, .. } => *ttl = ttl.saturating_sub(1),
+                    IgpPayload::SequenceRequest { ttl, .. } => *ttl = ttl.saturating_sub(1),
                     _ => unreachable!(),
                 }
                 // send
@@ -371,7 +371,7 @@ impl Igp {
                 );
             }
 
-            IGPPayload::Update { metric, dst } => {
+            IgpPayload::Update { metric, dst } => {
                 let computed_metric = match (self.costs.get(&src), metric.metric) {
                     (_, u32::MAX) => u32::MAX,
                     (None, _) => u32::MAX - 1,
@@ -463,7 +463,7 @@ impl Igp {
                     cost: u32::MAX,
                 });
             let result = mesh
-                .send_packet_link(link, IGPPayload::Hello { seq: cost.seq })
+                .send_packet_link(link, IgpPayload::Hello { seq: cost.seq })
                 .await;
             if let Err(err) = result {
                 warn!("Failed to send Hello to node {:X}: {}", link, err);
@@ -538,7 +538,7 @@ impl Igp {
                                 "Suppressing duplicate SequenceRequest for node {:X} with seq {:?}",
                                 dst, seq
                             );
-                            return;
+                            continue;
                         }
                         self.requests.insert(
                             **dst,
@@ -548,7 +548,7 @@ impl Igp {
                             },
                         );
                         let result = mesh
-                            .broadcast_packet_local(IGPPayload::SequenceRequest {
+                            .broadcast_packet_local(IgpPayload::SequenceRequest {
                                 seq,
                                 dst: **dst,
                                 ttl: self.diameter,
@@ -662,7 +662,7 @@ impl Igp {
                 route.timeout = now + self.route_timeout;
                 route.selected = false;
                 let result = mesh
-                    .send_packet_link(*neigh, IGPPayload::RouteRequest { dst: *dst })
+                    .send_packet_link(*neigh, IgpPayload::RouteRequest { dst: *dst })
                     .await;
                 if let Err(err) = result {
                     warn!("Failed to send RouteRequest for node {:X}: {}", dst, err);
@@ -688,8 +688,8 @@ impl Drop for Igp {
     }
 }
 
-fn generate_update(route: &Route) -> IGPPayload {
-    IGPPayload::Update {
+fn generate_update(route: &Route) -> IgpPayload {
+    IgpPayload::Update {
         dst: route.dst,
         metric: SeqMetric {
             seq: route.metric.seq,
@@ -698,8 +698,8 @@ fn generate_update(route: &Route) -> IGPPayload {
     }
 }
 
-fn generate_retraction(dst: NodeId) -> IGPPayload {
-    IGPPayload::Update {
+fn generate_retraction(dst: NodeId) -> IgpPayload {
+    IgpPayload::Update {
         dst,
         metric: SeqMetric {
             seq: Seq(0),

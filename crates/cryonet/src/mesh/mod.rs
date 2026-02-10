@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    sync::{Arc, Weak},
-};
+use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -22,8 +18,6 @@ pub(crate) mod seq;
 
 pub(crate) struct Mesh {
     pub(crate) id: NodeId,
-
-    this: Weak<Mutex<Mesh>>,
 
     link_send: HashMap<NodeId, Box<dyn LinkSend>>,
     link_recv_stop: HashMap<NodeId, Arc<Notify>>,
@@ -72,19 +66,16 @@ impl Mesh {
         let (packets_tx, mut packets_rx) = mpsc::channel(1024);
         let stop = Arc::new(Notify::new());
         let stop_rx = stop.clone();
-        let mesh = Arc::new_cyclic(|this| {
-            Mutex::new(Mesh {
-                id,
-                this: this.clone(),
-                link_send: HashMap::new(),
-                link_recv_stop: HashMap::new(),
-                routes: HashMap::new(),
-                dispatchees: Vec::new(),
-                packets_tx: packets_tx.clone(),
-                mesh_event_tx: broadcast::Sender::new(16),
-                stop,
-            })
-        });
+        let mesh = Arc::new(Mutex::new(Mesh {
+            id,
+            link_send: HashMap::new(),
+            link_recv_stop: HashMap::new(),
+            routes: HashMap::new(),
+            dispatchees: Vec::new(),
+            packets_tx: packets_tx.clone(),
+            mesh_event_tx: broadcast::Sender::new(16),
+            stop,
+        }));
         let mesh2 = mesh.clone();
         tokio::spawn(async move {
             let notified = stop_rx.notified();
@@ -227,19 +218,12 @@ impl Mesh {
         self.link_recv_stop.insert(dst, stop);
         let packets_tx = self.packets_tx.clone();
 
-        let mesh = self.this.clone();
         tokio::spawn(async move {
             let notified = stop_rx.notified();
             tokio::pin!(notified);
             loop {
                 select! {
-                    _ = &mut notified => {
-                        let Some(mesh) = mesh.upgrade() else {
-                            break;
-                        };
-                        mesh.lock().await.remove_link(dst);
-                        break;
-                    }
+                    _ = &mut notified => break,
                     packet = recv.recv() => {
                         let mut brk = false;
                         if let Err(LinkError::Closed) = &packet {

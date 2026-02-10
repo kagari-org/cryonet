@@ -1,4 +1,3 @@
-#![feature(try_blocks)]
 use std::{net::SocketAddr, str::FromStr};
 
 use anyhow::{Result, anyhow};
@@ -11,7 +10,8 @@ use tokio::signal::ctrl_c;
 use crate::{
     connection::ConnManager,
     fullmesh::{FullMesh, tun::TunManager},
-    mesh::{Mesh, igp::Igp, packet::NodeId}, uapi::Uapi,
+    mesh::{Mesh, igp::Igp, packet::NodeId},
+    uapi::Uapi,
 };
 
 pub(crate) mod connection;
@@ -43,18 +43,18 @@ struct Args {
 }
 
 fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
-    let splited: Vec<_> = input.split('|').collect();
-    if splited.len() == 1 {
+    let parts: Vec<_> = input.split('|').collect();
+    if parts.len() == 1 {
         Ok(IceServer {
-            urls: vec![splited[0].to_string()],
+            urls: vec![parts[0].to_string()],
             ..Default::default()
         })
-    } else if splited.len() == 3 {
+    } else if parts.len() == 3 {
         Ok(IceServer {
-            urls: vec![splited[0].to_string()],
+            urls: vec![parts[0].to_string()],
             credential_type: IceCredentialType::Password,
-            username: Some(splited[1].to_string()),
-            credential: Some(splited[2].to_string()),
+            username: Some(parts[1].to_string()),
+            credential: Some(parts[2].to_string()),
         })
     } else {
         Err(anyhow!("Unexpected ice server: {input}"))
@@ -85,12 +85,7 @@ async fn main() -> Result<()> {
         args.enable_packet_information,
     )
     .await;
-    let _uapi = Uapi::new(
-        mesh.clone(),
-        igp.clone(),
-        fm.clone(),
-        args.ctl_path,
-    );
+    let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), args.ctl_path).await;
 
     ctrl_c().await?;
     Ok(())
