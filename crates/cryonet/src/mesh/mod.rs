@@ -346,10 +346,16 @@ impl Mesh {
         Ok(())
     }
 
-    pub(crate) fn stop(&mut self) {
+    pub(crate) fn stop(&self) {
         self.stop.notify_waiters();
         for stop in self.link_recv_stop.values() {
             stop.notify_waiters();
         }
+    }
+}
+
+impl Drop for Mesh {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

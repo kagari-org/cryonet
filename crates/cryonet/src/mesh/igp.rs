@@ -677,8 +677,14 @@ impl Igp {
         self.routes.values().cloned().collect()
     }
 
-    pub(crate) fn stop(&mut self) {
+    pub(crate) fn stop(&self) {
         self.stop.notify_waiters();
+    }
+}
+
+impl Drop for Igp {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 

@@ -359,8 +359,14 @@ impl FullMesh {
         &self.peers
     }
 
-    pub(crate) fn stop(&mut self) {
+    pub(crate) fn stop(&self) {
         self.stop.notify_waiters();
+    }
+}
+
+impl Drop for FullMesh {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 

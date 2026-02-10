@@ -176,3 +176,9 @@ impl ConnManager {
         self.stop.notify_waiters();
     }
 }
+
+impl Drop for ConnManager {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}

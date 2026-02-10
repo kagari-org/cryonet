@@ -72,20 +72,20 @@ async fn main() -> Result<()> {
 
     let mesh = Mesh::new(args.id);
     let igp = Igp::new(mesh.clone()).await;
-    let mgr = ConnManager::new(mesh.clone(), args.token, args.servers, args.listen);
+    let _mgr = ConnManager::new(mesh.clone(), args.token, args.servers, args.listen);
     let fm = FullMesh::new(
         mesh.clone(),
         rtc_configuration,
         args.candidate_filter_prefix,
     )
     .await;
-    let tm = TunManager::new(
+    let _tm = TunManager::new(
         fm.clone(),
         args.interface_prefix,
         args.enable_packet_information,
     )
     .await;
-    let uapi = Uapi::new(
+    let _uapi = Uapi::new(
         mesh.clone(),
         igp.clone(),
         fm.clone(),
@@ -93,12 +93,5 @@ async fn main() -> Result<()> {
     );
 
     ctrl_c().await?;
-
-    tm.lock().await.stop();
-    fm.lock().await.stop();
-    mgr.lock().await.stop();
-    igp.lock().await.stop();
-    mesh.lock().await.stop();
-    uapi.lock().await.stop();
     Ok(())
 }
