@@ -1,26 +1,36 @@
-use std::{path::Path, sync::Arc};
+use std::{any::Any, collections::HashMap, path::{Path, PathBuf}, sync::Arc, time::{Duration, Instant}};
 
 use anyhow::Result;
 use cryonet_uapi::{Conn, ConnState, CryonetUapi, IgpRoute};
 use rustrtc::PeerConnectionState;
+use serde::{Deserialize, Serialize};
 use tokio::{
     fs::remove_file,
     net::UnixDatagram,
     select,
-    sync::{Mutex, Notify},
+    sync::{Mutex, Notify}, time::interval,
 };
-use tracing::error;
+use tracing::{debug, error};
+use uuid::Uuid;
 
 use crate::{
     fullmesh::FullMesh,
-    mesh::{Mesh, igp::Igp},
+    mesh::{Mesh, igp::Igp, packet::{NodeId, Payload}},
 };
 
 pub(crate) struct Uapi {
     mesh: Arc<Mutex<Mesh>>,
     igp: Arc<Mutex<Igp>>,
     fm: Arc<Mutex<FullMesh>>,
+    ping: HashMap<Uuid, (PathBuf, Instant)>,
     stop: Arc<Notify>,
+}
+
+#[typetag::serde]
+impl Payload for UapiPayload {}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+enum UapiPayload {
+    Ping(Uuid), Pong(Uuid),
 }
 
 impl Uapi {
@@ -30,13 +40,34 @@ impl Uapi {
         fm: Arc<Mutex<FullMesh>>,
         path: String,
     ) -> Arc<Mutex<Self>> {
-        remove_file(&path).await.unwrap();
+        Self::new_with_parameters(
+            mesh,
+            igp,
+            fm,
+            path,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+        ).await
+    }
+
+    pub(crate) async fn new_with_parameters(
+        mesh: Arc<Mutex<Mesh>>,
+        igp: Arc<Mutex<Igp>>,
+        fm: Arc<Mutex<FullMesh>>,
+        path: String,
+        gc_interval: Duration,
+        ping_timeout: Duration,
+    ) -> Arc<Mutex<Self>> {
+        let _ = remove_file(&path).await;
         let socket = UnixDatagram::bind(path).unwrap();
         let stop = Arc::new(Notify::new());
+        let mut packet_rx = mesh.lock().await
+            .add_dispatchee(|packet| (packet.payload.as_ref() as &dyn Any).is::<UapiPayload>());
         let uapi = Arc::new(Mutex::new(Self {
             mesh,
             igp,
             fm,
+            ping: HashMap::new(),
             stop: stop.clone(),
         }));
         let uapi2 = uapi.clone();
@@ -44,9 +75,24 @@ impl Uapi {
             let mut buf = [0u8; 1024];
             let notified = stop.notified();
             tokio::pin!(notified);
+            let mut gc_ticker = interval(gc_interval);
             loop {
                 select! {
                     _ = &mut notified => break,
+                    packet = packet_rx.recv() => {
+                        let Some(packet) = packet else {
+                            error!("Uapi packet receiver closed unexpectedly");
+                            break;
+                        };
+                        let uapi_payload = (packet.payload.as_ref() as &dyn Any)
+                            .downcast_ref::<UapiPayload>().unwrap();
+                        let result = uapi.lock().await
+                            .handle_packet(&socket, packet.src, uapi_payload)
+                            .await;
+                        if let Err(err) = result {
+                            error!("Failed to handle uapi packet: {err}");
+                        }
+                    },
                     res = socket.recv_from(&mut buf) => {
                         let (len, addr) = match res {
                             Ok(res) => res,
@@ -67,6 +113,17 @@ impl Uapi {
                         if let Err(err) = result {
                             error!("Failed to handle uapi message: {err}");
                         }
+                    },
+                    _ = gc_ticker.tick() => {
+                        let now = Instant::now();
+                        uapi.lock().await.ping.retain(|uuid, (_, instant)| {
+                            if now.duration_since(*instant) > ping_timeout {
+                                debug!("Removing expired ping with uuid {}, sent at {:?}", uuid, instant);
+                                false
+                            } else {
+                                true
+                            }
+                        });
                     },
                 }
             }
@@ -145,8 +202,39 @@ impl Uapi {
                 let bytes = serde_json::to_vec(&response)?;
                 socket.send_to(&bytes, path).await?;
             }
+            Ping(dst) => {
+                let uuid = Uuid::new_v4();
+                let instant = Instant::now();
+                self.ping.insert(uuid, (path.to_owned(), instant));
+                self.mesh.lock().await.send_packet(dst, UapiPayload::Ping(uuid)).await?;
+                self.ping.insert(uuid, (path.to_owned(), instant));
+            }
             _ => error!("Unexpected uapi command: {:?}, dropping", cmd),
         };
+        Ok(())
+    }
+
+    async fn handle_packet(
+        &mut self,
+        socket: &UnixDatagram,
+        src: NodeId,
+        payload: &UapiPayload,
+    ) -> Result<()> {
+        use UapiPayload::*;
+        match payload {
+            Ping(uuid) => {
+                self.mesh.lock().await.send_packet(src, Pong(*uuid)).await?;
+            }
+            Pong(uuid) => {
+                if let Some((path, _)) = self.ping.remove(uuid) {
+                    let response = CryonetUapi::Pong;
+                    let bytes = serde_json::to_vec(&response)?;
+                    socket.send_to(&bytes, path).await?;
+                } else {
+                    debug!("Received unexpected pong with uuid {uuid}, dropping");
+                }
+            }
+        }
         Ok(())
     }
 

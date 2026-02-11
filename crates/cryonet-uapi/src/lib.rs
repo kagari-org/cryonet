@@ -41,4 +41,6 @@ pub enum CryonetUapi {
     GetIgpRoutesResponse(Vec<IgpRoute>),
     GetFullMeshPeers,
     GetFullMeshPeersResponse(HashMap<NodeId, HashMap<Uuid, Conn>>),
+    Ping(NodeId),
+    Pong,
 }
