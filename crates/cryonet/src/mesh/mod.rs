@@ -206,9 +206,19 @@ impl Mesh {
         dst: NodeId,
         send: Box<dyn LinkSend>,
         mut recv: Box<dyn LinkRecv>,
-    ) {
+    ) -> bool {
         if self.link_send.contains_key(&dst) {
-            debug!("Link to node {:X} already exists, removing old link", dst);
+            if self.id > dst {
+                debug!(
+                    "Link to node {:X} already exists, keeping existing (our id {:X} > {:X})",
+                    dst, self.id, dst
+                );
+                return false;
+            }
+            debug!(
+                "Link to node {:X} already exists, replacing (our id {:X} < {:X})",
+                dst, self.id, dst
+            );
             self.remove_link(dst);
         }
 
@@ -241,6 +251,7 @@ impl Mesh {
             }
         });
         let _ = self.mesh_event_tx.send(MeshEvent::LinkUp(dst));
+        true
     }
 
     pub(crate) fn remove_link(&mut self, dst: NodeId) {

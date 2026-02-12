@@ -58,13 +58,13 @@ async fn main() -> Result<()> {
             for item in items {
                 println!("  {item:X}");
             }
-        },
+        }
         CryonetUapi::GetRoutesResponse(hash_map) => {
             println!("Routes:");
             for (dst, next_hop) in hash_map {
                 println!("  {dst:X} -> {next_hop:X}");
             }
-        },
+        }
         CryonetUapi::GetIgpRoutesResponse(igp_routes) => {
             println!("IGP Routes:");
             for route in igp_routes {
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
                     selected = route.selected,
                 );
             }
-        },
+        }
         CryonetUapi::GetFullMeshPeersResponse(hash_map) => {
             println!("Full Mesh Peers:");
             for (node_id, conns) in hash_map {
@@ -90,10 +90,10 @@ async fn main() -> Result<()> {
                     );
                 }
             }
-        },
+        }
         CryonetUapi::Pong => {
             println!("Pong received, latency: {} ms", time.elapsed().as_millis());
-        },
+        }
         _ => println!("Unexpected response: {response:?}"),
     }
 

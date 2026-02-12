@@ -5,7 +5,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     select,
     sync::{Mutex, Notify},
-    time::interval,
+    time::{interval, timeout},
 };
 use tokio_tungstenite::{
     accept_hdr_async, connect_async,
@@ -14,7 +14,7 @@ use tokio_tungstenite::{
         handshake::server::{Request, Response},
     },
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     connection::link::new_ws_link,
@@ -59,6 +59,7 @@ impl ConnManager {
         let mgr2 = mgr.clone();
         tokio::spawn(async move {
             let listener = TcpListener::bind(listen).await.unwrap();
+            info!("Listening on {}", listen);
             let mut connect_timer = interval(connect_interval);
             let notified = stop_rx.notified();
             tokio::pin!(notified);
@@ -89,7 +90,7 @@ impl ConnManager {
     }
 
     async fn accept(&mut self, (stream, addr): (TcpStream, SocketAddr)) -> Result<()> {
-        let mut mesh = self.mesh.lock().await;
+        let id = self.mesh.lock().await.id;
         let mut neigh_id = None;
         let result = accept_hdr_async(stream, |req: &Request, mut res: Response| {
             let reject =
@@ -111,12 +112,9 @@ impl ConnManager {
                 Some(Ok(Ok(id))) => id,
                 _ => return reject("Invalid X-Node-Id header".to_string()),
             };
-            if mesh.get_links().contains(&peer_id) {
-                return reject("Link to this node already exists".to_string());
-            }
             neigh_id = Some(peer_id);
             res.headers_mut()
-                .insert("X-NodeId", mesh.id.to_string().parse().unwrap());
+                .insert("X-NodeId", id.to_string().parse().unwrap());
             Ok(res)
         })
         .await;
@@ -129,41 +127,61 @@ impl ConnManager {
         };
         let neigh_id = neigh_id.unwrap();
         let (sink, stream) = new_ws_link(ws);
-        mesh.add_link(neigh_id, Box::new(sink), Box::new(stream));
-        info!("Accepted connection from {} (node {:X})", addr, neigh_id);
+        let added = self
+            .mesh
+            .lock()
+            .await
+            .add_link(neigh_id, Box::new(sink), Box::new(stream));
+        if added {
+            info!("Accepted connection from {} (node {:X})", addr, neigh_id);
+        } else {
+            info!(
+                "Rejected duplicate connection from {} (node {:X}), keeping existing link",
+                addr, neigh_id
+            );
+        }
         Ok(())
     }
 
     pub(crate) async fn connect(&mut self, server: String) -> Result<()> {
-        // lock here to avoid interleaving with incoming connections
-        let mut mesh = self.mesh.lock().await;
+        let (links, id) = {
+            let mesh = self.mesh.lock().await;
+            (mesh.get_links(), mesh.id)
+        };
         if let Some(neigh_id) = self.servers.get(&server)
-            && mesh.get_links().contains(neigh_id)
+            && links.contains(neigh_id)
         {
             return Ok(());
         }
 
+        debug!("Connecting to server {}...", server);
         let mut req = server.clone().into_client_request()?;
         req.headers_mut()
-            .insert("X-NodeId", mesh.id.to_string().parse()?);
+            .insert("X-NodeId", id.to_string().parse()?);
         if let Some(token) = &self.token {
             req.headers_mut().insert("Authorization", token.parse()?);
         }
-        let (mut ws_stream, res) = connect_async(req).await?;
+        let (ws_stream, res) = timeout(Duration::from_secs(5), connect_async(req)).await??;
         let Some(neigh_id) = res.headers().get("X-NodeId") else {
             return Err(anyhow::anyhow!(Error::Unauthorized));
         };
         let neigh_id = neigh_id.to_str()?.parse::<NodeId>()?;
         self.servers.insert(server.clone(), neigh_id);
 
-        if mesh.get_links().contains(&neigh_id) {
-            ws_stream.close(None).await?;
-            return Ok(());
-        }
-
         let (sink, stream) = new_ws_link(ws_stream);
-        mesh.add_link(neigh_id, Box::new(sink), Box::new(stream));
-        info!("Connected to server {} (node {:X})", server, neigh_id);
+        let added = self
+            .mesh
+            .lock()
+            .await
+            .add_link(neigh_id, Box::new(sink), Box::new(stream));
+        if added {
+            info!("Connected to server {} (node {:X})", server, neigh_id);
+        } else {
+            info!(
+                "Rejected duplicate connection to {} (node {:X}), keeping existing link",
+                server, neigh_id
+            );
+        }
         Ok(())
     }
 

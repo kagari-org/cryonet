@@ -1,4 +1,10 @@
-use std::{any::Any, collections::HashMap, path::{Path, PathBuf}, sync::Arc, time::{Duration, Instant}};
+use std::{
+    any::Any,
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use cryonet_uapi::{Conn, ConnState, CryonetUapi, IgpRoute};
@@ -8,14 +14,19 @@ use tokio::{
     fs::remove_file,
     net::UnixDatagram,
     select,
-    sync::{Mutex, Notify}, time::interval,
+    sync::{Mutex, Notify},
+    time::interval,
 };
 use tracing::{debug, error};
 use uuid::Uuid;
 
 use crate::{
     fullmesh::FullMesh,
-    mesh::{Mesh, igp::Igp, packet::{NodeId, Payload}},
+    mesh::{
+        Mesh,
+        igp::Igp,
+        packet::{NodeId, Payload},
+    },
 };
 
 pub(crate) struct Uapi {
@@ -30,7 +41,8 @@ pub(crate) struct Uapi {
 impl Payload for UapiPayload {}
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum UapiPayload {
-    Ping(Uuid), Pong(Uuid),
+    Ping(Uuid),
+    Pong(Uuid),
 }
 
 impl Uapi {
@@ -47,7 +59,8 @@ impl Uapi {
             path,
             Duration::from_secs(30),
             Duration::from_secs(60),
-        ).await
+        )
+        .await
     }
 
     pub(crate) async fn new_with_parameters(
@@ -61,7 +74,9 @@ impl Uapi {
         let _ = remove_file(&path).await;
         let socket = UnixDatagram::bind(path).unwrap();
         let stop = Arc::new(Notify::new());
-        let mut packet_rx = mesh.lock().await
+        let mut packet_rx = mesh
+            .lock()
+            .await
             .add_dispatchee(|packet| (packet.payload.as_ref() as &dyn Any).is::<UapiPayload>());
         let uapi = Arc::new(Mutex::new(Self {
             mesh,
@@ -206,7 +221,11 @@ impl Uapi {
                 let uuid = Uuid::new_v4();
                 let instant = Instant::now();
                 self.ping.insert(uuid, (path.to_owned(), instant));
-                self.mesh.lock().await.send_packet(dst, UapiPayload::Ping(uuid)).await?;
+                self.mesh
+                    .lock()
+                    .await
+                    .send_packet(dst, UapiPayload::Ping(uuid))
+                    .await?;
                 self.ping.insert(uuid, (path.to_owned(), instant));
             }
             _ => error!("Unexpected uapi command: {:?}, dropping", cmd),
