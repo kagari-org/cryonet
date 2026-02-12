@@ -9,7 +9,7 @@ use tokio::net::UnixDatagram;
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[arg(short, default_value = "/run/cryonetc.sock")]
+    #[arg(short, default_value = "/run/cryonet/cryonet.ctl")]
     ctl_path: String,
     #[clap(subcommand)]
     subcommand: Subcommand,

@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, str::FromStr};
+use std::{env::var, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::{Result, anyhow};
 use cidr::AnyIpCidr;
@@ -38,8 +38,8 @@ struct Args {
     interface_prefix: String,
     #[clap(env, long, default_value_t = false)]
     enable_packet_information: bool,
-    #[clap(env, long, default_value = "cryonet.ctl")]
-    ctl_path: String,
+    #[clap(env, long)]
+    ctl_path: Option<PathBuf>,
 }
 
 fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
@@ -69,6 +69,12 @@ async fn main() -> Result<()> {
         ice_servers: args.ice_servers.clone(),
         ..Default::default()
     };
+    let runtime_directory = var("RUNTIME_DIRECTORY");
+    let ctl_path = match (args.ctl_path, runtime_directory) {
+        (Some(path), _) => path,
+        (None, Ok(dir)) => PathBuf::from(dir).join("cryonet.ctl"),
+        (None, Err(_)) => PathBuf::from("cryonet.ctl"),
+    };
 
     let mesh = Mesh::new(args.id);
     let igp = Igp::new(mesh.clone()).await;
@@ -85,7 +91,7 @@ async fn main() -> Result<()> {
         args.enable_packet_information,
     )
     .await;
-    let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), args.ctl_path).await;
+    let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await;
 
     ctrl_c().await?;
     Ok(())

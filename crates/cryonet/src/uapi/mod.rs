@@ -38,7 +38,7 @@ impl Uapi {
         mesh: Arc<Mutex<Mesh>>,
         igp: Arc<Mutex<Igp>>,
         fm: Arc<Mutex<FullMesh>>,
-        path: String,
+        path: PathBuf,
     ) -> Arc<Mutex<Self>> {
         Self::new_with_parameters(
             mesh,
@@ -54,7 +54,7 @@ impl Uapi {
         mesh: Arc<Mutex<Mesh>>,
         igp: Arc<Mutex<Igp>>,
         fm: Arc<Mutex<FullMesh>>,
-        path: String,
+        path: PathBuf,
         gc_interval: Duration,
         ping_timeout: Duration,
     ) -> Arc<Mutex<Self>> {
