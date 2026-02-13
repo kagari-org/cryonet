@@ -220,7 +220,6 @@ impl Uapi {
             Ping(dst) => {
                 let uuid = Uuid::new_v4();
                 let instant = Instant::now();
-                self.ping.insert(uuid, (path.to_owned(), instant));
                 self.mesh
                     .lock()
                     .await

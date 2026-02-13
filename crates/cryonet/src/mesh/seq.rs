@@ -68,7 +68,7 @@ pub(crate) struct SeqMetric {
 }
 
 impl SeqMetric {
-    pub(crate) fn feasible(&self, &rhs: &Self) -> bool {
+    pub(crate) fn feasible(&self, rhs: &Self) -> bool {
         if self.seq > rhs.seq || self.metric == u32::MAX {
             return true;
         }
