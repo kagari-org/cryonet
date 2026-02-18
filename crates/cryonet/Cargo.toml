@@ -24,4 +24,4 @@ tun-rs = { version = "2.7.8", features = ["async"] }
 typetag = "0.2.21"
 uuid = { version = "1.19.0", features = ["serde", "v4"] }
 cryonet-uapi = { path = "../cryonet-uapi" }
-sactor = "0.1.3"
+sactor = "0.1.4"

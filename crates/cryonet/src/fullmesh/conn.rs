@@ -80,7 +80,7 @@ impl PeerConn {
     }
 
     pub(crate) fn receiver(&self) -> SactorResult<PeerConnReceiver> {
-        let track = self.peer.get_transceivers()[0].receiver().ok_or_else(|| Error::Unknown)?.track();
+        let track = self.peer.get_transceivers()[0].receiver().ok_or(Error::Unknown)?.track();
         Ok(PeerConnReceiver { track })
     }
 }

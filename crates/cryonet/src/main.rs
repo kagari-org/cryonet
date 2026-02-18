@@ -1,4 +1,5 @@
 #![feature(try_blocks)]
+#![allow(clippy::new_ret_no_self)]
 use std::{env::var, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::{Result, anyhow};

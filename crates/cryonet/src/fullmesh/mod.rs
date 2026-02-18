@@ -136,7 +136,7 @@ impl FullMesh {
                 let _ = self.refresh.send(());
             }
             FullMeshPayload::Candidate(id, candidate) => {
-                let candidate = IceCandidate::from_sdp(candidate).map_err(|e| SactorError::Other(e))?;
+                let candidate = IceCandidate::from_sdp(candidate).map_err(SactorError::Other)?;
                 if !check_candidate(&candidate, &self.candidate_filter_prefix) {
                     return Ok(());
                 }

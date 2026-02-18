@@ -264,7 +264,7 @@ impl Mesh {
 
 impl Drop for Mesh {
     fn drop(&mut self) {
-        for (_, stop) in &self.link_recv_stop {
+        for stop in self.link_recv_stop.values() {
             let _ = stop.send(true);
         }
     }
