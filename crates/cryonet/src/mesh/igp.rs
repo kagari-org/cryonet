@@ -447,9 +447,9 @@ impl Igp {
                 if let Some(seqno_request) = self.requests.get(dst) {
                     if metric.seq >= seqno_request.seq {
                         self.requests.remove(dst);
+                        // trigger update
+                        self.mesh.broadcast_packet_local(generate_update(route)).await?;
                     }
-                    // trigger update
-                    self.mesh.broadcast_packet_local(generate_update(route)).await?;
                 }
 
                 self.select_route().await?;

@@ -348,7 +348,7 @@ fn start_peer_loop(fm: FullMeshHandle, mesh: MeshHandle, id: NodeId, uuid: Uuid,
                     };
                     let s = *state.borrow_and_update();
                     use PeerConnectionState::*;
-                    if s == Disconnected || s == Failed || s == Closed {
+                    if s == Failed || s == Closed {
                         let _ = fm.remove_conn(id, uuid).await;
                         break;
                     }
