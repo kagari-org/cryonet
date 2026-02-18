@@ -117,7 +117,7 @@ impl ConnManager {
         };
         let neigh_id = neigh_id.unwrap();
         let (sink, stream) = new_ws_link(ws);
-        let added = mesh.add_link(neigh_id, Box::new(sink), Box::new(stream)).await?;
+        let added = mesh.add_link(neigh_id, Box::new(sink), Box::new(stream), false).await?;
         if added {
             info!("Accepted connection from {} (node {:X})", addr, neigh_id);
         } else {
@@ -180,7 +180,7 @@ impl ConnManager {
         servers_map.lock().await.insert(server.clone(), neigh_id);
 
         let (sink, stream) = new_ws_link(ws_stream);
-        let added = mesh.add_link(neigh_id, Box::new(sink), Box::new(stream)).await?;
+        let added = mesh.add_link(neigh_id, Box::new(sink), Box::new(stream), true).await?;
         if added {
             info!("Connected to server {} (node {:X})", server, neigh_id);
         } else {

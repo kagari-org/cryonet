@@ -182,13 +182,15 @@ impl Mesh {
         self.dispatchees.retain(|(_, tx)| !tx.is_closed());
     }
 
-    pub(crate) fn add_link(&mut self, dst: NodeId, send: Box<dyn LinkSend>, mut recv: Box<dyn LinkRecv>) -> bool {
+    pub(crate) fn add_link(&mut self, dst: NodeId, send: Box<dyn LinkSend>, mut recv: Box<dyn LinkRecv>, is_initiator: bool) -> bool {
         if self.link_send.contains_key(&dst) {
-            if self.id > dst {
-                debug!("Link to node {:X} already exists, keeping existing (our id {:X} > {:X})", dst, self.id, dst);
+            // ensure keeping the same link for both sides to avoid duplicate links
+            let keep_new = is_initiator == (self.id < dst);
+            if !keep_new {
+                debug!("Link to node {:X} already exists, keeping existing (is_initiator={}, our id {:X}, dst {:X})", dst, is_initiator, self.id, dst);
                 return false;
             }
-            debug!("Link to node {:X} already exists, replacing (our id {:X} < {:X})", dst, self.id, dst);
+            debug!("Link to node {:X} already exists, replacing (is_initiator={}, our id {:X}, dst {:X})", dst, is_initiator, self.id, dst);
             self.remove_link(dst);
         }
 
