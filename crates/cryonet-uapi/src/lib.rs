@@ -29,6 +29,7 @@ pub enum ConnState {
 pub struct Conn {
     pub selected: bool,
     pub state: ConnState,
+    pub selected_candidate: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

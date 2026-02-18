@@ -71,6 +71,10 @@ impl PeerConn {
         Ok(())
     }
 
+    pub(crate) async fn get_selected_candidate(&self) -> Option<String> {
+        self.peer.ice_transport().get_selected_pair().await.map(|pair| pair.remote.to_sdp())
+    }
+
     pub(crate) fn sender(&self) -> PeerConnSender {
         self.sender.clone()
     }

@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
             for (node_id, conns) in hash_map {
                 println!("  Node {node_id:X}:");
                 for (uuid, conn) in conns {
-                    println!("    Conn {uuid}: state: {:?}, selected: {}", conn.state, conn.selected);
+                    println!("    Conn {uuid}: state: {:?}, selected: {}, candidate: {:?}", conn.state, conn.selected, conn.selected_candidate);
                 }
             }
         }
