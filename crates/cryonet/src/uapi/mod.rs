@@ -141,16 +141,25 @@ impl Uapi {
                 self.socket.send_to(&bytes, &path).await?;
             }
             GetIgpRoutes => {
+                let now = Instant::now();
                 let routes = self.igp.get_routes().await?;
                 let routes = routes
                     .into_iter()
-                    .map(|route| IgpRoute {
-                        seq: route.metric.seq.0,
-                        metric: route.metric.metric,
-                        computed_metric: route.computed_metric,
-                        dst: route.dst,
-                        from: route.from,
-                        selected: route.selected,
+                    .map(|route| {
+                        let timeout_remaining_ms = if route.timeout > now {
+                            route.timeout.duration_since(now).as_millis() as i64
+                        } else {
+                            -(now.duration_since(route.timeout).as_millis() as i64)
+                        };
+                        IgpRoute {
+                            seq: route.metric.seq.0,
+                            metric: route.metric.metric,
+                            computed_metric: route.computed_metric,
+                            dst: route.dst,
+                            from: route.from,
+                            selected: route.selected,
+                            timeout_remaining_ms,
+                        }
                     })
                     .collect();
                 let response = GetIgpRoutesResponse(routes);

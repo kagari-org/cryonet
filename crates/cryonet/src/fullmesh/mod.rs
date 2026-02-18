@@ -294,6 +294,7 @@ impl FullMesh {
     }
 
     pub(crate) async fn get_peers(&self) -> HashMap<NodeId, HashMap<Uuid, cryonet_uapi::Conn>> {
+        let now = Instant::now();
         let mut result: HashMap<NodeId, HashMap<Uuid, cryonet_uapi::Conn>> = HashMap::new();
         for (node_id, conns) in &self.peers {
             for (uuid, conn) in conns {
@@ -313,6 +314,7 @@ impl FullMesh {
                         selected: conn.selected,
                         state,
                         selected_candidate,
+                        elapsed_ms: now.duration_since(conn.time).as_millis() as u64,
                     },
                 );
             }

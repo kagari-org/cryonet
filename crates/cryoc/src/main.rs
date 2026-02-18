@@ -53,38 +53,47 @@ async fn main() -> Result<()> {
     let response: CryonetUapi = serde_json::from_slice(&buf[..len])?;
 
     match response {
-        CryonetUapi::GetLinksResponse(items) => {
+        CryonetUapi::GetLinksResponse(mut items) => {
+            items.sort();
             println!("Links:");
             for item in items {
                 println!("  {item:X}");
             }
         }
         CryonetUapi::GetRoutesResponse(hash_map) => {
+            let mut routes: Vec<_> = hash_map.into_iter().collect();
+            routes.sort_by_key(|(dst, _)| *dst);
             println!("Routes:");
-            for (dst, next_hop) in hash_map {
+            for (dst, next_hop) in routes {
                 println!("  {dst:X} -> {next_hop:X}");
             }
         }
-        CryonetUapi::GetIgpRoutesResponse(igp_routes) => {
+        CryonetUapi::GetIgpRoutesResponse(mut igp_routes) => {
+            igp_routes.sort_by_key(|r| r.timeout_remaining_ms);
             println!("IGP Routes:");
             for route in igp_routes {
                 println!(
-                    "  dst: {dst:X}, from: {from:X}, metric: {metric}, computed_metric: {computed_metric}, seq: {seq}, selected: {selected}",
+                    "  dst: {dst:X}, from: {from:X}, metric: {metric}, computed_metric: {computed_metric}, seq: {seq}, selected: {selected}, timeout_remaining: {remaining}ms",
                     dst = route.dst,
                     from = route.from,
                     metric = route.metric,
                     computed_metric = route.computed_metric,
                     seq = route.seq,
                     selected = route.selected,
+                    remaining = route.timeout_remaining_ms,
                 );
             }
         }
         CryonetUapi::GetFullMeshPeersResponse(hash_map) => {
+            let mut peers: Vec<_> = hash_map.into_iter().collect();
+            peers.sort_by_key(|(node_id, _)| *node_id);
             println!("Full Mesh Peers:");
-            for (node_id, conns) in hash_map {
+            for (node_id, conns) in peers {
+                let mut conns: Vec<_> = conns.into_iter().collect();
+                conns.sort_by(|a, b| b.1.elapsed_ms.cmp(&a.1.elapsed_ms));
                 println!("  Node {node_id:X}:");
                 for (uuid, conn) in conns {
-                    println!("    Conn {uuid}: state: {:?}, selected: {}, candidate: {:?}", conn.state, conn.selected, conn.selected_candidate);
+                    println!("    Conn {uuid}: state: {:?}, selected: {}, candidate: {:?}, elapsed: {}ms", conn.state, conn.selected, conn.selected_candidate, conn.elapsed_ms);
                 }
             }
         }

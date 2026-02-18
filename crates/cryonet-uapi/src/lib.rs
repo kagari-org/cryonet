@@ -13,6 +13,7 @@ pub struct IgpRoute {
     pub dst: NodeId,
     pub from: NodeId,
     pub selected: bool,
+    pub timeout_remaining_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +31,7 @@ pub struct Conn {
     pub selected: bool,
     pub state: ConnState,
     pub selected_candidate: Option<String>,
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
