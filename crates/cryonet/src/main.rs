@@ -7,6 +7,7 @@ use clap::Parser;
 use clap_num::maybe_hex;
 use rustrtc::{IceCredentialType, IceServer, RtcConfiguration};
 use tokio::signal::ctrl_c;
+use tracing_subscriber::EnvFilter;
 
 use crate::{
     connection::ConnManager,
@@ -64,7 +65,7 @@ fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rustrtc=off"))).init();
     let args = Args::parse();
     let rtc_configuration = RtcConfiguration {
         ice_servers: args.ice_servers.clone(),
