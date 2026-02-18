@@ -7,6 +7,7 @@ use cidr::AnyIpCidr;
 use clap::Parser;
 use clap_num::maybe_hex;
 use rustrtc::{IceCredentialType, IceServer, RtcConfiguration};
+use sactor::error::SactorResult;
 use tokio::signal::ctrl_c;
 use tracing_subscriber::EnvFilter;
 
@@ -65,7 +66,7 @@ fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> SactorResult<()> {
     tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rustrtc=off"))).init();
     let args = Args::parse();
     let rtc_configuration = RtcConfiguration {
@@ -80,11 +81,11 @@ async fn main() -> Result<()> {
     };
 
     let mesh = Mesh::new(args.id);
-    let igp = Igp::new(args.id, mesh.clone()).await.map_err(|e| anyhow!("{e}"))?;
-    let _mgr = ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen).await.map_err(|e| anyhow!("{e}"))?;
-    let fm = FullMesh::new(args.id, mesh.clone(), rtc_configuration, args.candidate_filter_prefix).await.map_err(|e| anyhow!("{e}"))?;
-    let _tm = TunManager::new(fm.clone(), args.interface_prefix, args.enable_packet_information).await.map_err(|e| anyhow!("{e}"))?;
-    let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await.map_err(|e| anyhow!("{e}"))?;
+    let igp = Igp::new(args.id, mesh.clone()).await?;
+    let _mgr = ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen).await?;
+    let fm = FullMesh::new(args.id, mesh.clone(), rtc_configuration, args.candidate_filter_prefix).await?;
+    let _tm = TunManager::new(fm.clone(), args.interface_prefix, args.enable_packet_information).await?;
+    let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;
 
     ctrl_c().await?;
     Ok(())

@@ -444,12 +444,12 @@ impl Igp {
 
                 // check seqno requests
                 let route = &self.routes[&(*dst, src)];
-                if let Some(seqno_request) = self.requests.get(dst) {
-                    if metric.seq >= seqno_request.seq {
-                        self.requests.remove(dst);
-                        // trigger update
-                        self.mesh.broadcast_packet_local(generate_update(route)).await?;
-                    }
+                if let Some(seqno_request) = self.requests.get(dst)
+                    && metric.seq >= seqno_request.seq
+                {
+                    self.requests.remove(dst);
+                    // trigger update
+                    self.mesh.broadcast_packet_local(generate_update(route)).await?;
                 }
 
                 self.select_route().await?;
