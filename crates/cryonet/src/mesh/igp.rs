@@ -380,6 +380,10 @@ impl Igp {
             }
 
             IgpPayload::Update { metric, dst } => {
+                if dst == &self.id {
+                    // ignore updates about ourself
+                    return Ok(());
+                }
                 let computed_metric = match (self.costs.get(&src), metric.metric) {
                     (_, u32::MAX) => u32::MAX,
                     (None, _) => u32::MAX - 1,
