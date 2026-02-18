@@ -112,7 +112,7 @@ impl FullMesh {
                 let mut offer = SessionDescription::parse(SdpType::Offer, offer)?;
                 filter_candidate(&mut offer, &self.candidate_filter_prefix);
                 let answer = conn.answer(offer).await?;
-                self.mesh.send_packet(src, Box::new(FullMeshPayload::Answer(*id, answer.to_string()))).await??;
+                self.mesh.send_packet(src, Box::new(FullMeshPayload::Answer(*id, answer.to_string()))).await?;
                 self.peers.entry(src).or_default().insert(*id, conn);
                 let _ = self.refresh.send(());
             }
@@ -190,7 +190,7 @@ impl FullMesh {
                 let id = Uuid::new_v4();
                 start_peer_loop(self.handle.clone(), self.mesh.clone(), node_id, id, &conn);
                 let offer = conn.offer().await?;
-                self.mesh.send_packet(node_id, Box::new(FullMeshPayload::Offer(id, offer))).await??;
+                self.mesh.send_packet(node_id, Box::new(FullMeshPayload::Offer(id, offer))).await?;
                 conns.insert(id, conn);
             };
             if let Err(err) = result {

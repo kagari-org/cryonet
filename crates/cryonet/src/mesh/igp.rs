@@ -160,7 +160,7 @@ impl Igp {
                     cost.start = Instant::now();
                 })
                 .or_insert(Cost { seq: Seq(0), start: Instant::now(), cost: u32::MAX });
-            self.mesh.send_packet_link(link, Box::new(IgpPayload::Hello { seq: cost.seq })).await??;
+            self.mesh.send_packet_link(link, Box::new(IgpPayload::Hello { seq: cost.seq })).await?;
         }
         Ok(())
     }
@@ -199,8 +199,8 @@ impl Igp {
             }
             let update = generate_update(route);
             match neigh {
-                Some(neigh) => self.mesh.send_packet_link(neigh, update).await??,
-                None => self.mesh.broadcast_packet_local(update).await??,
+                Some(neigh) => self.mesh.send_packet_link(neigh, update).await?,
+                None => self.mesh.broadcast_packet_local(update).await?,
             }
         }
 
@@ -220,7 +220,7 @@ impl Igp {
                 route.computed_metric = u32::MAX;
                 route.timeout = now + self.route_timeout;
                 route.selected = false;
-                self.mesh.send_packet_link(*neigh, Box::new(IgpPayload::RouteRequest { dst: *dst })).await??;
+                self.mesh.send_packet_link(*neigh, Box::new(IgpPayload::RouteRequest { dst: *dst })).await?;
             }
         }
         self.select_route().await?;
@@ -241,7 +241,7 @@ impl Igp {
         let payload = (packet.payload.as_ref() as &dyn Any).downcast_ref::<IgpPayload>().unwrap();
         match payload {
             IgpPayload::Hello { seq } => {
-                self.mesh.send_packet_link(src, Box::new(IgpPayload::HelloReply { seq: *seq })).await??;
+                self.mesh.send_packet_link(src, Box::new(IgpPayload::HelloReply { seq: *seq })).await?;
             }
 
             IgpPayload::HelloReply { seq } => {
@@ -260,7 +260,7 @@ impl Igp {
                 if cost.cost == u32::MAX {
                     cost.cost = rtt as u32;
                     // first hello reply received, request route dump
-                    self.mesh.send_packet_link(src, Box::new(IgpPayload::RouteDump)).await??;
+                    self.mesh.send_packet_link(src, Box::new(IgpPayload::RouteDump)).await?;
                 } else {
                     cost.cost = ((836 * cost.cost as u128 + 164 * rtt) / 1000) as u32;
                 }
@@ -274,10 +274,10 @@ impl Igp {
                 let route = self.routes.iter().find(|((d, _), r)| d == dst && r.selected);
                 match route {
                     Some((_, route)) => {
-                        self.mesh.broadcast_packet_local(generate_update(route)).await??;
+                        self.mesh.broadcast_packet_local(generate_update(route)).await?;
                     }
                     None => {
-                        self.mesh.broadcast_packet_local(generate_retraction(*dst)).await??;
+                        self.mesh.broadcast_packet_local(generate_retraction(*dst)).await?;
                     }
                 }
             }
@@ -300,13 +300,13 @@ impl Igp {
                     }
                 };
                 if *seq <= route.metric.seq {
-                    self.mesh.broadcast_packet_local(generate_update(route)).await??;
+                    self.mesh.broadcast_packet_local(generate_update(route)).await?;
                     return Ok(());
                 }
                 if *dst == self.id {
                     // if the route is from ourself
                     route.metric.seq += Seq(1);
-                    self.mesh.broadcast_packet_local(generate_update(route)).await??;
+                    self.mesh.broadcast_packet_local(generate_update(route)).await?;
                     return Ok(());
                 }
                 // forward the request
@@ -369,11 +369,11 @@ impl Igp {
                 }
                 // send
                 if let Some(route) = route_feasible {
-                    self.mesh.send_packet_link(route.from, payload).await??;
+                    self.mesh.send_packet_link(route.from, payload).await?;
                     return Ok(());
                 }
                 if let Some(route) = route_any {
-                    self.mesh.send_packet_link(route.from, payload).await??;
+                    self.mesh.send_packet_link(route.from, payload).await?;
                     return Ok(());
                 }
                 debug!("No alternative route to node {:X}, dropping SequenceRequest", dst);
@@ -445,7 +445,7 @@ impl Igp {
                         self.requests.remove(dst);
                     }
                     // trigger update
-                    self.mesh.broadcast_packet_local(generate_update(route)).await??;
+                    self.mesh.broadcast_packet_local(generate_update(route)).await?;
                 }
 
                 self.select_route().await?;
@@ -505,7 +505,7 @@ impl Igp {
                         // here should be unreachable, but just in case
                         source.insert((best.0.metric, Instant::now() + self.source_timeout));
                         self.mesh.set_route(**dst, best.0.from).await?;
-                        self.mesh.broadcast_packet_local(generate_update(best.0)).await??;
+                        self.mesh.broadcast_packet_local(generate_update(best.0)).await?;
                     }
                 }
                 Entry::Occupied(mut source) => {
@@ -530,14 +530,14 @@ impl Igp {
                                 expiry: Instant::now() + self.seqno_request_timeout,
                             },
                         );
-                        self.mesh.broadcast_packet_local(Box::new(IgpPayload::SequenceRequest { seq, dst: **dst, ttl: self.diameter })).await??;
+                        self.mesh.broadcast_packet_local(Box::new(IgpPayload::SequenceRequest { seq, dst: **dst, ttl: self.diameter })).await?;
                     } else {
                         let origin = *source;
                         *source = (best.0.metric, Instant::now() + self.source_timeout);
                         best.0.selected = true;
                         self.mesh.set_route(**dst, best.0.from).await?;
                         if source.0.metric.abs_diff(origin.0.metric) > self.update_threshold {
-                            self.mesh.broadcast_packet_local(generate_update(best.0)).await??;
+                            self.mesh.broadcast_packet_local(generate_update(best.0)).await?;
                         }
                     }
                 }

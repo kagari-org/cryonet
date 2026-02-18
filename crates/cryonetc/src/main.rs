@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     let request = serde_json::to_vec(&request)?;
     socket.send_to(&request, args.ctl_path).await?;
 
-    let mut buf = [0u8; 1024];
+    let mut buf = [0u8; 16384];
     let len = socket.recv(&mut buf).await?;
     let response: CryonetUapi = serde_json::from_slice(&buf[..len])?;
 

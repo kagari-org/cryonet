@@ -97,7 +97,7 @@ impl Uapi {
         use UapiPayload::*;
         match uapi_payload {
             Ping(uuid) => {
-                self.mesh.send_packet(src, Box::new(Pong(*uuid))).await??;
+                self.mesh.send_packet(src, Box::new(Pong(*uuid))).await?;
             }
             Pong(uuid) => {
                 if let Some((path, _)) = self.ping.remove(uuid) {
@@ -166,7 +166,7 @@ impl Uapi {
             Ping(dst) => {
                 let uuid = Uuid::new_v4();
                 let instant = Instant::now();
-                self.mesh.send_packet(dst, Box::new(UapiPayload::Ping(uuid))).await??;
+                self.mesh.send_packet(dst, Box::new(UapiPayload::Ping(uuid))).await?;
                 self.ping.insert(uuid, (path, instant));
             }
             _ => error!("Unexpected uapi command: {:?}, dropping", cmd),

@@ -87,7 +87,7 @@ impl Mesh {
         if packet.dst == self.id {
             for (filter, dispatch) in self.dispatchees.iter() {
                 if filter(&packet) {
-                    if let Err(err) = dispatch.send(packet).await {
+                    if let Err(err) = dispatch.try_send(packet) {
                         warn!("Failed to dispatch packet to handler: {}", err);
                     }
                     break;
@@ -121,10 +121,12 @@ impl Mesh {
         Ok(())
     }
 
+    #[no_reply]
     pub(crate) async fn send_packet(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> SactorResult<()> {
         self.send_packet_internal(Packet { src: self.id, dst, ttl: 16, payload }).await
     }
 
+    #[no_reply]
     pub(crate) async fn send_packet_link(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> SactorResult<()> {
         let Some(link) = self.link_send.get_mut(&dst) else {
             return Err(Error::NoSuchLink(dst).into());
@@ -139,6 +141,7 @@ impl Mesh {
         Ok(())
     }
 
+    #[no_reply]
     pub(crate) async fn broadcast_packet_local(&mut self, payload: Box<dyn Payload>) -> SactorResult<()> {
         debug!("Broadcasting packet {:?} to all links", &payload);
         let futures = self
@@ -168,7 +171,7 @@ impl Mesh {
     }
 
     pub(crate) fn add_dispatchee(&mut self, filter: Box<dyn Fn(&Packet) -> bool + Send + Sync>) -> mpsc::Receiver<Packet> {
-        let (tx, rx) = mpsc::channel(64);
+        let (tx, rx) = mpsc::channel(512);
         self.dispatchees.push((filter, tx));
         rx
     }
