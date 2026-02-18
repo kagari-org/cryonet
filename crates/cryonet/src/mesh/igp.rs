@@ -4,44 +4,49 @@ use std::{
     any::Any,
     cmp::Ordering,
     collections::{HashMap, hash_map::Entry},
-    fmt::Display,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
 use anyhow::Result;
+use sactor::{error::SactorResult, sactor};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    select,
-    sync::{Mutex, Notify, broadcast::error::RecvError},
-    time::interval,
+    sync::{
+        broadcast::{self, error::RecvError},
+        mpsc,
+    },
+    time::{Interval, interval},
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use crate::mesh::{
-    MeshEvent,
-    packet::{NodeId, Payload},
+    MeshEvent, MeshHandle,
+    packet::{NodeId, Packet, Payload},
     seq::{Seq, SeqMetric},
 };
 
-use super::Mesh;
-
 pub(crate) struct Igp {
+    handle: IgpHandle,
+
     id: NodeId,
-    mesh: Arc<Mutex<Mesh>>,
+    mesh: MeshHandle,
 
     costs: HashMap<NodeId, Cost>,
     sources: HashMap<NodeId, (SeqMetric, Instant)>,
     requests: HashMap<NodeId, RouteRequest>,
     routes: HashMap<(NodeId, NodeId), Route>, // (dst, neigh) -> Route
 
+    hello_ticker: Interval,
+    dump_ticker: Interval,
+    gc_ticker: Interval,
     route_timeout: Duration,
     source_timeout: Duration,
     seqno_request_timeout: Duration,
     diameter: u16,
     update_threshold: u32,
 
-    stop: Arc<Notify>,
+    packet_rx: mpsc::Receiver<Packet>,
+    mesh_event_rx: broadcast::Receiver<MeshEvent>,
 }
 
 #[typetag::serde]
@@ -77,23 +82,9 @@ pub(crate) struct Route {
     pub(crate) selected: bool,
 }
 
-impl Display for Route {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "to {:X} via {:X}, advertised metric {}, seq {}, metric {}, selected: {}",
-            self.dst,
-            self.from,
-            self.metric.metric,
-            self.metric.seq,
-            self.computed_metric,
-            self.selected,
-        )
-    }
-}
-
+#[sactor(pub(crate))]
 impl Igp {
-    pub(crate) async fn new(mesh: Arc<Mutex<Mesh>>) -> Arc<Mutex<Self>> {
+    pub(crate) async fn new(id: NodeId, mesh: MeshHandle) -> SactorResult<IgpHandle> {
         Self::new_with_parameters(
             Duration::from_secs(4),
             Duration::from_secs(16),
@@ -103,6 +94,7 @@ impl Igp {
             Duration::from_secs(8),
             64,
             1000,
+            id,
             mesh,
         )
         .await
@@ -118,94 +110,138 @@ impl Igp {
         seqno_request_timeout: Duration,
         diameter: u16,
         update_threshold: u32,
-        mesh: Arc<Mutex<Mesh>>,
-    ) -> Arc<Mutex<Self>> {
-        let stop = Arc::new(Notify::new());
-        let stop_rx = stop.clone();
-        let igp = Arc::new(Mutex::new(Igp {
-            id: mesh.lock().await.id,
+        id: NodeId,
+        mesh: MeshHandle,
+    ) -> SactorResult<IgpHandle> {
+        let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<IgpPayload>())).await?;
+        let mesh_event_rx = mesh.subscribe_mesh_events().await?;
+        let (future, igp) = Igp::run(move |handle| Igp {
+            handle,
+            id,
             mesh: mesh.clone(),
             costs: HashMap::new(),
             sources: HashMap::new(),
             requests: HashMap::new(),
             routes: HashMap::new(),
+            hello_ticker: interval(hello_interval),
+            dump_ticker: interval(dump_interval),
+            gc_ticker: interval(gc_interval),
             route_timeout,
             source_timeout,
             seqno_request_timeout,
             diameter,
             update_threshold,
-            stop,
-        }));
-        let igp2 = igp.clone();
-        tokio::spawn(async move {
-            let mut hello_ticker = interval(hello_interval);
-            let mut dump_ticker = interval(dump_interval);
-            let mut gc_ticker = interval(gc_interval);
-            let mut packet_rx = mesh
-                .lock()
-                .await
-                .add_dispatchee(|packet| (packet.payload.as_ref() as &dyn Any).is::<IgpPayload>());
-            let mut mesh_event_rx = mesh.lock().await.subscribe_mesh_events();
-            let notified = stop_rx.notified();
-            tokio::pin!(notified);
-            loop {
-                select! {
-                    _ = &mut notified => break,
-                    _ = hello_ticker.tick() => igp.lock().await.hello().await,
-                    _ = dump_ticker.tick() => igp.lock().await.dump(None).await,
-                    _ = gc_ticker.tick() => igp.lock().await.gc().await,
-                    packet = packet_rx.recv() => {
-                        let Some(packet) = packet else {
-                            error!("IGP packet receiver closed unexpectedly");
-                            break;
-                        };
-                        let igp_payload = (packet.payload.as_ref() as &dyn Any)
-                            .downcast_ref::<IgpPayload>().unwrap();
-                        let result = igp.lock().await
-                            .handle_packet(packet.src, igp_payload)
-                            .await;
-                        if let Err(err) = result {
-                            warn!("Failed to handle IGP packet from node {:X}: {}", packet.src, err);
-                        }
-                    },
-                    event = mesh_event_rx.recv() => {
-                        let event = match event {
-                            Ok(event) => event,
-                            Err(RecvError::Lagged(_)) => continue,
-                            Err(err) => {
-                                error!("Failed to receive mesh event: {}", err);
-                                break;
-                            },
-                        };
-                        match event {
-                            MeshEvent::LinkUp(_) => {
-                                // re-export routes after unexpected link disconnection
-                                igp.lock().await.export().await;
-                            },
-                            MeshEvent::LinkDown(node_id) => {
-                                let mut igp = igp.lock().await;
-                                if let Some(cost) = igp.costs.get_mut(&node_id) {
-                                    cost.cost = u32::MAX;
-                                }
-                                igp.update_route_costs(node_id, u32::MAX).await;
-                            }
-                            _ => {},
-                        };
-                    },
-                }
-            }
+            packet_rx,
+            mesh_event_rx,
         });
-        igp2
+        tokio::spawn(future);
+        Ok(igp)
     }
 
-    async fn handle_packet(&mut self, src: NodeId, payload: &IgpPayload) -> Result<()> {
+    #[select]
+    fn select(&mut self) -> Vec<Selection<'_>> {
+        vec![
+            selection!(self.hello_ticker.tick().await, hello),
+            selection!(self.dump_ticker.tick().await, dump, _ => None),
+            selection!(self.gc_ticker.tick().await, gc),
+            selection!(self.packet_rx.recv().await, handle_packet, it => it),
+            selection!(self.mesh_event_rx.recv().await, handle_mesh_event, it => it),
+        ]
+    }
+
+    #[no_reply]
+    async fn hello(&mut self) -> SactorResult<()> {
+        for link in self.mesh.get_links().await? {
+            let cost = self
+                .costs
+                .entry(link)
+                .and_modify(|cost| {
+                    cost.seq += Seq(1);
+                    cost.start = Instant::now();
+                })
+                .or_insert(Cost { seq: Seq(0), start: Instant::now(), cost: u32::MAX });
+            self.mesh.send_packet_link(link, Box::new(IgpPayload::Hello { seq: cost.seq })).await??;
+        }
+        Ok(())
+    }
+
+    #[no_reply]
+    async fn dump(&mut self, neigh: Option<NodeId>) -> SactorResult<()> {
+        // add self route
+        self.routes.entry((self.id, self.id)).and_modify(|route| route.timeout = Instant::now() + self.route_timeout).or_insert_with(|| Route {
+            metric: SeqMetric { seq: Seq(0), metric: 0 },
+            computed_metric: 0,
+            dst: self.id,
+            from: self.id,
+            timeout: Instant::now() + self.route_timeout,
+            selected: true,
+        });
+        self.sources
+            .entry(self.id)
+            .and_modify(|source| source.1 = Instant::now() + self.source_timeout)
+            .or_insert_with(|| (SeqMetric { seq: Seq(0), metric: 0 }, Instant::now() + self.source_timeout));
+
+        self.select_route().await?;
+
+        for ((dst, _), route) in &self.routes {
+            if !route.selected {
+                continue;
+            }
+            // update source timeout
+            match self.sources.entry(*dst) {
+                Entry::Occupied(mut occupied_entry) => {
+                    occupied_entry.get_mut().1 = Instant::now() + self.source_timeout;
+                }
+                Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert((route.metric, Instant::now() + self.source_timeout));
+                    warn!("Missing source for node {:X} during RouteDump, inserting", dst);
+                }
+            }
+            let update = generate_update(route);
+            match neigh {
+                Some(neigh) => self.mesh.send_packet_link(neigh, update).await??,
+                None => self.mesh.broadcast_packet_local(update).await??,
+            }
+        }
+
+        Ok(())
+    }
+
+    #[no_reply]
+    async fn gc(&mut self) -> SactorResult<()> {
+        let now = Instant::now();
+        self.sources.retain(|_, (_, expiry)| *expiry > now);
+        self.requests.retain(|_, request| request.expiry > now);
+        self.routes.retain(|_, route| !(route.timeout <= now && route.metric.metric == u32::MAX));
+
+        for ((dst, neigh), route) in &mut self.routes {
+            if route.timeout <= now {
+                route.metric.metric = u32::MAX;
+                route.computed_metric = u32::MAX;
+                route.timeout = now + self.route_timeout;
+                route.selected = false;
+                self.mesh.send_packet_link(*neigh, Box::new(IgpPayload::RouteRequest { dst: *dst })).await??;
+            }
+        }
+        self.select_route().await?;
+
+        Ok(())
+    }
+
+    #[no_reply]
+    async fn handle_packet(&mut self, packet: Option<Packet>) -> SactorResult<()> {
+        let packet = match packet {
+            Some(packet) => packet,
+            None => {
+                self.handle.stop();
+                return Ok(());
+            }
+        };
+        let src = packet.src;
+        let payload = (packet.payload.as_ref() as &dyn Any).downcast_ref::<IgpPayload>().unwrap();
         match payload {
             IgpPayload::Hello { seq } => {
-                self.mesh
-                    .lock()
-                    .await
-                    .send_packet_link(src, IgpPayload::HelloReply { seq: *seq })
-                    .await?;
+                self.mesh.send_packet_link(src, Box::new(IgpPayload::HelloReply { seq: *seq })).await??;
             }
 
             IgpPayload::HelloReply { seq } => {
@@ -216,10 +252,7 @@ impl Igp {
                 };
                 let cost = cost.get_mut();
                 if cost.seq != *seq {
-                    debug!(
-                        "Ignoring HelloReply with mismatched seq {:?} from node {:X}",
-                        seq, src
-                    );
+                    debug!("Ignoring HelloReply with mismatched seq {:?} from node {:X}", seq, src);
                     return Ok(());
                 }
                 let rtt = time.duration_since(cost.start).as_millis() + 100;
@@ -227,52 +260,36 @@ impl Igp {
                 if cost.cost == u32::MAX {
                     cost.cost = rtt as u32;
                     // first hello reply received, request route dump
-                    self.mesh
-                        .lock()
-                        .await
-                        .send_packet_link(src, IgpPayload::RouteDump)
-                        .await?;
+                    self.mesh.send_packet_link(src, Box::new(IgpPayload::RouteDump)).await??;
                 } else {
                     cost.cost = ((836 * cost.cost as u128 + 164 * rtt) / 1000) as u32;
                 }
                 if cost.cost != origin {
                     let cost = cost.cost;
-                    self.update_route_costs(src, cost).await;
+                    self.update_route_costs(src, cost).await?;
                 }
             }
 
             IgpPayload::RouteRequest { dst } => {
-                let mut mesh = self.mesh.lock().await;
-                let route = self
-                    .routes
-                    .iter()
-                    .find(|((d, _), r)| d == dst && r.selected);
+                let route = self.routes.iter().find(|((d, _), r)| d == dst && r.selected);
                 match route {
                     Some((_, route)) => {
-                        mesh.broadcast_packet_local(generate_update(route)).await?;
+                        self.mesh.broadcast_packet_local(generate_update(route)).await??;
                     }
                     None => {
-                        mesh.broadcast_packet_local(generate_retraction(*dst))
-                            .await?;
+                        self.mesh.broadcast_packet_local(generate_retraction(*dst)).await??;
                     }
                 }
             }
 
-            IgpPayload::RouteDump => self.dump(Some(src)).await,
+            IgpPayload::RouteDump => self.dump(Some(src)).await?,
 
             IgpPayload::SequenceRequest { seq, dst, ttl } => {
-                let mut mesh = self.mesh.lock().await;
-                let route = self
-                    .routes
-                    .iter_mut()
-                    .find(|((d, _), r)| d == dst && r.selected);
+                let route = self.routes.iter_mut().find(|((d, _), r)| d == dst && r.selected);
                 let route = match route {
                     Some((_, route)) => {
                         if route.metric.metric == u32::MAX {
-                            debug!(
-                                "Route to node {:X} is unreachable, dropping SequenceRequest",
-                                dst
-                            );
+                            debug!("Route to node {:X} is unreachable, dropping SequenceRequest", dst);
                             return Ok(());
                         }
                         route
@@ -283,13 +300,13 @@ impl Igp {
                     }
                 };
                 if *seq <= route.metric.seq {
-                    mesh.broadcast_packet_local(generate_update(route)).await?;
+                    self.mesh.broadcast_packet_local(generate_update(route)).await??;
                     return Ok(());
                 }
-                if *dst == mesh.id {
+                if *dst == self.id {
                     // if the route is from ourself
                     route.metric.seq += Seq(1);
-                    mesh.broadcast_packet_local(generate_update(route)).await?;
+                    self.mesh.broadcast_packet_local(generate_update(route)).await??;
                     return Ok(());
                 }
                 // forward the request
@@ -300,10 +317,7 @@ impl Igp {
                 let source = match self.sources.get(dst) {
                     Some(source) => source,
                     None => {
-                        warn!(
-                            "Missing source for node {:X}, dropping SequenceRequest",
-                            dst
-                        );
+                        warn!("Missing source for node {:X}, dropping SequenceRequest", dst);
                         return Ok(());
                     }
                 };
@@ -312,10 +326,7 @@ impl Igp {
                     && *seq <= existing_request.seq
                     && Instant::now() < existing_request.expiry
                 {
-                    debug!(
-                        "Suppressing duplicate SequenceRequest for node {:X} with seq {:?}",
-                        dst, seq
-                    );
+                    debug!("Suppressing duplicate SequenceRequest for node {:X} with seq {:?}", dst, seq);
                     return Ok(());
                 }
                 self.requests.insert(
@@ -351,24 +362,21 @@ impl Igp {
                     }
                 }
                 // ttl decrement
-                let mut payload = payload.clone();
-                match &mut payload {
+                let mut payload = Box::new(payload.clone());
+                match payload.as_mut() {
                     IgpPayload::SequenceRequest { ttl, .. } => *ttl = ttl.saturating_sub(1),
                     _ => unreachable!(),
                 }
                 // send
                 if let Some(route) = route_feasible {
-                    mesh.send_packet_link(route.from, payload).await?;
+                    self.mesh.send_packet_link(route.from, payload).await??;
                     return Ok(());
                 }
                 if let Some(route) = route_any {
-                    mesh.send_packet_link(route.from, payload).await?;
+                    self.mesh.send_packet_link(route.from, payload).await??;
                     return Ok(());
                 }
-                debug!(
-                    "No alternative route to node {:X}, dropping SequenceRequest",
-                    dst
-                );
+                debug!("No alternative route to node {:X}, dropping SequenceRequest", dst);
             }
 
             IgpPayload::Update { metric, dst } => {
@@ -437,63 +445,46 @@ impl Igp {
                         self.requests.remove(dst);
                     }
                     // trigger update
-                    let mut mesh = self.mesh.lock().await;
-                    mesh.broadcast_packet_local(generate_update(route)).await?;
+                    self.mesh.broadcast_packet_local(generate_update(route)).await??;
                 }
 
-                self.select().await;
+                self.select_route().await?;
             }
         }
         Ok(())
     }
 
-    async fn hello(&mut self) {
-        let mut mesh = self.mesh.lock().await;
-        for link in mesh.get_links() {
-            let cost = self
-                .costs
-                .entry(link)
-                .and_modify(|cost| {
-                    cost.seq += Seq(1);
-                    cost.start = Instant::now();
-                })
-                .or_insert(Cost {
-                    seq: Seq(0),
-                    start: Instant::now(),
-                    cost: u32::MAX,
-                });
-            let result = mesh
-                .send_packet_link(link, IgpPayload::Hello { seq: cost.seq })
-                .await;
-            if let Err(err) = result {
-                warn!("Failed to send Hello to node {:X}: {}", link, err);
+    #[no_reply]
+    async fn handle_mesh_event(&mut self, event: Result<MeshEvent, broadcast::error::RecvError>) -> SactorResult<()> {
+        let event = match event {
+            Ok(event) => event,
+            Err(RecvError::Lagged(_)) => return Ok(()),
+            Err(RecvError::Closed) => {
+                self.handle.stop();
+                return Ok(());
             }
-        }
+        };
+        match event {
+            MeshEvent::LinkUp(_) => {
+                // re-export routes after unexpected link disconnection
+                let _ = self.export().await;
+            }
+            MeshEvent::LinkDown(node_id) => {
+                if let Some(cost) = self.costs.get_mut(&node_id) {
+                    cost.cost = u32::MAX;
+                }
+                self.update_route_costs(node_id, u32::MAX).await?;
+            }
+            _ => {}
+        };
+        Ok(())
     }
 
-    async fn update_route_costs(&mut self, node_id: NodeId, cost: u32) {
-        let mut changed = false;
-        for ((_, neigh), route) in &mut self.routes {
-            if *neigh != node_id {
-                continue;
-            }
-            route.computed_metric = route.metric.metric.saturating_add(cost);
-            changed = true;
-        }
-        if changed {
-            self.select().await;
-        }
-    }
-
-    async fn select(&mut self) {
+    async fn select_route(&mut self) -> SactorResult<()> {
         let mut routes = HashMap::new();
         for ((dst, neigh), route) in &mut self.routes {
             route.selected = false;
-            routes
-                .entry(*dst)
-                .or_insert((dst, Vec::new()))
-                .1
-                .push((route, neigh));
+            routes.entry(*dst).or_insert((dst, Vec::new())).1.push((route, neigh));
         }
         for (dst, routes) in routes.values_mut() {
             let best = routes
@@ -508,24 +499,19 @@ impl Igp {
             match self.sources.entry(**dst) {
                 Entry::Vacant(source) => {
                     if best.0.metric.metric == u32::MAX {
-                        self.mesh.lock().await.remove_route(**dst);
+                        self.mesh.remove_route(**dst).await?;
                         // no reachable route
                     } else {
                         // here should be unreachable, but just in case
-                        let mut mesh = self.mesh.lock().await;
                         source.insert((best.0.metric, Instant::now() + self.source_timeout));
-                        mesh.set_route(**dst, best.0.from);
-                        let result = mesh.broadcast_packet_local(generate_update(best.0)).await;
-                        if let Err(err) = result {
-                            warn!("Failed to broadcast Update for node {:X}: {}", dst, err);
-                        }
+                        self.mesh.set_route(**dst, best.0.from).await?;
+                        self.mesh.broadcast_packet_local(generate_update(best.0)).await??;
                     }
                 }
                 Entry::Occupied(mut source) => {
                     let source = source.get_mut();
                     if best.0.metric.metric == u32::MAX || !best.0.metric.feasible(&source.0) {
-                        let mut mesh = self.mesh.lock().await;
-                        mesh.remove_route(**dst);
+                        self.mesh.remove_route(**dst).await?;
                         // no reachable route
                         // Don't send retraction. The routes of neighbors will time out eventually.
                         let existing_request = self.requests.get(dst);
@@ -534,10 +520,7 @@ impl Igp {
                             && seq <= existing_request.seq
                             && Instant::now() < existing_request.expiry
                         {
-                            debug!(
-                                "Suppressing duplicate SequenceRequest for node {:X} with seq {:?}",
-                                dst, seq
-                            );
+                            debug!("Suppressing duplicate SequenceRequest for node {:X} with seq {:?}", dst, seq);
                             continue;
                         }
                         self.requests.insert(
@@ -547,163 +530,64 @@ impl Igp {
                                 expiry: Instant::now() + self.seqno_request_timeout,
                             },
                         );
-                        let result = mesh
-                            .broadcast_packet_local(IgpPayload::SequenceRequest {
-                                seq,
-                                dst: **dst,
-                                ttl: self.diameter,
-                            })
-                            .await;
-                        if let Err(err) = result {
-                            warn!(
-                                "Failed to broadcast SequenceRequest for node {:X}: {}",
-                                dst, err
-                            );
-                        }
+                        self.mesh.broadcast_packet_local(Box::new(IgpPayload::SequenceRequest { seq, dst: **dst, ttl: self.diameter })).await??;
                     } else {
                         let origin = *source;
                         *source = (best.0.metric, Instant::now() + self.source_timeout);
                         best.0.selected = true;
-                        let mut mesh = self.mesh.lock().await;
-                        mesh.set_route(**dst, best.0.from);
+                        self.mesh.set_route(**dst, best.0.from).await?;
                         if source.0.metric.abs_diff(origin.0.metric) > self.update_threshold {
-                            let result = mesh.broadcast_packet_local(generate_update(best.0)).await;
-                            if let Err(err) = result {
-                                warn!("Failed to broadcast Update for node {:X}: {}", dst, err);
-                            }
+                            self.mesh.broadcast_packet_local(generate_update(best.0)).await??;
                         }
                     }
                 }
             };
         }
+        Ok(())
     }
 
-    async fn export(&self) {
-        let mut mesh = self.mesh.lock().await;
+    async fn export(&self) -> SactorResult<()> {
         for ((dst, neigh), route) in &self.routes {
             if route.selected {
-                mesh.set_route(*dst, *neigh);
+                self.mesh.set_route(*dst, *neigh).await?;
             }
         }
+        Ok(())
     }
 
-    async fn dump(&mut self, neigh: Option<NodeId>) {
-        // add self route
-        self.routes
-            .entry((self.id, self.id))
-            .and_modify(|route| route.timeout = Instant::now() + self.route_timeout)
-            .or_insert_with(|| Route {
-                metric: SeqMetric {
-                    seq: Seq(0),
-                    metric: 0,
-                },
-                computed_metric: 0,
-                dst: self.id,
-                from: self.id,
-                timeout: Instant::now() + self.route_timeout,
-                selected: true,
-            });
-        self.sources
-            .entry(self.id)
-            .and_modify(|source| source.1 = Instant::now() + self.source_timeout)
-            .or_insert_with(|| {
-                (
-                    SeqMetric {
-                        seq: Seq(0),
-                        metric: 0,
-                    },
-                    Instant::now() + self.source_timeout,
-                )
-            });
-
-        self.select().await;
-
-        let mut mesh = self.mesh.lock().await;
-        for ((dst, _), route) in &self.routes {
-            if !route.selected {
+    async fn update_route_costs(&mut self, node_id: NodeId, cost: u32) -> SactorResult<()> {
+        let mut changed = false;
+        for ((_, neigh), route) in &mut self.routes {
+            if *neigh != node_id {
                 continue;
             }
-            // update source timeout
-            match self.sources.entry(*dst) {
-                Entry::Occupied(mut occupied_entry) => {
-                    occupied_entry.get_mut().1 = Instant::now() + self.source_timeout;
-                }
-                Entry::Vacant(vacant_entry) => {
-                    vacant_entry.insert((route.metric, Instant::now() + self.source_timeout));
-                    warn!(
-                        "Missing source for node {:X} during RouteDump, inserting",
-                        dst
-                    );
-                }
-            }
-            let update = generate_update(route);
-            let result = match neigh {
-                Some(neigh) => mesh.send_packet_link(neigh, update).await,
-                None => mesh.broadcast_packet_local(update).await,
-            };
-            if let Err(err) = result {
-                warn!("Failed to send RouteDump for node {:X}: {}", dst, err);
-            }
+            route.computed_metric = route.metric.metric.saturating_add(cost);
+            changed = true;
         }
-    }
-
-    async fn gc(&mut self) {
-        let now = Instant::now();
-        self.sources.retain(|_, (_, expiry)| *expiry > now);
-        self.requests.retain(|_, request| request.expiry > now);
-        self.routes
-            .retain(|_, route| !(route.timeout <= now && route.metric.metric == u32::MAX));
-
-        let mut mesh = self.mesh.lock().await;
-        for ((dst, neigh), route) in &mut self.routes {
-            if route.timeout <= now {
-                route.metric.metric = u32::MAX;
-                route.computed_metric = u32::MAX;
-                route.timeout = now + self.route_timeout;
-                route.selected = false;
-                let result = mesh
-                    .send_packet_link(*neigh, IgpPayload::RouteRequest { dst: *dst })
-                    .await;
-                if let Err(err) = result {
-                    warn!("Failed to send RouteRequest for node {:X}: {}", dst, err);
-                }
-            }
+        if changed {
+            self.select_route().await?;
         }
-        drop(mesh);
-        self.select().await;
+        Ok(())
     }
 
     pub(crate) fn get_routes(&self) -> Vec<Route> {
         self.routes.values().cloned().collect()
     }
-
-    pub(crate) fn stop(&self) {
-        self.stop.notify_waiters();
-    }
 }
 
-impl Drop for Igp {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-fn generate_update(route: &Route) -> IgpPayload {
-    IgpPayload::Update {
+fn generate_update(route: &Route) -> Box<dyn Payload> {
+    Box::new(IgpPayload::Update {
         dst: route.dst,
         metric: SeqMetric {
             seq: route.metric.seq,
             metric: route.computed_metric,
         },
-    }
+    })
 }
 
-fn generate_retraction(dst: NodeId) -> IgpPayload {
-    IgpPayload::Update {
+fn generate_retraction(dst: NodeId) -> Box<dyn Payload> {
+    Box::new(IgpPayload::Update {
         dst,
-        metric: SeqMetric {
-            seq: Seq(0),
-            metric: u32::MAX,
-        },
-    }
+        metric: SeqMetric { seq: Seq(0), metric: u32::MAX },
+    })
 }

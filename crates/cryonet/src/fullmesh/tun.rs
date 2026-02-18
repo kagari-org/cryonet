@@ -5,96 +5,83 @@ use std::{
 
 use bytes::Bytes;
 use futures::future::select_all;
+use sactor::{error::SactorResult, sactor};
 use tokio::{
     select,
-    sync::{Mutex, Notify, broadcast::error::RecvError},
+    sync::broadcast::{self, error::RecvError},
     task::JoinHandle,
 };
 use tracing::{debug, error};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
-use crate::{fullmesh::FullMesh, mesh::packet::NodeId};
+use crate::{fullmesh::FullMeshHandle, mesh::packet::NodeId};
 
 pub(crate) struct TunManager {
-    fm: Arc<Mutex<FullMesh>>,
+    handle: TunManagerHandle,
+    fm: FullMeshHandle,
+
+    refresh: broadcast::Receiver<()>,
+
     interface_prefix: String,
     enable_packet_information: bool,
 
     devices: HashMap<NodeId, Weak<AsyncDevice>>,
     receivers: HashMap<NodeId, JoinHandle<()>>,
     senders: HashMap<NodeId, JoinHandle<()>>,
-
-    stop: Arc<Notify>,
 }
 
+#[sactor(pub(crate))]
 impl TunManager {
-    pub(crate) async fn new(
-        fm: Arc<Mutex<FullMesh>>,
-        interface_prefix: String,
-        enable_packet_information: bool,
-    ) -> Arc<Mutex<Self>> {
-        let mut refresh = fm.lock().await.subscribe_refresh();
-        let stop = Arc::new(Notify::new());
-        let stop_rx = stop.clone();
-
-        let tm = Arc::new(Mutex::new(Self {
+    pub(crate) async fn new(fm: FullMeshHandle, interface_prefix: String, enable_packet_information: bool) -> SactorResult<TunManagerHandle> {
+        let refresh = fm.subscribe_refresh().await?;
+        let (future, tm) = TunManager::run(move |handle| TunManager {
+            handle,
             fm,
+            refresh,
             interface_prefix,
             enable_packet_information,
             devices: HashMap::new(),
             receivers: HashMap::new(),
             senders: HashMap::new(),
-            stop,
-        }));
-        let tm2 = tm.clone();
-
-        tokio::spawn(async move {
-            let notified = stop_rx.notified();
-            tokio::pin!(notified);
-            loop {
-                select! {
-                    _ = &mut notified => break,
-                    refresh = refresh.recv() => {
-                        if let Err(RecvError::Closed) = refresh {
-                            break;
-                        }
-                        tm.lock().await.handle_refresh().await;
-                    },
-                }
-            }
         });
-        tm2
+        tokio::spawn(future);
+        Ok(tm)
     }
 
-    async fn handle_refresh(&mut self) {
-        let (receivers, senders) = {
-            let fm = self.fm.lock().await;
-            (fm.get_receivers(), fm.get_senders())
-        };
-        let mut create_device = |node_id: NodeId| {
-            let create_device = || {
-                let mut builder = DeviceBuilder::new()
-                    .mtu(1280)
-                    .name(format!("{}{:X}", self.interface_prefix, node_id))
-                    .enable(true);
+    #[select]
+    fn select(&mut self) -> Vec<Selection<'_>> {
+        vec![selection!(self.refresh.recv().await, handle_refresh, it => it)]
+    }
+
+    #[no_reply]
+    async fn handle_refresh(&mut self, refresh: Result<(), broadcast::error::RecvError>) -> SactorResult<()> {
+        if let Err(broadcast::error::RecvError::Closed) = refresh {
+            self.handle.stop();
+            return Ok(());
+        }
+        let receivers = self.fm.get_receivers().await?;
+        let senders = self.fm.get_senders().await?;
+        let mut create_device = |node_id: NodeId| -> SactorResult<Arc<AsyncDevice>> {
+            let create_device = || -> SactorResult<AsyncDevice> {
+                let mut builder = DeviceBuilder::new().mtu(1280).name(format!("{}{:X}", self.interface_prefix, node_id)).enable(true);
                 if self.enable_packet_information {
                     builder = builder.packet_information(true);
                 }
-                builder.build_async().unwrap()
+                Ok(builder.build_async()?)
             };
             match self.devices.get(&node_id) {
                 Some(device) => match device.upgrade() {
-                    Some(device) => device,
+                    Some(device) => Ok(device),
                     None => {
-                        let device = Arc::new(create_device());
+                        let device = Arc::new(create_device()?);
                         self.devices.insert(node_id, Arc::downgrade(&device));
-                        device
+                        Ok(device)
                     }
                 },
                 None => {
-                    let device = Arc::new(create_device());
+                    let device = Arc::new(create_device()?);
                     self.devices.insert(node_id, Arc::downgrade(&device));
-                    device
+                    Ok(device)
                 }
             }
         };
@@ -104,8 +91,14 @@ impl TunManager {
             {
                 continue;
             }
-            let device = create_device(node_id);
-            let handle = tokio::spawn(receive(node_id, Arc::downgrade(&self.fm), device));
+            let device = create_device(node_id)?;
+            let fm = self.fm.clone();
+            let handle = tokio::spawn(async move {
+                let result = receive(node_id, fm, device).await;
+                if let Err(err) = result {
+                    error!("Error in receive loop for node {:X}: {}", node_id, err);
+                }
+            });
             self.receivers.insert(node_id, handle);
         }
         for (node_id, _) in senders {
@@ -114,35 +107,24 @@ impl TunManager {
             {
                 continue;
             }
-            let device = create_device(node_id);
-            let handle = tokio::spawn(send(node_id, Arc::downgrade(&self.fm), device));
+            let device = create_device(node_id)?;
+            let fm = self.fm.clone();
+            let handle = tokio::spawn(async move {
+                let result = send(node_id, fm, device).await;
+                if let Err(err) = result {
+                    error!("Error in send loop for node {:X}: {}", node_id, err);
+                }
+            });
             self.senders.insert(node_id, handle);
         }
-    }
-
-    pub(crate) fn stop(&self) {
-        self.stop.notify_waiters();
+        Ok(())
     }
 }
 
-impl Drop for TunManager {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-async fn receive(node_id: NodeId, fm: Weak<Mutex<FullMesh>>, device: Arc<AsyncDevice>) {
-    let mut refresh = {
-        let Some(fm) = fm.upgrade() else {
-            return;
-        };
-        fm.lock().await.subscribe_refresh()
-    };
+async fn receive(node_id: NodeId, fm: FullMeshHandle, device: Arc<AsyncDevice>) -> SactorResult<()> {
+    let mut refresh = fm.subscribe_refresh().await?;
     'outer: loop {
-        let Some(fm) = fm.upgrade() else {
-            break;
-        };
-        let mut receivers = fm.lock().await.get_receivers();
+        let mut receivers = fm.get_receivers().await?;
         let receivers = receivers.remove(&node_id);
         let Some(receivers) = receivers else {
             break;
@@ -175,20 +157,13 @@ async fn receive(node_id: NodeId, fm: Weak<Mutex<FullMesh>>, device: Arc<AsyncDe
             }
         }
     }
+    Ok(())
 }
 
-async fn send(node_id: NodeId, fm: Weak<Mutex<FullMesh>>, device: Arc<AsyncDevice>) {
-    let mut refresh = {
-        let Some(fm) = fm.upgrade() else {
-            return;
-        };
-        fm.lock().await.subscribe_refresh()
-    };
+async fn send(node_id: NodeId, fm: FullMeshHandle, device: Arc<AsyncDevice>) -> SactorResult<()> {
+    let mut refresh = fm.subscribe_refresh().await?;
     'outer: loop {
-        let Some(fm) = fm.upgrade() else {
-            break;
-        };
-        let mut senders = fm.lock().await.get_senders();
+        let mut senders = fm.get_senders().await?;
         let senders = senders.remove(&node_id);
         let Some(sender) = senders else {
             break;
@@ -219,4 +194,5 @@ async fn send(node_id: NodeId, fm: Weak<Mutex<FullMesh>>, device: Arc<AsyncDevic
             }
         }
     }
+    Ok(())
 }

@@ -1,3 +1,4 @@
+#![feature(try_blocks)]
 use std::{env::var, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::{Result, anyhow};
@@ -77,21 +78,11 @@ async fn main() -> Result<()> {
     };
 
     let mesh = Mesh::new(args.id);
-    let igp = Igp::new(mesh.clone()).await;
-    let _mgr = ConnManager::new(mesh.clone(), args.token, args.servers, args.listen);
-    let fm = FullMesh::new(
-        mesh.clone(),
-        rtc_configuration,
-        args.candidate_filter_prefix,
-    )
-    .await;
-    let _tm = TunManager::new(
-        fm.clone(),
-        args.interface_prefix,
-        args.enable_packet_information,
-    )
-    .await;
-    let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await;
+    let igp = Igp::new(args.id, mesh.clone()).await.map_err(|e| anyhow!("{e}"))?;
+    let _mgr = ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen).await.map_err(|e| anyhow!("{e}"))?;
+    let fm = FullMesh::new(args.id, mesh.clone(), rtc_configuration, args.candidate_filter_prefix).await.map_err(|e| anyhow!("{e}"))?;
+    let _tm = TunManager::new(fm.clone(), args.interface_prefix, args.enable_packet_information).await.map_err(|e| anyhow!("{e}"))?;
+    let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await.map_err(|e| anyhow!("{e}"))?;
 
     ctrl_c().await?;
     Ok(())

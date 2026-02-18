@@ -10,4 +10,6 @@ pub(crate) enum Error {
     Unreachable(NodeId),
     #[error("Unauthorized")]
     Unauthorized,
+    #[error("Unknown error")]
+    Unknown,
 }
