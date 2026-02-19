@@ -5,9 +5,9 @@ use std::{
 };
 
 use cidr::AnyIpCidr;
-use rustrtc::{IceCandidate, PeerConnectionState, RtcConfiguration, SdpType, SessionDescription};
+use cryonet_uapi::ConnState;
 use sactor::{
-    error::{SactorError, SactorResult},
+    error::SactorResult,
     sactor,
 };
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,10 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 use uuid::Uuid;
+#[cfg(feature = "rustrtc")]
+use rustrtc::RtcConfiguration;
+#[cfg(feature = "webrtc")]
+use webrtc::peer_connection::configuration::RTCConfiguration as RtcConfiguration;
 
 use crate::{
     fullmesh::conn::{PeerConn, PeerConnReceiver, PeerConnSender},
@@ -30,6 +34,8 @@ use crate::{
     },
 };
 
+#[cfg_attr(feature = "rustrtc", path = "conn.rs")]
+#[cfg_attr(feature = "webrtc", path = "conn_webrtc.rs")]
 pub(crate) mod conn;
 pub(crate) mod tun;
 
@@ -49,7 +55,7 @@ pub(crate) struct FullMesh {
     ticker: Interval,
 
     peers: HashMap<NodeId, HashMap<Uuid, PeerConn>>,
-    pending_candidates: HashMap<(NodeId, Uuid), (Instant, Vec<IceCandidate>)>,
+    pending_candidates: HashMap<Uuid, (Instant, Vec<String>)>,
     refresh: broadcast::Sender<()>,
 }
 
@@ -109,12 +115,15 @@ impl FullMesh {
         }
         match payload {
             FullMeshPayload::Offer(id, offer) if self.id > src => {
-                let mut conn = PeerConn::new(self.config.clone()).await?;
+                let mut conn = PeerConn::new(self.config.clone(), self.candidate_filter_prefix.clone()).await?;
                 start_peer_loop(self.handle.clone(), self.mesh.clone(), src, *id, &conn);
-                let mut offer = SessionDescription::parse(SdpType::Offer, offer)?;
-                filter_candidate(&mut offer, &self.candidate_filter_prefix);
-                let answer = conn.answer(offer).await?;
-                self.mesh.send_packet(src, Box::new(FullMeshPayload::Answer(*id, answer.to_string()))).await?;
+                let answer = conn.answer(offer.clone()).await?;
+                if let Some((_, candidates)) = self.pending_candidates.remove(id) {
+                    for candidate in candidates {
+                        conn.add_ice_candidate(candidate).await?;
+                    }
+                }
+                self.mesh.send_packet(src, Box::new(FullMeshPayload::Answer(*id, answer))).await?;
                 self.peers.entry(src).or_default().insert(*id, conn);
                 let _ = self.refresh.send(());
             }
@@ -124,30 +133,24 @@ impl FullMesh {
                     warn!("No PeerConn found for node {:X} id {}, ignoring", src, id);
                     return Ok(());
                 };
-                let mut answer = SessionDescription::parse(SdpType::Answer, answer)?;
-                filter_candidate(&mut answer, &self.candidate_filter_prefix);
-                conn.answered(answer).await?;
-                if let Some((_, candidates)) = self.pending_candidates.remove(&(src, *id)) {
+                conn.answered(answer.clone()).await?;
+                if let Some((_, candidates)) = self.pending_candidates.remove(id) {
                     for candidate in candidates {
-                        debug!("Applying buffered candidate for node {:X} id {}", src, id);
                         conn.add_ice_candidate(candidate).await?;
                     }
                 }
                 let _ = self.refresh.send(());
             }
             FullMeshPayload::Candidate(id, candidate) => {
-                let candidate = IceCandidate::from_sdp(candidate).map_err(SactorError::Other)?;
-                if !check_candidate(&candidate, &self.candidate_filter_prefix) {
-                    return Ok(());
-                }
                 let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
                 match conn {
-                    Some(conn) => {
-                        conn.add_ice_candidate(candidate).await?;
-                    }
-                    None => {
-                        debug!("Buffering candidate for node {:X} id {} (PeerConn not ready)", src, id);
-                        self.pending_candidates.entry((src, *id)).or_insert_with(|| (Instant::now(), Vec::new())).1.push(candidate);
+                    Some(conn) if conn.is_answered().await => {
+                        conn.add_ice_candidate(candidate.clone()).await?;
+                    },
+                    _ => {
+                        self.pending_candidates.entry(*id)
+                            .or_insert_with(|| (Instant::now(), Vec::new()))
+                            .1.push(candidate.clone());
                     }
                 }
             }
@@ -167,7 +170,7 @@ impl FullMesh {
         for conns in self.peers.values_mut() {
             conns.retain(|_, conn| {
                 let timeouted = time.duration_since(conn.time) > self.timeout;
-                !timeouted || conn.connected()
+                !timeouted || conn.is_connected()
             });
         }
         // check connected
@@ -175,7 +178,7 @@ impl FullMesh {
         for node_id in peers {
             let result: SactorResult<()> = try {
                 let conns = self.peers.entry(node_id).or_default();
-                let connected = conns.values().filter(|conn| conn.connected()).count();
+                let connected = conns.values().filter(|conn| conn.is_connected()).count();
                 if connected >= self.max_connected {
                     let newest = conns.values().max_by(|x, y| x.time.cmp(&y.time)).unwrap();
                     if newest.time.elapsed() > self.discard_timeout {
@@ -199,7 +202,7 @@ impl FullMesh {
                 if self.id > node_id {
                     continue;
                 }
-                let mut conn = PeerConn::new(self.config.clone()).await?;
+                let mut conn = PeerConn::new(self.config.clone(), self.candidate_filter_prefix.clone()).await?;
                 let id = Uuid::new_v4();
                 start_peer_loop(self.handle.clone(), self.mesh.clone(), node_id, id, &conn);
                 let offer = conn.offer().await?;
@@ -219,7 +222,7 @@ impl FullMesh {
             for conn in conns.values_mut() {
                 conn.selected = false;
             }
-            let mut connected = conns.iter_mut().filter(|conn| conn.1.connected()).collect::<Vec<_>>();
+            let mut connected = conns.iter_mut().filter(|conn| conn.1.is_connected()).collect::<Vec<_>>();
             connected.sort_by(|x, y| y.1.time.cmp(&x.1.time));
             let best = match connected.len() {
                 0 => None,
@@ -258,12 +261,12 @@ impl FullMesh {
         self.refresh.subscribe()
     }
 
-    pub(crate) fn get_senders(&self) -> HashMap<NodeId, PeerConnSender> {
+    pub(crate) async fn get_senders(&self) -> HashMap<NodeId, PeerConnSender> {
         let mut senders = HashMap::new();
         for (node_id, conns) in &self.peers {
             for conn in conns.values() {
                 if conn.selected {
-                    senders.insert(*node_id, conn.sender());
+                    senders.insert(*node_id, conn.sender().await);
                     break;
                 }
             }
@@ -271,15 +274,15 @@ impl FullMesh {
         senders
     }
 
-    pub(crate) fn get_receivers(&self) -> HashMap<NodeId, Vec<PeerConnReceiver>> {
+    pub(crate) async fn get_receivers(&self) -> HashMap<NodeId, Vec<PeerConnReceiver>> {
         let mut receivers = HashMap::new();
         for (node_id, conns) in &self.peers {
             let mut entry = Vec::new();
             for conn in conns.values() {
-                if !conn.connected() {
+                if !conn.is_connected() {
                     continue;
                 }
-                let receiver = match conn.receiver() {
+                let receiver = match conn.receiver().await {
                     Ok(receiver) => receiver,
                     Err(err) => {
                         warn!("Failed to get receiver from node {:X}: {}", node_id, err);
@@ -298,21 +301,12 @@ impl FullMesh {
         let mut result: HashMap<NodeId, HashMap<Uuid, cryonet_uapi::Conn>> = HashMap::new();
         for (node_id, conns) in &self.peers {
             for (uuid, conn) in conns {
-                use PeerConnectionState::*;
-                let state = match *conn.state_watcher.borrow() {
-                    New => cryonet_uapi::ConnState::New,
-                    Connecting => cryonet_uapi::ConnState::Connecting,
-                    Connected => cryonet_uapi::ConnState::Connected,
-                    Disconnected => cryonet_uapi::ConnState::Disconnected,
-                    Failed => cryonet_uapi::ConnState::Failed,
-                    Closed => cryonet_uapi::ConnState::Closed,
-                };
                 let selected_candidate = conn.get_selected_candidate().await;
                 result.entry(*node_id).or_default().insert(
                     *uuid,
                     cryonet_uapi::Conn {
                         selected: conn.selected,
-                        state,
+                        state: conn.get_state(),
                         selected_candidate,
                         elapsed_ms: now.duration_since(conn.time).as_millis() as u64,
                     },
@@ -339,15 +333,15 @@ fn start_peer_loop(fm: FullMeshHandle, mesh: MeshHandle, id: NodeId, uuid: Uuid,
                         }
                     };
                     debug!("Sending candidate to node {:X}: {:?}", id, candidate);
-                    let _ = mesh.send_packet(id, Box::new(FullMeshPayload::Candidate(uuid, candidate.to_sdp()))).await;
+                    let _ = mesh.send_packet(id, Box::new(FullMeshPayload::Candidate(uuid, candidate))).await;
                 }
                 s = state.changed() => {
-                    let Ok(_) = s else {
+                    if s.is_err() {
                         debug!("State channel closed for node {:X}", id);
                         break;
-                    };
+                    }
                     let s = *state.borrow_and_update();
-                    use PeerConnectionState::*;
+                    use ConnState::*;
                     if s == Failed || s == Closed {
                         let _ = fm.remove_conn(id, uuid).await;
                         break;
@@ -356,28 +350,4 @@ fn start_peer_loop(fm: FullMeshHandle, mesh: MeshHandle, id: NodeId, uuid: Uuid,
             }
         }
     });
-}
-
-fn filter_candidate(sdp: &mut SessionDescription, cidr: &Option<AnyIpCidr>) {
-    for sections in &mut sdp.media_sections {
-        sections.attributes.retain(|attr| {
-            if attr.key != "candidate" {
-                return true;
-            }
-            if let Some(val) = &attr.value
-                && let Ok(candidate) = IceCandidate::from_sdp(val)
-                && !check_candidate(&candidate, cidr)
-            {
-                return false;
-            }
-            true
-        });
-    }
-}
-
-fn check_candidate(candidate: &IceCandidate, cidr: &Option<AnyIpCidr>) -> bool {
-    let Some(cidr) = cidr else {
-        return true;
-    };
-    !cidr.contains(&candidate.address.ip())
 }

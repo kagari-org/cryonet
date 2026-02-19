@@ -3,6 +3,11 @@ name = "cryonet"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["rustrtc"]
+rustrtc = ["dep:rustrtc"]
+webrtc = ["dep:webrtc"]
+
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
 async-trait = "0.1.89"
@@ -12,7 +17,8 @@ clap = { version = "4.5.54", features = ["derive", "env"] }
 clap-num = "1.2.0"
 dyn-clone = "1.0.20"
 futures = "0.3.31"
-rustrtc = "0.3.15"
+rustrtc = { version = "0.3.15", optional = true }
+webrtc = { version = "0.17.1", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.17"

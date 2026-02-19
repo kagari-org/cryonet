@@ -6,7 +6,13 @@ use anyhow::{Result, anyhow};
 use cidr::AnyIpCidr;
 use clap::Parser;
 use clap_num::maybe_hex;
-use rustrtc::{IceCredentialType, IceServer, RtcConfiguration};
+#[cfg(feature = "rustrtc")]
+use rustrtc::{IceServer, RtcConfiguration};
+#[cfg(feature = "webrtc")]
+use webrtc::{
+    ice_transport::ice_server::RTCIceServer as IceServer,
+    peer_connection::configuration::RTCConfiguration as RtcConfiguration,
+};
 use sactor::error::SactorResult;
 use tokio::signal::ctrl_c;
 use tracing_subscriber::EnvFilter;
@@ -56,9 +62,9 @@ fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
     } else if parts.len() == 3 {
         Ok(IceServer {
             urls: vec![parts[0].to_string()],
-            credential_type: IceCredentialType::Password,
-            username: Some(parts[1].to_string()),
-            credential: Some(parts[2].to_string()),
+            username: parts[1].to_string().into(),
+            credential: parts[2].to_string().into(),
+            ..Default::default()
         })
     } else {
         Err(anyhow!("Unexpected ice server: {input}"))
@@ -67,7 +73,7 @@ fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
 
 #[tokio::main]
 async fn main() -> SactorResult<()> {
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rustrtc=off"))).init();
+    tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rustrtc=off,webrtc=off"))).init();
     let args = Args::parse();
     let rtc_configuration = RtcConfiguration {
         ice_servers: args.ice_servers.clone(),

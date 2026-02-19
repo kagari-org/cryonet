@@ -16,7 +16,7 @@ pub struct IgpRoute {
     pub timeout_remaining_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnState {
     New,
     Connecting,
@@ -24,6 +24,7 @@ pub enum ConnState {
     Disconnected,
     Failed,
     Closed,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
