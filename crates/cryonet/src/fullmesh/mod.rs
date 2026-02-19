@@ -34,7 +34,7 @@ use crate::{
     },
 };
 
-#[cfg_attr(feature = "rustrtc", path = "conn.rs")]
+#[cfg_attr(feature = "rustrtc", path = "conn_rustrtc.rs")]
 #[cfg_attr(feature = "webrtc", path = "conn_webrtc.rs")]
 pub(crate) mod conn;
 pub(crate) mod tun;
