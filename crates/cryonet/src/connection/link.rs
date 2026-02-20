@@ -4,38 +4,77 @@ use futures::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use crate::mesh::{LinkError, LinkRecv, LinkSend, packet::Packet};
 
-pub(crate) struct WebSocketLinkSend<T>(SplitSink<WebSocketStream<T>, Message>);
-pub(crate) struct WebSocketLinkRecv<T>(SplitStream<WebSocketStream<T>>);
+pub(crate) struct WebSocketLinkSend<WebSocket, Message>(SplitSink<WebSocket, Message>);
+pub(crate) struct WebSocketLinkRecv<WebSocket>(SplitStream<WebSocket>);
 
-pub(crate) fn new_ws_link<T>(ws_stream: WebSocketStream<T>) -> (WebSocketLinkSend<T>, WebSocketLinkRecv<T>)
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + Sync,
-{
-    let (sink, stream) = ws_stream.split();
+#[cfg(not(feature = "webrtc"))]
+type AxumWebSocket = axum::extract::ws::WebSocket;
+#[cfg(not(feature = "webrtc"))]
+type AxumMessage = axum::extract::ws::Message;
+type ReqwestWebSocket = reqwest_websocket::WebSocket;
+type ReqwestMessage = reqwest_websocket::Message;
+
+#[cfg(not(feature = "webrtc"))]
+pub(crate) fn new_axum_ws_link(ws: AxumWebSocket) -> (WebSocketLinkSend<AxumWebSocket, AxumMessage>, WebSocketLinkRecv<AxumWebSocket>) {
+    let (sink, stream) = ws.split();
     (WebSocketLinkSend(sink), WebSocketLinkRecv(stream))
 }
 
+pub(crate) fn new_reqwest_ws_link(ws: ReqwestWebSocket) -> (WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage>, WebSocketLinkRecv<ReqwestWebSocket>) {
+    let (sink, stream) = ws.split();
+    (WebSocketLinkSend(sink), WebSocketLinkRecv(stream))
+}
+
+#[cfg(not(feature = "webrtc"))]
 #[async_trait]
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> LinkSend for WebSocketLinkSend<T> {
+impl LinkSend for WebSocketLinkSend<AxumWebSocket, AxumMessage> {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
         let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?;
-        self.0.send(Message::binary(data)).await.map_err(|e| LinkError::Unknown(anyhow!(e)))?;
+        self.0.send(AxumMessage::binary(data)).await.map_err(|e| LinkError::Unknown(anyhow!(e)))?;
+        Ok(())
+    }
+}
+
+#[cfg(not(feature = "webrtc"))]
+#[async_trait]
+impl LinkRecv for WebSocketLinkRecv<AxumWebSocket> {
+    async fn recv(&mut self) -> Result<Packet, LinkError> {
+        let packet = match self.0.next().await {
+            Some(Ok(AxumMessage::Binary(data))) => data,
+
+            None => Err(LinkError::Closed)?,
+            Some(Ok(AxumMessage::Close(_))) => Err(LinkError::Closed)?,
+
+            Some(Err(e)) => Err(LinkError::Unknown(anyhow!(e)))?,
+            Some(Ok(_)) => Err(LinkError::Unknown(anyhow!("Unexpected message type")))?,
+        };
+        Ok(serde_json::from_slice(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?)
+    }
+}
+
+#[async_trait]
+impl LinkSend for WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage> {
+    async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
+        let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?;
+        self.0.send(ReqwestMessage::Binary(data.into())).await.map_err(|e| LinkError::Unknown(anyhow!(e)))?;
         Ok(())
     }
 }
 
 #[async_trait]
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> LinkRecv for WebSocketLinkRecv<T> {
+impl LinkRecv for WebSocketLinkRecv<ReqwestWebSocket> {
     async fn recv(&mut self) -> Result<Packet, LinkError> {
         let packet = match self.0.next().await {
+            Some(Ok(ReqwestMessage::Binary(data))) => data,
+
             None => Err(LinkError::Closed)?,
+            Some(Ok(ReqwestMessage::Close { .. })) => Err(LinkError::Closed)?,
+
             Some(Err(e)) => Err(LinkError::Unknown(anyhow!(e)))?,
-            Some(Ok(packet)) => packet.into_data(),
+            Some(Ok(_)) => Err(LinkError::Unknown(anyhow!("Unexpected message type")))?,
         };
         Ok(serde_json::from_slice(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?)
     }

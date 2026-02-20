@@ -8,14 +8,11 @@ use clap::Parser;
 use clap_num::maybe_hex;
 #[cfg(feature = "rustrtc")]
 use rustrtc::{IceServer, RtcConfiguration};
-#[cfg(feature = "webrtc")]
-use webrtc::{
-    ice_transport::ice_server::RTCIceServer as IceServer,
-    peer_connection::configuration::RTCConfiguration as RtcConfiguration,
-};
 use sactor::error::SactorResult;
 use tokio::signal::ctrl_c;
 use tracing_subscriber::EnvFilter;
+#[cfg(feature = "webrtc")]
+use webrtc::{ice_transport::ice_server::RTCIceServer as IceServer, peer_connection::configuration::RTCConfiguration as RtcConfiguration};
 
 use crate::{
     connection::ConnManager,

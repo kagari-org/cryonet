@@ -14,12 +14,7 @@ use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::{
     api::APIBuilder,
     ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
-    peer_connection::{
-        RTCPeerConnection,
-        configuration::RTCConfiguration,
-        peer_connection_state::RTCPeerConnectionState,
-        sdp::session_description::RTCSessionDescription,
-    },
+    peer_connection::{RTCPeerConnection, configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription},
     rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
     track::track_local::track_local_static_sample::TrackLocalStaticSample,
     track::track_remote::TrackRemote,
@@ -46,10 +41,7 @@ impl PeerConn {
         m.register_default_codecs()?;
         let registry = Registry::new();
         let interceptor = register_default_interceptors(registry, &mut m)?;
-        let api = APIBuilder::new()
-            .with_media_engine(m)
-            .with_interceptor_registry(interceptor)
-            .build();
+        let api = APIBuilder::new().with_media_engine(m).with_interceptor_registry(interceptor).build();
         let peer = Arc::new(api.new_peer_connection(config).await?);
 
         let local_track = Arc::new(TrackLocalStaticSample::new(
@@ -85,7 +77,10 @@ impl PeerConn {
         peer.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
             let candidate_tx = candidate_tx2.clone();
             Box::pin(async move {
-                if let Some(candidate) = candidate && let Ok(candidate) = candidate.to_json() && let Ok(candidate) = serde_json::to_string(&candidate) {
+                if let Some(candidate) = candidate
+                    && let Ok(candidate) = candidate.to_json()
+                    && let Ok(candidate) = serde_json::to_string(&candidate)
+                {
                     let _ = candidate_tx.send(candidate);
                 }
             })
@@ -197,10 +192,7 @@ pub(crate) struct PeerConnReceiver {
 
 impl PeerConnSender {
     pub(crate) async fn send(&self, data: Bytes) -> SactorResult<()> {
-        let sample = webrtc::media::Sample {
-            data,
-            ..Default::default()
-        };
+        let sample = webrtc::media::Sample { data, ..Default::default() };
         self.track.write_sample(&sample).await?;
         Ok(())
     }
@@ -228,7 +220,9 @@ fn filter_candidate(sdp: RTCSessionDescription, cidr: &Option<AnyIpCidr>) -> Sac
                 if candidate_value.is_empty() {
                     return false;
                 }
-                if let Ok(candidate) = unmarshal_candidate(candidate_value) && let Some(cidr) = cidr {
+                if let Ok(candidate) = unmarshal_candidate(candidate_value)
+                    && let Some(cidr) = cidr
+                {
                     if cidr.contains(&candidate.addr().ip()) {
                         return false;
                     }

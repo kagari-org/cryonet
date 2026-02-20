@@ -6,10 +6,9 @@ use std::{
 
 use cidr::AnyIpCidr;
 use cryonet_uapi::ConnState;
-use sactor::{
-    error::SactorResult,
-    sactor,
-};
+#[cfg(feature = "rustrtc")]
+use rustrtc::RtcConfiguration;
+use sactor::{error::SactorResult, sactor};
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,
@@ -21,8 +20,6 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 use uuid::Uuid;
-#[cfg(feature = "rustrtc")]
-use rustrtc::RtcConfiguration;
 #[cfg(feature = "webrtc")]
 use webrtc::peer_connection::configuration::RTCConfiguration as RtcConfiguration;
 
@@ -115,7 +112,7 @@ impl FullMesh {
         }
         match payload {
             FullMeshPayload::Offer(id, offer) if self.id > src => {
-                let mut conn = PeerConn::new(self.config.clone(), self.candidate_filter_prefix.clone()).await?;
+                let mut conn = PeerConn::new(self.config.clone(), self.candidate_filter_prefix).await?;
                 start_peer_loop(self.handle.clone(), self.mesh.clone(), src, *id, &conn);
                 let answer = conn.answer(offer.clone()).await?;
                 if let Some((_, candidates)) = self.pending_candidates.remove(id) {
@@ -144,14 +141,8 @@ impl FullMesh {
             FullMeshPayload::Candidate(id, candidate) => {
                 let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
                 match conn {
-                    Some(conn) if conn.is_answered().await => {
-                        conn.add_ice_candidate(candidate.clone()).await?;
-                    },
-                    _ => {
-                        self.pending_candidates.entry(*id)
-                            .or_insert_with(|| (Instant::now(), Vec::new()))
-                            .1.push(candidate.clone());
-                    }
+                    Some(conn) if conn.is_answered().await => conn.add_ice_candidate(candidate.clone()).await?,
+                    _ => self.pending_candidates.entry(*id).or_insert_with(|| (Instant::now(), Vec::new())).1.push(candidate.clone()),
                 }
             }
             _ => {
@@ -202,7 +193,7 @@ impl FullMesh {
                 if self.id > node_id {
                     continue;
                 }
-                let mut conn = PeerConn::new(self.config.clone(), self.candidate_filter_prefix.clone()).await?;
+                let mut conn = PeerConn::new(self.config.clone(), self.candidate_filter_prefix).await?;
                 let id = Uuid::new_v4();
                 start_peer_loop(self.handle.clone(), self.mesh.clone(), node_id, id, &conn);
                 let offer = conn.offer().await?;
