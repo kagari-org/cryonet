@@ -8,7 +8,7 @@ use cidr::AnyIpCidr;
 use cryonet_uapi::ConnState;
 #[cfg(feature = "rustrtc")]
 use rustrtc::RtcConfiguration;
-use sactor::{error::SactorResult, sactor};
+use sactor::{error::{SactorError, SactorResult}, sactor};
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,
@@ -305,6 +305,11 @@ impl FullMesh {
             }
         }
         result
+    }
+
+    #[handle_error]
+    fn handle_error(&mut self, err: &SactorError) {
+        error!("Error: {:?}", err);
     }
 }
 

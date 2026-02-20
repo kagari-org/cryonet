@@ -5,7 +5,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::future::select_all;
-use sactor::{error::SactorResult, sactor};
+use sactor::{error::{SactorError, SactorResult}, sactor};
 use tokio::{
     select,
     sync::broadcast::{self, error::RecvError},
@@ -118,6 +118,11 @@ impl TunManager {
             self.senders.insert(node_id, handle);
         }
         Ok(())
+    }
+
+    #[handle_error]
+    fn handle_error(&mut self, err: &SactorError) {
+        error!("Error: {:?}", err);
     }
 }
 

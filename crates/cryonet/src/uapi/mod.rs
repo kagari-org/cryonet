@@ -7,7 +7,7 @@ use std::{
 };
 
 use cryonet_uapi::{CryonetUapi, IgpRoute};
-use sactor::{error::SactorResult, sactor};
+use sactor::{error::{SactorError, SactorResult}, sactor};
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs::remove_file,
@@ -196,5 +196,10 @@ impl Uapi {
             }
         });
         Ok(())
+    }
+
+    #[handle_error]
+    fn handle_error(&mut self, err: &SactorError) {
+        error!("Error: {:?}", err);
     }
 }

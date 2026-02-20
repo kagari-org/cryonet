@@ -172,8 +172,8 @@ impl ConnManager {
     }
 
     #[handle_error]
-    async fn handle_error(&mut self, err: &mut SactorError) {
-        error!("ConnManager error: {}", err);
+    async fn handle_error(&mut self, err: &SactorError) {
+        error!("Error: {:?}", err);
     }
 }
 

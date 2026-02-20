@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
-use sactor::{error::SactorResult, sactor};
+use sactor::{error::{SactorError, SactorResult}, sactor};
 use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{
@@ -17,7 +17,7 @@ use tokio::{
     },
     time::{Interval, interval},
 };
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::mesh::{
     MeshEvent, MeshHandle,
@@ -576,6 +576,11 @@ impl Igp {
 
     pub(crate) fn get_routes(&self) -> Vec<Route> {
         self.routes.values().cloned().collect()
+    }
+
+    #[handle_error]
+    fn handle_error(&mut self, err: &SactorError) {
+        error!("Error: {:?}", err);
     }
 }
 

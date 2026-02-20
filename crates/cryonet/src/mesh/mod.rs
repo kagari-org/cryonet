@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Debug};
 use async_trait::async_trait;
 use futures::future::join_all;
 use packet::{NodeId, Packet, Payload};
-use sactor::{error::SactorResult, sactor};
+use sactor::{error::{SactorError, SactorResult}, sactor};
 use tokio::{
     select,
     sync::{broadcast, mpsc, watch},
@@ -261,6 +261,11 @@ impl Mesh {
 
     pub(crate) fn subscribe_mesh_events(&self) -> broadcast::Receiver<MeshEvent> {
         self.mesh_event_tx.subscribe()
+    }
+
+    #[handle_error]
+    fn handle_error(&mut self, err: &SactorError) {
+        error!("Error: {:?}", err);
     }
 }
 
