@@ -2477,9 +2477,9 @@ dependencies = [
 
 [[package]]
 name = "rcgen"
-version = "0.14.6"
+version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ec0a99f2de91c3cddc84b37e7db80e4d96b743e05607f647eb236fc0455907f"
+checksum = "10b99e0098aa4082912d4c649628623db6aba77335e4f4569ff5083a6448b32e"
 dependencies = [
  "aws-lc-rs",
  "pem",
@@ -2807,9 +2807,8 @@ dependencies = [
 
 [[package]]
 name = "rustrtc"
-version = "0.3.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f04dbc61f11ceaadefa488edff54c2524f1fdaa400467e4717d51cd8809e0bce"
+version = "0.3.21"
+source = "git+https://github.com/kagari-org/rustrtc?branch=fix-ice-transport-runner#77d24e5c4a8b0f60985915325bae4ed74caf725b"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2827,7 +2826,7 @@ dependencies = [
  "p256",
  "rand",
  "rand_core 0.6.4",
- "rcgen 0.14.6",
+ "rcgen 0.14.7",
  "serde",
  "serde_json",
  "sha1",
