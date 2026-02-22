@@ -134,7 +134,7 @@ impl Igp {
             packet_rx,
             mesh_event_rx,
         });
-        tokio::spawn(future);
+        tokio::task::spawn_local(future);
         Ok(igp)
     }
 

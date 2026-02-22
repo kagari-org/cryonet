@@ -6,8 +6,6 @@ use std::{
 
 use cidr::AnyIpCidr;
 use cryonet_uapi::ConnState;
-#[cfg(feature = "rustrtc")]
-use rustrtc::RtcConfiguration;
 use sactor::{error::{SactorError, SactorResult}, sactor};
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -20,8 +18,6 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 use uuid::Uuid;
-#[cfg(feature = "webrtc")]
-use webrtc::peer_connection::configuration::RTCConfiguration as RtcConfiguration;
 
 use crate::{
     fullmesh::conn::{PeerConn, PeerConnReceiver, PeerConnSender},
@@ -31,10 +27,18 @@ use crate::{
     },
 };
 
-#[cfg_attr(feature = "rustrtc", path = "conn_rustrtc.rs")]
-#[cfg_attr(feature = "webrtc", path = "conn_webrtc.rs")]
+#[cfg_attr(not(target_arch = "wasm32"), path = "conn_rustrtc.rs")]
+#[cfg_attr(target_arch = "wasm32", path = "conn_wasm.rs")]
 pub(crate) mod conn;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod tun;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct IceServer {
+    pub(crate) url: String,
+    pub(crate) username: Option<String>,
+    pub(crate) credential: Option<String>,
+}
 
 pub(crate) struct FullMesh {
     handle: FullMeshHandle,
@@ -45,7 +49,7 @@ pub(crate) struct FullMesh {
     timeout: Duration,
     discard_timeout: Duration,
     max_connected: usize,
-    config: RtcConfiguration,
+    ice_servers: Vec<IceServer>,
     candidate_filter_prefix: Option<AnyIpCidr>,
 
     packet_rx: mpsc::Receiver<Packet>,
@@ -68,11 +72,11 @@ impl Payload for FullMeshPayload {}
 
 #[sactor(pub(crate))]
 impl FullMesh {
-    pub(crate) async fn new(id: NodeId, mesh: MeshHandle, config: RtcConfiguration, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<FullMeshHandle> {
-        Self::new_with_parameters(id, mesh, Duration::from_secs(30), Duration::from_secs(60), 5, config, candidate_filter_prefix).await
+    pub(crate) async fn new(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<FullMeshHandle> {
+        Self::new_with_parameters(id, mesh, ice_servers, Duration::from_secs(30), Duration::from_secs(60), 5, candidate_filter_prefix).await
     }
 
-    pub(crate) async fn new_with_parameters(id: NodeId, mesh: MeshHandle, timeout: Duration, discard_timeout: Duration, max_connected: usize, config: RtcConfiguration, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<FullMeshHandle> {
+    pub(crate) async fn new_with_parameters(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, timeout: Duration, discard_timeout: Duration, max_connected: usize, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<FullMeshHandle> {
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>())).await?;
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle,
@@ -81,7 +85,7 @@ impl FullMesh {
             timeout,
             discard_timeout,
             max_connected,
-            config,
+            ice_servers,
             candidate_filter_prefix,
             packet_rx,
             ticker: interval(Duration::from_secs(10)),
@@ -89,7 +93,7 @@ impl FullMesh {
             pending_candidates: HashMap::new(),
             refresh: broadcast::channel(16).0,
         });
-        tokio::spawn(future);
+        tokio::task::spawn_local(future);
         Ok(fm)
     }
 
@@ -112,7 +116,7 @@ impl FullMesh {
         }
         match payload {
             FullMeshPayload::Offer(id, offer) if self.id > src => {
-                let mut conn = PeerConn::new(self.config.clone(), self.candidate_filter_prefix).await?;
+                let mut conn = PeerConn::new(self.ice_servers.clone(), self.candidate_filter_prefix).await?;
                 start_peer_loop(self.handle.clone(), self.mesh.clone(), src, *id, &conn);
                 let answer = conn.answer(offer.clone()).await?;
                 if let Some((_, candidates)) = self.pending_candidates.remove(id) {
@@ -193,7 +197,7 @@ impl FullMesh {
                 if self.id > node_id {
                     continue;
                 }
-                let mut conn = PeerConn::new(self.config.clone(), self.candidate_filter_prefix).await?;
+                let mut conn = PeerConn::new(self.ice_servers.clone(), self.candidate_filter_prefix).await?;
                 let id = Uuid::new_v4();
                 start_peer_loop(self.handle.clone(), self.mesh.clone(), node_id, id, &conn);
                 let offer = conn.offer().await?;
@@ -316,7 +320,7 @@ impl FullMesh {
 fn start_peer_loop(fm: FullMeshHandle, mesh: MeshHandle, id: NodeId, uuid: Uuid, conn: &PeerConn) {
     let mut candidate = conn.subscribe_candidates();
     let mut state = conn.subscribe_state();
-    tokio::spawn(async move {
+    tokio::task::spawn_local(async move {
         loop {
             select! {
                 candidate = candidate.recv() => {

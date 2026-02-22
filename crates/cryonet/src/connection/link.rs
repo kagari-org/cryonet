@@ -10,14 +10,14 @@ use crate::mesh::{LinkError, LinkRecv, LinkSend, packet::Packet};
 pub(crate) struct WebSocketLinkSend<WebSocket, Message>(SplitSink<WebSocket, Message>);
 pub(crate) struct WebSocketLinkRecv<WebSocket>(SplitStream<WebSocket>);
 
-#[cfg(not(feature = "webrtc"))]
+#[cfg(not(target_arch = "wasm32"))]
 type AxumWebSocket = axum::extract::ws::WebSocket;
-#[cfg(not(feature = "webrtc"))]
+#[cfg(not(target_arch = "wasm32"))]
 type AxumMessage = axum::extract::ws::Message;
 type ReqwestWebSocket = reqwest_websocket::WebSocket;
 type ReqwestMessage = reqwest_websocket::Message;
 
-#[cfg(not(feature = "webrtc"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn new_axum_ws_link(ws: AxumWebSocket) -> (WebSocketLinkSend<AxumWebSocket, AxumMessage>, WebSocketLinkRecv<AxumWebSocket>) {
     let (sink, stream) = ws.split();
     (WebSocketLinkSend(sink), WebSocketLinkRecv(stream))
@@ -28,8 +28,8 @@ pub(crate) fn new_reqwest_ws_link(ws: ReqwestWebSocket) -> (WebSocketLinkSend<Re
     (WebSocketLinkSend(sink), WebSocketLinkRecv(stream))
 }
 
-#[cfg(not(feature = "webrtc"))]
-#[async_trait]
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait(?Send)]
 impl LinkSend for WebSocketLinkSend<AxumWebSocket, AxumMessage> {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
         let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?;
@@ -38,8 +38,8 @@ impl LinkSend for WebSocketLinkSend<AxumWebSocket, AxumMessage> {
     }
 }
 
-#[cfg(not(feature = "webrtc"))]
-#[async_trait]
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait(?Send)]
 impl LinkRecv for WebSocketLinkRecv<AxumWebSocket> {
     async fn recv(&mut self) -> Result<Packet, LinkError> {
         let packet = match self.0.next().await {
@@ -55,7 +55,7 @@ impl LinkRecv for WebSocketLinkRecv<AxumWebSocket> {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl LinkSend for WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage> {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
         let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?;
@@ -64,7 +64,7 @@ impl LinkSend for WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage> {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl LinkRecv for WebSocketLinkRecv<ReqwestWebSocket> {
     async fn recv(&mut self) -> Result<Packet, LinkError> {
         let packet = match self.0.next().await {

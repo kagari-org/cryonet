@@ -30,13 +30,13 @@ pub(crate) struct Mesh {
     mesh_event_tx: broadcast::Sender<MeshEvent>,
 }
 
-#[async_trait]
-pub(crate) trait LinkSend: Send + Sync {
+#[async_trait(?Send)]
+pub(crate) trait LinkSend {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError>;
 }
 
-#[async_trait]
-pub(crate) trait LinkRecv: Send + Sync {
+#[async_trait(?Send)]
+pub(crate) trait LinkRecv {
     async fn recv(&mut self) -> Result<Packet, LinkError>;
 }
 
@@ -69,7 +69,7 @@ impl Mesh {
             dispatchees: Vec::new(),
             mesh_event_tx: broadcast::Sender::new(16),
         });
-        tokio::spawn(future);
+        tokio::task::spawn_local(future);
         mesh
     }
 
@@ -199,7 +199,7 @@ impl Mesh {
         let (stop, mut stop_rx) = watch::channel(false);
         self.link_recv_stop.insert(dst, stop);
 
-        tokio::spawn(async move {
+        tokio::task::spawn_local(async move {
             loop {
                 select! {
                     _ = stop_rx.changed() => break,

@@ -8,21 +8,23 @@ use std::{
 
 use crate::{
     connection::link::new_reqwest_ws_link,
-    errors::Error,
     mesh::{MeshHandle, packet::NodeId},
 };
-use futures::future::select_all;
-use reqwest_websocket::Upgrade;
+use anyhow::anyhow;
+use bytes::Bytes;
+use futures::{SinkExt, StreamExt, future::select_all};
+use reqwest_websocket::{CloseCode, Message, Upgrade};
 use sactor::{error::{SactorError, SactorResult}, sactor};
+use serde::{Deserialize, Serialize};
 use tokio::{
     sync::Mutex,
     time::{Interval, interval},
 };
 use tracing::{error, info, warn};
 
-#[cfg(not(feature = "webrtc"))]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::connection::link::new_axum_ws_link;
-#[cfg(not(feature = "webrtc"))]
+#[cfg(not(target_arch = "wasm32"))]
 use axum::{
     Router,
     extract::{State, ws::WebSocketUpgrade},
@@ -31,9 +33,9 @@ use axum::{
     routing::any,
     serve,
 };
-#[cfg(not(feature = "webrtc"))]
+#[cfg(not(target_arch = "wasm32"))]
 use reqwest::StatusCode;
-#[cfg(not(feature = "webrtc"))]
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpListener;
 
 pub(crate) mod link;
@@ -51,6 +53,12 @@ pub(crate) struct ConnManager {
     connecting: Arc<Mutex<HashSet<String>>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AuthPacket {
+    token: Option<String>,
+    node_id: NodeId,
+}
+
 #[sactor(pub(crate))]
 impl ConnManager {
     pub(crate) async fn new(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr) -> SactorResult<ConnManagerHandle> {
@@ -59,7 +67,7 @@ impl ConnManager {
 
     #[allow(unused_variables)]
     pub(crate) async fn new_with_parameters(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr, connect_interval: Duration) -> SactorResult<ConnManagerHandle> {
-        #[cfg(not(feature = "webrtc"))]
+        #[cfg(not(target_arch = "wasm32"))]
         let serve = {
             let listener = TcpListener::bind(listen).await?;
             info!("Listening on {}", listen);
@@ -76,10 +84,10 @@ impl ConnManager {
             servers_map: Arc::new(Mutex::new(HashMap::new())),
             connecting: Arc::new(Mutex::new(HashSet::new())),
         });
-        tokio::spawn(async move {
-            let futures: Vec<Pin<Box<dyn Future<Output = ()> + Send>>> = vec![
+        tokio::task::spawn_local(async move {
+            let futures: Vec<Pin<Box<dyn Future<Output = ()>>>> = vec![
                 Box::pin(future),
-                #[cfg(not(feature = "webrtc"))]
+                #[cfg(not(target_arch = "wasm32"))]
                 Box::pin(async move {
                     let _ = serve.await;
                 }),
@@ -113,7 +121,7 @@ impl ConnManager {
             let servers_map = self.servers_map.clone();
             let connecting = self.connecting.clone();
             let server = server.clone();
-            tokio::spawn(async move {
+            tokio::task::spawn_local(async move {
                 if let Err(err) = Self::connect_task(id, mesh, token, servers_map, server.clone()).await {
                     warn!("Failed to connect to server {}: {}", server, err);
                 }
@@ -136,27 +144,27 @@ impl ConnManager {
 
         info!("Connecting to server {} ...", server);
         let client = reqwest::Client::new();
-        let mut request = client.get(&server);
-        request = request.header("X-NodeId", id.to_string());
+        let mut ws = client.get(&server).upgrade().send().await?.into_websocket().await?;
+        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&AuthPacket {
+            token: token.clone(),
+            node_id: id,
+        })?))).await?;
+        let AuthPacket { token: neigh_token, node_id: neigh_id }= match ws.next().await {
+            Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
+            _ => return Err(SactorError::Other(anyhow!("Failed to receive authentication response from server {}", server))),
+        };
         if let Some(token) = &token {
-            request = request.header("Authorization", token);
-        }
-        let response = request.upgrade().send().await?;
-        if let Some(token) = &token {
-            match response.headers().get("Authorization") {
-                Some(auth) if auth.to_str()? == token => {}
-                _ => return Err(Error::Unauthorized.into()),
+            match neigh_token {
+                Some(neigh_token) if neigh_token == *token => {},
+                _ => {
+                    let _ = ws.close(CloseCode::Abnormal, None).await;
+                    return Err(SactorError::Other(anyhow!("Server {} provided invalid authentication token", server)))
+                },
             }
         }
-        let neigh_id = response.headers().get("X-NodeId");
-        let Some(neigh_id_val) = neigh_id else {
-            return Err(Error::Unauthorized.into());
-        };
-        let neigh_id = neigh_id_val.to_str()?.parse::<NodeId>()?;
         servers_map.lock().await.insert(server.clone(), neigh_id);
 
-        let ws_stream = response.into_websocket().await?;
-        let (sink, stream) = new_reqwest_ws_link(ws_stream);
+        let (sink, stream) = new_reqwest_ws_link(ws);
         let added = mesh.add_link(neigh_id, Box::new(sink), Box::new(stream), true).await?;
         if added {
             info!("Connected to server {} (node {:X})", server, neigh_id);
@@ -177,7 +185,7 @@ impl ConnManager {
     }
 }
 
-#[cfg(not(feature = "webrtc"))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn handle_request(ws: WebSocketUpgrade, headers: HeaderMap, State((id, mesh, token)): State<(NodeId, MeshHandle, Option<String>)>) -> impl IntoResponse {
     if let Some(token) = &token {
         if let Some(auth) = headers.get("Authorization")

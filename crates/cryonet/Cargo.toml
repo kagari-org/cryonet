@@ -3,11 +3,6 @@ name = "cryonet"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = ["rustrtc"]
-rustrtc = ["dep:rustrtc", "dep:axum"]
-webrtc = ["dep:webrtc"]
-
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
 async-trait = "0.1.89"
@@ -17,19 +12,49 @@ clap = { version = "4.5.54", features = ["derive", "env"] }
 clap-num = "1.2.0"
 dyn-clone = "1.0.20"
 futures = "0.3.31"
-rustrtc = { git = "https://github.com/kagari-org/rustrtc", branch = "fix-ice-transport-runner", optional = true }
-webrtc = { version = "0.17.1", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.17"
-tokio = { version = "1.48.0", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
-tun-rs = { version = "2.7.8", features = ["async"] }
 typetag = "0.2.21"
-uuid = { version = "1.19.0", features = ["serde", "v4"] }
 cryonet-uapi = { path = "../cryonet-uapi" }
 sactor = "0.1.5"
-axum = { version = "0.8.8", features = ["ws"], optional = true }
 reqwest = "0.13.2"
 reqwest-websocket = "0.6.0"
+tokio = { version = "1.49.0", features = ["rt", "time"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1.19.0", features = ["serde", "v4", "js"] }
+wasm-bindgen-futures = "0.4.61"
+web-sys = { version = "0.3.87", features = [
+  "MediaStream",
+  "MediaStreamTrack",
+  "MediaStreamTrackGenerator",
+  "MediaStreamTrackGeneratorInit",
+  "MediaStreamTrackProcessor",
+  "MediaStreamTrackProcessorInit",
+  "ReadableStream",
+  "ReadableStreamDefaultReader",
+  "ReadableStreamReadResult",
+  "RtcConfiguration",
+  "RtcIceCandidate",
+  "RtcIceCandidateInit",
+  "RtcIceServer",
+  "RtcPeerConnection",
+  "RtcPeerConnectionIceEvent",
+  "RtcPeerConnectionState",
+  "RtcRtpSender",
+  "RtcSdpType",
+  "RtcSessionDescription",
+  "RtcSessionDescriptionInit",
+  "RtcTrackEvent",
+  "WritableStream",
+  "WritableStreamDefaultWriter",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid = { version = "1.19.0", features = ["serde", "v4"] }
+tun-rs = { version = "2.7.8", features = ["async"] }
+axum = { version = "0.8.8", features = ["ws"] }
+rustrtc = { git = "https://github.com/kagari-org/rustrtc", branch = "fix-ice-transport-runner" }
