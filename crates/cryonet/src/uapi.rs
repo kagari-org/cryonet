@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use cryonet_lib::{fullmesh::FullMeshHandle, mesh::{MeshHandle, igp::IgpHandle, packet::{Packet, Payload}}};
 use cryonet_uapi::{CryonetUapi, IgpRoute};
 use sactor::{error::{SactorError, SactorResult}, sactor};
 use serde::{Deserialize, Serialize};
@@ -18,16 +19,7 @@ use tokio::{
 use tracing::{debug, error};
 use uuid::Uuid;
 
-use crate::{
-    fullmesh::FullMeshHandle,
-    mesh::{
-        MeshHandle,
-        igp::IgpHandle,
-        packet::{Packet, Payload},
-    },
-};
-
-pub(crate) struct Uapi {
+pub struct Uapi {
     handle: UapiHandle,
 
     mesh: MeshHandle,
@@ -51,13 +43,13 @@ enum UapiPayload {
     Pong(Uuid),
 }
 
-#[sactor(pub(crate))]
+#[sactor(pub)]
 impl Uapi {
-    pub(crate) async fn new(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshHandle, path: PathBuf) -> SactorResult<UapiHandle> {
+    pub async fn new(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshHandle, path: PathBuf) -> SactorResult<UapiHandle> {
         Self::new_with_parameters(mesh, igp, fm, path, Duration::from_secs(30), Duration::from_secs(60)).await
     }
 
-    pub(crate) async fn new_with_parameters(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshHandle, path: PathBuf, gc_interval: Duration, ping_timeout: Duration) -> SactorResult<UapiHandle> {
+    pub async fn new_with_parameters(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshHandle, path: PathBuf, gc_interval: Duration, ping_timeout: Duration) -> SactorResult<UapiHandle> {
         let _ = remove_file(&path).await;
         let socket = UnixDatagram::bind(path).unwrap();
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<UapiPayload>())).await?;
@@ -73,7 +65,7 @@ impl Uapi {
             ping_timeout,
             ping: HashMap::new(),
         });
-        tokio::spawn(future);
+        tokio::task::spawn_local(future);
         Ok(uapi)
     }
 

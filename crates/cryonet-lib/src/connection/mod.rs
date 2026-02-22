@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
-    pin::Pin,
     sync::Arc,
     time::Duration,
 };
@@ -12,7 +11,7 @@ use crate::{
 };
 use anyhow::anyhow;
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt, future::select_all};
+use futures::{SinkExt, StreamExt};
 use reqwest_websocket::{CloseCode, Message, Upgrade};
 use sactor::{error::{SactorError, SactorResult}, sactor};
 use serde::{Deserialize, Serialize};
@@ -23,24 +22,15 @@ use tokio::{
 use tracing::{error, info, warn};
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::connection::link::new_axum_ws_link;
+use crate::connection::link::new_tungstenite_ws_link;
 #[cfg(not(target_arch = "wasm32"))]
-use axum::{
-    Router,
-    extract::{State, ws::WebSocketUpgrade},
-    http::HeaderMap,
-    response::IntoResponse,
-    routing::any,
-    serve,
-};
-#[cfg(not(target_arch = "wasm32"))]
-use reqwest::StatusCode;
+use tokio_tungstenite::accept_async;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpListener;
 
-pub(crate) mod link;
+pub mod link;
 
-pub(crate) struct ConnManager {
+pub struct ConnManager {
     id: NodeId,
     mesh: MeshHandle,
 
@@ -51,6 +41,9 @@ pub(crate) struct ConnManager {
 
     servers_map: Arc<Mutex<HashMap<String, NodeId>>>,
     connecting: Arc<Mutex<HashSet<String>>>,
+
+    #[cfg(not(target_arch = "wasm32"))]
+    listener: TcpListener,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,21 +52,19 @@ struct AuthPacket {
     node_id: NodeId,
 }
 
-#[sactor(pub(crate))]
+#[sactor(pub)]
 impl ConnManager {
-    pub(crate) async fn new(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr) -> SactorResult<ConnManagerHandle> {
+    pub async fn new(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr) -> SactorResult<ConnManagerHandle> {
         Self::new_with_parameters(id, mesh, token, servers, listen, Duration::from_secs(8)).await
     }
 
     #[allow(unused_variables)]
-    pub(crate) async fn new_with_parameters(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr, connect_interval: Duration) -> SactorResult<ConnManagerHandle> {
+    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr, connect_interval: Duration) -> SactorResult<ConnManagerHandle> {
         #[cfg(not(target_arch = "wasm32"))]
-        let serve = {
+        let listener = {
             let listener = TcpListener::bind(listen).await?;
             info!("Listening on {}", listen);
-            let token = token.clone();
-            let app = Router::new().route("/", any(handle_request)).with_state((id, mesh.clone(), token.clone()));
-            Box::pin(serve(listener, app).into_future())
+            listener
         };
         let (future, mgr) = ConnManager::run(move |_| ConnManager {
             id,
@@ -83,23 +74,20 @@ impl ConnManager {
             connect_timer: interval(connect_interval),
             servers_map: Arc::new(Mutex::new(HashMap::new())),
             connecting: Arc::new(Mutex::new(HashSet::new())),
+            #[cfg(not(target_arch = "wasm32"))]
+            listener,
         });
-        tokio::task::spawn_local(async move {
-            let futures: Vec<Pin<Box<dyn Future<Output = ()>>>> = vec![
-                Box::pin(future),
-                #[cfg(not(target_arch = "wasm32"))]
-                Box::pin(async move {
-                    let _ = serve.await;
-                }),
-            ];
-            select_all(futures).await;
-        });
+        tokio::task::spawn_local(future);
         Ok(mgr)
     }
 
     #[select]
     fn select(&mut self) -> Vec<Selection<'_>> {
-        vec![selection!(self.connect_timer.tick().await, connect)]
+        vec![
+            selection!(self.connect_timer.tick().await, connect),
+            #[cfg(not(target_arch = "wasm32"))]
+            selection!(self.listener.accept().await, accept, it => it),
+        ]
     }
 
     #[no_reply]
@@ -174,8 +162,42 @@ impl ConnManager {
         Ok(())
     }
 
+    // #[cfg(not(target_arch = "wasm32"))]
+    #[no_reply]
+    async fn accept(&mut self, stream: tokio::io::Result<(tokio::net::TcpStream, SocketAddr)>) -> SactorResult<()> {
+        use tokio_tungstenite::tungstenite::Message;
+        let (stream, addr) = stream?;
+        info!("Accepted connection from {}", addr);
+        let mut ws = accept_async(stream).await?;
+        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&AuthPacket {
+            token: self.token.clone(),
+            node_id: self.id,
+        })?))).await?;
+        let AuthPacket { token: neigh_token, node_id: neigh_id }= match ws.next().await {
+            Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
+            _ => return Err(SactorError::Other(anyhow!("Failed to receive authentication response from connection at {}", addr))),
+        };
+        if let Some(token) = &self.token {
+            match neigh_token {
+                Some(neigh_token) if neigh_token == *token => {},
+                _ => {
+                    let _ = ws.close(None).await;
+                    return Err(SactorError::Other(anyhow!("Connection from {} provided invalid authentication token", addr)))
+                },
+            }
+        }
+        let (sink, stream) = new_tungstenite_ws_link(ws);
+        let added = self.mesh.add_link(neigh_id, Box::new(sink), Box::new(stream), false).await?;
+        if added {
+            info!("Accepted new connection from node {:X} at {}", neigh_id, addr);
+        } else {
+            info!("Rejected duplicate connection from node {:X} at {}, keeping existing link", neigh_id, addr);
+        }
+        Ok(())
+    }
+
     #[allow(dead_code)]
-    pub(crate) async fn disconnect(&mut self, id: NodeId) -> SactorResult<()> {
+    pub async fn disconnect(&mut self, id: NodeId) -> SactorResult<()> {
         self.mesh.remove_link(id).await
     }
 
@@ -185,32 +207,32 @@ impl ConnManager {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-async fn handle_request(ws: WebSocketUpgrade, headers: HeaderMap, State((id, mesh, token)): State<(NodeId, MeshHandle, Option<String>)>) -> impl IntoResponse {
-    if let Some(token) = &token {
-        if let Some(auth) = headers.get("Authorization")
-            && let Ok(auth) = auth.to_str()
-            && auth == token
-        {
-            // Authorized
-        } else {
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
-    };
-    let Some(Ok(Ok(node_id))) = headers.get("X-NodeId").map(|id| id.to_str().map(|id| id.parse::<NodeId>())) else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    let mut response = ws.on_upgrade(async move |ws| {
-        let (sink, stream) = new_axum_ws_link(ws);
-        match mesh.add_link(node_id, Box::new(sink), Box::new(stream), false).await {
-            Ok(true) => info!("Accepted new connection from node {:X}", node_id),
-            Ok(false) => info!("Rejected duplicate connection from node {:X}, keeping existing link", node_id),
-            Err(e) => warn!("Failed to accept connection from node {:X}: {}", node_id, e),
-        }
-    });
-    if let Some(token) = &token {
-        response.headers_mut().insert("Authorization", token.parse().unwrap());
-    }
-    response.headers_mut().insert("X-NodeId", id.to_string().parse().unwrap());
-    response
-}
+// #[cfg(not(target_arch = "wasm32"))]
+// async fn handle_request(ws: WebSocketUpgrade, headers: HeaderMap, State((id, mesh, token)): State<(NodeId, MeshHandle, Option<String>)>) -> impl IntoResponse {
+//     if let Some(token) = &token {
+//         if let Some(auth) = headers.get("Authorization")
+//             && let Ok(auth) = auth.to_str()
+//             && auth == token
+//         {
+//             // Authorized
+//         } else {
+//             return StatusCode::UNAUTHORIZED.into_response();
+//         }
+//     };
+//     let Some(Ok(Ok(node_id))) = headers.get("X-NodeId").map(|id| id.to_str().map(|id| id.parse::<NodeId>())) else {
+//         return StatusCode::BAD_REQUEST.into_response();
+//     };
+//     let mut response = ws.on_upgrade(async move |ws| {
+//         let (sink, stream) = new_axum_ws_link(ws);
+//         match mesh.add_link(node_id, Box::new(sink), Box::new(stream), false).await {
+//             Ok(true) => info!("Accepted new connection from node {:X}", node_id),
+//             Ok(false) => info!("Rejected duplicate connection from node {:X}, keeping existing link", node_id),
+//             Err(e) => warn!("Failed to accept connection from node {:X}: {}", node_id, e),
+//         }
+//     });
+//     if let Some(token) = &token {
+//         response.headers_mut().insert("Authorization", token.parse().unwrap());
+//     }
+//     response.headers_mut().insert("X-NodeId", id.to_string().parse().unwrap());
+//     response
+// }

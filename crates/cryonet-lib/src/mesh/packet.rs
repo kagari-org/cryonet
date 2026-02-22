@@ -3,10 +3,10 @@ use std::{any::Any, fmt::Debug};
 use dyn_clone::{DynClone, clone_trait_object};
 use serde::{Deserialize, Serialize};
 
-pub(crate) type NodeId = u32;
+pub type NodeId = u32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Packet {
+pub struct Packet {
     pub src: NodeId,
     pub dst: NodeId,
     pub ttl: u8,
@@ -14,5 +14,5 @@ pub(crate) struct Packet {
 }
 
 #[typetag::serde]
-pub(crate) trait Payload: Debug + Send + Sync + Any + DynClone {}
+pub trait Payload: Debug + Send + Sync + Any + DynClone {}
 clone_trait_object!(Payload);

@@ -31,16 +31,16 @@ use crate::{
 #[cfg_attr(target_arch = "wasm32", path = "conn_wasm.rs")]
 pub(crate) mod conn;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod tun;
+pub mod tun;
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct IceServer {
-    pub(crate) url: String,
-    pub(crate) username: Option<String>,
-    pub(crate) credential: Option<String>,
+pub struct IceServer {
+    pub url: String,
+    pub username: Option<String>,
+    pub credential: Option<String>,
 }
 
-pub(crate) struct FullMesh {
+pub struct FullMesh {
     handle: FullMeshHandle,
 
     id: NodeId,
@@ -70,13 +70,13 @@ enum FullMeshPayload {
 #[typetag::serde]
 impl Payload for FullMeshPayload {}
 
-#[sactor(pub(crate))]
+#[sactor(pub)]
 impl FullMesh {
-    pub(crate) async fn new(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<FullMeshHandle> {
+    pub async fn new(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<FullMeshHandle> {
         Self::new_with_parameters(id, mesh, ice_servers, Duration::from_secs(30), Duration::from_secs(60), 5, candidate_filter_prefix).await
     }
 
-    pub(crate) async fn new_with_parameters(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, timeout: Duration, discard_timeout: Duration, max_connected: usize, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<FullMeshHandle> {
+    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, timeout: Duration, discard_timeout: Duration, max_connected: usize, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<FullMeshHandle> {
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>())).await?;
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle,
@@ -252,11 +252,11 @@ impl FullMesh {
         }
     }
 
-    pub(crate) fn subscribe_refresh(&self) -> broadcast::Receiver<()> {
+    pub fn subscribe_refresh(&self) -> broadcast::Receiver<()> {
         self.refresh.subscribe()
     }
 
-    pub(crate) async fn get_senders(&self) -> HashMap<NodeId, PeerConnSender> {
+    pub async fn get_senders(&self) -> HashMap<NodeId, PeerConnSender> {
         let mut senders = HashMap::new();
         for (node_id, conns) in &self.peers {
             for conn in conns.values() {
@@ -269,7 +269,7 @@ impl FullMesh {
         senders
     }
 
-    pub(crate) async fn get_receivers(&self) -> HashMap<NodeId, Vec<PeerConnReceiver>> {
+    pub async fn get_receivers(&self) -> HashMap<NodeId, Vec<PeerConnReceiver>> {
         let mut receivers = HashMap::new();
         for (node_id, conns) in &self.peers {
             let mut entry = Vec::new();
@@ -291,7 +291,7 @@ impl FullMesh {
         receivers
     }
 
-    pub(crate) async fn get_peers(&self) -> HashMap<NodeId, HashMap<Uuid, cryonet_uapi::Conn>> {
+    pub async fn get_peers(&self) -> HashMap<NodeId, HashMap<Uuid, cryonet_uapi::Conn>> {
         let now = Instant::now();
         let mut result: HashMap<NodeId, HashMap<Uuid, cryonet_uapi::Conn>> = HashMap::new();
         for (node_id, conns) in &self.peers {

@@ -12,11 +12,11 @@ use tracing::{debug, error, warn};
 
 use crate::errors::Error;
 
-pub(crate) mod igp;
-pub(crate) mod packet;
-pub(crate) mod seq;
+pub mod igp;
+pub mod packet;
+pub mod seq;
 
-pub(crate) struct Mesh {
+pub struct Mesh {
     handle: MeshHandle,
 
     id: NodeId,
@@ -31,17 +31,17 @@ pub(crate) struct Mesh {
 }
 
 #[async_trait(?Send)]
-pub(crate) trait LinkSend {
+pub trait LinkSend {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError>;
 }
 
 #[async_trait(?Send)]
-pub(crate) trait LinkRecv {
+pub trait LinkRecv {
     async fn recv(&mut self) -> Result<Packet, LinkError>;
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum LinkError {
+pub enum LinkError {
     #[error("Link closed")]
     Closed,
     #[error("Unknown error: {0}")]
@@ -50,16 +50,16 @@ pub(crate) enum LinkError {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum MeshEvent {
+pub enum MeshEvent {
     LinkUp(NodeId),
     LinkDown(NodeId),
     RouteSet(NodeId, NodeId),
     RouteRemoved(NodeId, NodeId),
 }
 
-#[sactor(pub(crate))]
+#[sactor(pub)]
 impl Mesh {
-    pub(crate) fn new(id: NodeId) -> MeshHandle {
+    pub fn new(id: NodeId) -> MeshHandle {
         let (future, mesh) = Mesh::run(move |handle| Mesh {
             handle,
             id,
@@ -122,12 +122,12 @@ impl Mesh {
     }
 
     #[no_reply]
-    pub(crate) async fn send_packet(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> SactorResult<()> {
+    pub async fn send_packet(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> SactorResult<()> {
         self.send_packet_internal(Packet { src: self.id, dst, ttl: 16, payload }).await
     }
 
     #[no_reply]
-    pub(crate) async fn send_packet_link(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> SactorResult<()> {
+    pub async fn send_packet_link(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> SactorResult<()> {
         let Some(link) = self.link_send.get_mut(&dst) else {
             return Err(Error::NoSuchLink(dst).into());
         };
@@ -142,7 +142,7 @@ impl Mesh {
     }
 
     #[no_reply]
-    pub(crate) async fn broadcast_packet_local(&mut self, payload: Box<dyn Payload>) -> SactorResult<()> {
+    pub async fn broadcast_packet_local(&mut self, payload: Box<dyn Payload>) -> SactorResult<()> {
         debug!("Broadcasting packet {:?} to all links", &payload);
         let futures = self
             .link_send
@@ -170,19 +170,19 @@ impl Mesh {
         Ok(())
     }
 
-    pub(crate) fn add_dispatchee(&mut self, filter: Box<dyn Fn(&Packet) -> bool + Send + Sync>) -> mpsc::Receiver<Packet> {
+    pub fn add_dispatchee(&mut self, filter: Box<dyn Fn(&Packet) -> bool + Send + Sync>) -> mpsc::Receiver<Packet> {
         let (tx, rx) = mpsc::channel(512);
         self.dispatchees.push((filter, tx));
         rx
     }
 
     #[allow(dead_code)]
-    pub(crate) fn remove_dispatchee(&mut self, mut rx: mpsc::Receiver<Packet>) {
+    pub fn remove_dispatchee(&mut self, mut rx: mpsc::Receiver<Packet>) {
         rx.close();
         self.dispatchees.retain(|(_, tx)| !tx.is_closed());
     }
 
-    pub(crate) fn add_link(&mut self, dst: NodeId, send: Box<dyn LinkSend>, mut recv: Box<dyn LinkRecv>, is_initiator: bool) -> bool {
+    pub fn add_link(&mut self, dst: NodeId, send: Box<dyn LinkSend>, mut recv: Box<dyn LinkRecv>, is_initiator: bool) -> bool {
         if self.link_send.contains_key(&dst) {
             // ensure keeping the same link for both sides to avoid duplicate links
             let keep_new = is_initiator == (self.id < dst);
@@ -218,7 +218,7 @@ impl Mesh {
         true
     }
 
-    pub(crate) fn remove_link(&mut self, dst: NodeId) {
+    pub fn remove_link(&mut self, dst: NodeId) {
         debug!("Removing link to node {:X}", dst);
         self.routes.retain(|_, &mut v| v != dst);
         self.link_send.remove(&dst);
@@ -229,11 +229,11 @@ impl Mesh {
         let _ = self.mesh_event_tx.send(MeshEvent::LinkDown(dst));
     }
 
-    pub(crate) fn get_links(&self) -> Vec<NodeId> {
+    pub fn get_links(&self) -> Vec<NodeId> {
         self.link_send.keys().cloned().collect()
     }
 
-    pub(crate) fn set_route(&mut self, dst: NodeId, next_hop: NodeId) {
+    pub fn set_route(&mut self, dst: NodeId, next_hop: NodeId) {
         if dst == self.id {
             // skip routes to self
             return;
@@ -247,7 +247,7 @@ impl Mesh {
         let _ = self.mesh_event_tx.send(MeshEvent::RouteSet(dst, next_hop));
     }
 
-    pub(crate) fn remove_route(&mut self, dst: NodeId) {
+    pub fn remove_route(&mut self, dst: NodeId) {
         debug!("Removing route to node {:X}", dst);
         let route = self.routes.remove(&dst);
         if let Some(next_hop) = route {
@@ -255,11 +255,11 @@ impl Mesh {
         }
     }
 
-    pub(crate) fn get_routes(&self) -> HashMap<NodeId, NodeId> {
+    pub fn get_routes(&self) -> HashMap<NodeId, NodeId> {
         self.routes.clone()
     }
 
-    pub(crate) fn subscribe_mesh_events(&self) -> broadcast::Receiver<MeshEvent> {
+    pub fn subscribe_mesh_events(&self) -> broadcast::Receiver<MeshEvent> {
         self.mesh_event_tx.subscribe()
     }
 

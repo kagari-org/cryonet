@@ -16,7 +16,7 @@ use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::{fullmesh::FullMeshHandle, mesh::packet::NodeId};
 
-pub(crate) struct TunManager {
+pub struct TunManager {
     handle: TunManagerHandle,
     fm: FullMeshHandle,
 
@@ -30,9 +30,9 @@ pub(crate) struct TunManager {
     senders: HashMap<NodeId, JoinHandle<()>>,
 }
 
-#[sactor(pub(crate))]
+#[sactor(pub)]
 impl TunManager {
-    pub(crate) async fn new(fm: FullMeshHandle, interface_prefix: String, enable_packet_information: bool) -> SactorResult<TunManagerHandle> {
+    pub async fn new(fm: FullMeshHandle, interface_prefix: String, enable_packet_information: bool) -> SactorResult<TunManagerHandle> {
         let refresh = fm.subscribe_refresh().await?;
         let (future, tm) = TunManager::run(move |handle| TunManager {
             handle,

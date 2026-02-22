@@ -11,14 +11,14 @@ pub(crate) struct WebSocketLinkSend<WebSocket, Message>(SplitSink<WebSocket, Mes
 pub(crate) struct WebSocketLinkRecv<WebSocket>(SplitStream<WebSocket>);
 
 #[cfg(not(target_arch = "wasm32"))]
-type AxumWebSocket = axum::extract::ws::WebSocket;
+type TungsteniteWebSocket = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
 #[cfg(not(target_arch = "wasm32"))]
-type AxumMessage = axum::extract::ws::Message;
+type TungsteniteMessage = tokio_tungstenite::tungstenite::Message;
 type ReqwestWebSocket = reqwest_websocket::WebSocket;
 type ReqwestMessage = reqwest_websocket::Message;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn new_axum_ws_link(ws: AxumWebSocket) -> (WebSocketLinkSend<AxumWebSocket, AxumMessage>, WebSocketLinkRecv<AxumWebSocket>) {
+pub(crate) fn new_tungstenite_ws_link(ws: TungsteniteWebSocket) -> (WebSocketLinkSend<TungsteniteWebSocket, TungsteniteMessage>, WebSocketLinkRecv<TungsteniteWebSocket>) {
     let (sink, stream) = ws.split();
     (WebSocketLinkSend(sink), WebSocketLinkRecv(stream))
 }
@@ -30,23 +30,23 @@ pub(crate) fn new_reqwest_ws_link(ws: ReqwestWebSocket) -> (WebSocketLinkSend<Re
 
 #[cfg(not(target_arch = "wasm32"))]
 #[async_trait(?Send)]
-impl LinkSend for WebSocketLinkSend<AxumWebSocket, AxumMessage> {
+impl LinkSend for WebSocketLinkSend<TungsteniteWebSocket, TungsteniteMessage> {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
         let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?;
-        self.0.send(AxumMessage::binary(data)).await.map_err(|e| LinkError::Unknown(anyhow!(e)))?;
+        self.0.send(TungsteniteMessage::binary(data)).await.map_err(|e| LinkError::Unknown(anyhow!(e)))?;
         Ok(())
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[async_trait(?Send)]
-impl LinkRecv for WebSocketLinkRecv<AxumWebSocket> {
+impl LinkRecv for WebSocketLinkRecv<TungsteniteWebSocket> {
     async fn recv(&mut self) -> Result<Packet, LinkError> {
         let packet = match self.0.next().await {
-            Some(Ok(AxumMessage::Binary(data))) => data,
+            Some(Ok(TungsteniteMessage::Binary(data))) => data,
 
             None => Err(LinkError::Closed)?,
-            Some(Ok(AxumMessage::Close(_))) => Err(LinkError::Closed)?,
+            Some(Ok(TungsteniteMessage::Close(_))) => Err(LinkError::Closed)?,
 
             Some(Err(e)) => Err(LinkError::Unknown(anyhow!(e)))?,
             Some(Ok(_)) => Err(LinkError::Unknown(anyhow!("Unexpected message type")))?,

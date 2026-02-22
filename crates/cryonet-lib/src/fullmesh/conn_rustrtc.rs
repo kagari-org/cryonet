@@ -10,7 +10,7 @@ use rustrtc::{
 use sactor::error::{SactorError, SactorResult};
 use tokio::sync::{broadcast, watch};
 
-use crate::errors::Error;
+use crate::{errors::Error, fullmesh::IceServer};
 
 pub(crate) struct PeerConn {
     candidate_filter_prefix: Option<AnyIpCidr>,
@@ -26,8 +26,16 @@ pub(crate) struct PeerConn {
 }
 
 impl PeerConn {
-    pub(crate) async fn new(config: RtcConfiguration, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
-        let peer = PeerConnection::new(config);
+    pub(crate) async fn new(ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
+        let peer = PeerConnection::new(RtcConfiguration {
+            ice_servers: ice_servers.into_iter().map(|s| rustrtc::IceServer {
+                urls: vec![s.url],
+                username: s.username,
+                credential: s.credential,
+                ..Default::default()
+            }).collect(),
+            ..Default::default()
+        });
         let (source, track, _) = sample_track(MediaKind::Audio, 1024);
         peer.add_track(track, RtpCodecParameters::default())?;
 
@@ -139,11 +147,11 @@ impl Drop for PeerConn {
 }
 
 #[derive(Clone)]
-pub(crate) struct PeerConnSender {
+pub struct PeerConnSender {
     source: Arc<SampleStreamSource>,
 }
 
-pub(crate) struct PeerConnReceiver {
+pub struct PeerConnReceiver {
     track: Arc<SampleStreamTrack>,
 }
 

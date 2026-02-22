@@ -25,7 +25,7 @@ use crate::mesh::{
     seq::{Seq, SeqMetric},
 };
 
-pub(crate) struct Igp {
+pub struct Igp {
     handle: IgpHandle,
 
     id: NodeId,
@@ -73,18 +73,18 @@ struct RouteRequest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Route {
-    pub(crate) metric: SeqMetric,
-    pub(crate) computed_metric: u32,
-    pub(crate) dst: NodeId,
-    pub(crate) from: NodeId,
-    pub(crate) timeout: Instant,
-    pub(crate) selected: bool,
+pub struct Route {
+    pub metric: SeqMetric,
+    pub computed_metric: u32,
+    pub dst: NodeId,
+    pub from: NodeId,
+    pub timeout: Instant,
+    pub selected: bool,
 }
 
-#[sactor(pub(crate))]
+#[sactor(pub)]
 impl Igp {
-    pub(crate) async fn new(id: NodeId, mesh: MeshHandle) -> SactorResult<IgpHandle> {
+    pub async fn new(id: NodeId, mesh: MeshHandle) -> SactorResult<IgpHandle> {
         Self::new_with_parameters(
             Duration::from_secs(4),
             Duration::from_secs(16),
@@ -101,7 +101,7 @@ impl Igp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn new_with_parameters(
+    pub async fn new_with_parameters(
         hello_interval: Duration,
         dump_interval: Duration,
         gc_interval: Duration,
@@ -574,7 +574,7 @@ impl Igp {
         Ok(())
     }
 
-    pub(crate) fn get_routes(&self) -> Vec<Route> {
+    pub fn get_routes(&self) -> Vec<Route> {
         self.routes.values().cloned().collect()
     }
 
