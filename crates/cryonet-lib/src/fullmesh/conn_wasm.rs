@@ -11,7 +11,7 @@ use web_sys::{MediaStreamTrack, MediaStreamTrackGenerator, MediaStreamTrackGener
 
 use crate::{errors::Error, fullmesh::IceServer};
 
-pub(crate) struct PeerConn {
+pub struct PeerConn {
     candidate_filter_prefix: Option<AnyIpCidr>,
     peer: RtcPeerConnection,
     sender: PeerConnSender,
@@ -20,8 +20,8 @@ pub(crate) struct PeerConn {
     candidate_tx: broadcast::Sender<String>,
     track: Arc<Mutex<Option<MediaStreamTrack>>>,
 
-    pub(crate) time: Instant,
-    pub(crate) selected: bool,
+    pub time: Instant,
+    pub selected: bool,
 
     _on_connection_state_change: Closure<dyn Fn() -> ()>,
     _on_ice_candidate: Closure<dyn Fn(RtcPeerConnectionIceEvent) -> ()>,
@@ -29,7 +29,7 @@ pub(crate) struct PeerConn {
 }
 
 impl PeerConn {
-    pub(crate) async fn new(ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
+    pub async fn new(ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
         let ice_servers: Vec<_> = ice_servers.into_iter().map(|server| {
             let ice_server = RtcIceServer::new();
             ice_server.set_url(&server.url);
@@ -100,23 +100,23 @@ impl PeerConn {
         })
     }
 
-    pub(crate) fn subscribe_state(&self) -> watch::Receiver<ConnState> {
+    pub fn subscribe_state(&self) -> watch::Receiver<ConnState> {
         self.state_watcher.clone()
     }
 
-    pub(crate) fn get_state(&self) -> ConnState {
+    pub fn get_state(&self) -> ConnState {
         *self.state_watcher.borrow()
     }
 
-    pub(crate) fn is_connected(&self) -> bool {
+    pub fn is_connected(&self) -> bool {
         *self.state_watcher.borrow() == ConnState::Connected
     }
 
-    pub(crate) async fn is_answered(&self) -> bool {
+    pub async fn is_answered(&self) -> bool {
         self.peer.remote_description().is_some()
     }
 
-    pub(crate) async fn offer(&mut self) -> SactorResult<String> {
+    pub async fn offer(&mut self) -> SactorResult<String> {
         let offer: RtcSessionDescription = JsFuture::from(self.peer.create_offer())
             .await
             .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
@@ -129,7 +129,7 @@ impl PeerConn {
         Ok(offer.sdp())
     }
 
-    pub(crate) async fn answer(&mut self, sdp_str: String) -> SactorResult<String> {
+    pub async fn answer(&mut self, sdp_str: String) -> SactorResult<String> {
         // TODO: filter candidate
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         sdp.set_sdp(&sdp_str);
@@ -147,7 +147,7 @@ impl PeerConn {
         Ok(answer.sdp())
     }
 
-    pub(crate) async fn answered(&self, sdp_str: String) -> SactorResult<()> {
+    pub async fn answered(&self, sdp_str: String) -> SactorResult<()> {
         // TODO: filter candidate
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
         sdp.set_sdp(&sdp_str);
@@ -156,11 +156,11 @@ impl PeerConn {
         Ok(())
     }
 
-    pub(crate) fn subscribe_candidates(&self) -> broadcast::Receiver<String> {
+    pub fn subscribe_candidates(&self) -> broadcast::Receiver<String> {
         self.candidate_tx.subscribe()
     }
 
-    pub(crate) async fn add_ice_candidate(&self, candidate: String) -> SactorResult<()> {
+    pub async fn add_ice_candidate(&self, candidate: String) -> SactorResult<()> {
         // TODO: filter candidate
         let candidate: RtcIceCandidateInit = JSON::parse(&candidate)
             .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
@@ -172,15 +172,15 @@ impl PeerConn {
         Ok(())
     }
 
-    pub(crate) async fn get_selected_candidate(&self) -> Option<String> {
+    pub async fn get_selected_candidate(&self) -> Option<String> {
         None
     }
 
-    pub(crate) async fn sender(&self) -> PeerConnSender {
+    pub async fn sender(&self) -> PeerConnSender {
         self.sender.clone()
     }
 
-    pub(crate) async fn receiver(&self) -> SactorResult<PeerConnReceiver> {
+    pub async fn receiver(&self) -> SactorResult<PeerConnReceiver> {
         let track = self.track.lock().await.clone()
             .ok_or(Error::Unknown)?;
         let track = MediaStreamTrackProcessor::new(&MediaStreamTrackProcessorInit::new(&track))
@@ -200,16 +200,16 @@ impl Drop for PeerConn {
 }
 
 #[derive(Clone)]
-pub(crate) struct PeerConnSender {
+pub struct PeerConnSender {
     track: WritableStreamDefaultWriter,
 }
 
-pub(crate) struct PeerConnReceiver {
+pub struct PeerConnReceiver {
     track: ReadableStreamDefaultReader,
 }
 
 impl PeerConnSender {
-    pub(crate) async fn send(&self, data: Bytes) -> SactorResult<()> {
+    pub async fn send(&self, data: Bytes) -> SactorResult<()> {
         let data = Uint8Array::from(&data[..]);
         JsFuture::from(self.track.write_with_chunk(&data)).await
             .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
@@ -218,7 +218,7 @@ impl PeerConnSender {
 }
 
 impl PeerConnReceiver {
-    pub(crate) async fn recv(&self) -> SactorResult<Bytes> {
+    pub async fn recv(&self) -> SactorResult<Bytes> {
         let result = JsFuture::from(self.track.read()).await
             .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
             .dyn_into::<web_sys::ReadableStreamReadResult>()

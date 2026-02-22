@@ -24,7 +24,7 @@
         inputsFrom = [ self'.packages.default ];
         buildInputs = with pkgs; [];
         nativeBuildInputs = with pkgs; [
-          clippy
+          clippy wasm-pack lld
         ];
       };
     };

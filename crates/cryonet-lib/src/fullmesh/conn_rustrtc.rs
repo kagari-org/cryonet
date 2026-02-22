@@ -12,7 +12,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::{errors::Error, fullmesh::IceServer};
 
-pub(crate) struct PeerConn {
+pub struct PeerConn {
     candidate_filter_prefix: Option<AnyIpCidr>,
 
     peer: PeerConnection,
@@ -21,12 +21,12 @@ pub(crate) struct PeerConn {
     state_watcher: watch::Receiver<ConnState>,
     candidate_tx: broadcast::Sender<String>,
 
-    pub(crate) time: Instant,
-    pub(crate) selected: bool,
+    pub time: Instant,
+    pub selected: bool,
 }
 
 impl PeerConn {
-    pub(crate) async fn new(ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
+    pub async fn new(ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
         let peer = PeerConnection::new(RtcConfiguration {
             ice_servers: ice_servers.into_iter().map(|s| rustrtc::IceServer {
                 urls: vec![s.url],
@@ -75,30 +75,30 @@ impl PeerConn {
         })
     }
 
-    pub(crate) fn subscribe_state(&self) -> watch::Receiver<ConnState> {
+    pub fn subscribe_state(&self) -> watch::Receiver<ConnState> {
         self.state_watcher.clone()
     }
 
-    pub(crate) fn get_state(&self) -> ConnState {
+    pub fn get_state(&self) -> ConnState {
         *self.state_watcher.borrow()
     }
 
-    pub(crate) fn is_connected(&self) -> bool {
+    pub fn is_connected(&self) -> bool {
         let status = *self.state_watcher.borrow();
         status == ConnState::Connected
     }
 
-    pub(crate) async fn is_answered(&self) -> bool {
+    pub async fn is_answered(&self) -> bool {
         self.peer.remote_description().is_some()
     }
 
-    pub(crate) async fn offer(&mut self) -> SactorResult<String> {
+    pub async fn offer(&mut self) -> SactorResult<String> {
         let offer = self.peer.create_offer().await?;
         self.peer.set_local_description(offer.clone())?;
         Ok(offer.to_sdp_string())
     }
 
-    pub(crate) async fn answer(&mut self, sdp: String) -> SactorResult<String> {
+    pub async fn answer(&mut self, sdp: String) -> SactorResult<String> {
         let mut sdp = SessionDescription::parse(SdpType::Offer, &sdp)?;
         filter_candidate(&mut sdp, &self.candidate_filter_prefix);
         self.peer.set_remote_description(sdp).await?;
@@ -107,18 +107,18 @@ impl PeerConn {
         Ok(answer.to_sdp_string())
     }
 
-    pub(crate) async fn answered(&self, sdp: String) -> SactorResult<()> {
+    pub async fn answered(&self, sdp: String) -> SactorResult<()> {
         let mut sdp = SessionDescription::parse(SdpType::Answer, &sdp)?;
         filter_candidate(&mut sdp, &self.candidate_filter_prefix);
         self.peer.set_remote_description(sdp).await?;
         Ok(())
     }
 
-    pub(crate) fn subscribe_candidates(&self) -> broadcast::Receiver<String> {
+    pub fn subscribe_candidates(&self) -> broadcast::Receiver<String> {
         self.candidate_tx.subscribe()
     }
 
-    pub(crate) async fn add_ice_candidate(&self, candidate: String) -> SactorResult<()> {
+    pub async fn add_ice_candidate(&self, candidate: String) -> SactorResult<()> {
         let candidate = IceCandidate::from_sdp(&candidate).map_err(SactorError::Other)?;
         if check_candidate(&candidate, &self.candidate_filter_prefix) {
             self.peer.add_ice_candidate(candidate)?;
@@ -126,15 +126,15 @@ impl PeerConn {
         Ok(())
     }
 
-    pub(crate) async fn get_selected_candidate(&self) -> Option<String> {
+    pub async fn get_selected_candidate(&self) -> Option<String> {
         self.peer.ice_transport().get_selected_pair().await.map(|pair| pair.remote.to_sdp())
     }
 
-    pub(crate) async fn sender(&self) -> PeerConnSender {
+    pub async fn sender(&self) -> PeerConnSender {
         self.sender.clone()
     }
 
-    pub(crate) async fn receiver(&self) -> SactorResult<PeerConnReceiver> {
+    pub async fn receiver(&self) -> SactorResult<PeerConnReceiver> {
         let track = self.peer.get_transceivers()[0].receiver().ok_or(Error::Unknown)?.track();
         Ok(PeerConnReceiver { track })
     }
@@ -156,14 +156,14 @@ pub struct PeerConnReceiver {
 }
 
 impl PeerConnSender {
-    pub(crate) async fn send(&self, data: Bytes) -> SactorResult<()> {
+    pub async fn send(&self, data: Bytes) -> SactorResult<()> {
         self.source.send_audio(AudioFrame { data, ..Default::default() }).await?;
         Ok(())
     }
 }
 
 impl PeerConnReceiver {
-    pub(crate) async fn recv(&self) -> SactorResult<Bytes> {
+    pub async fn recv(&self) -> SactorResult<Bytes> {
         Ok(self.track.recv_audio().await?.data)
     }
 }

@@ -3,6 +3,9 @@ name = "cryonet-lib"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
 async-trait = "0.1.89"
@@ -23,6 +26,7 @@ tokio = { version = "1.49.0", features = ["rt", "time"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1.19.0", features = ["serde", "v4", "js"] }
+wasm-bindgen = "0.2.111"
 wasm-bindgen-futures = "0.4.61"
 web-sys = { version = "0.3.87", features = [
   "MediaStream",

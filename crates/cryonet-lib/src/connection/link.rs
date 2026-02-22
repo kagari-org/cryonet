@@ -7,8 +7,8 @@ use futures::{
 
 use crate::mesh::{LinkError, LinkRecv, LinkSend, packet::Packet};
 
-pub(crate) struct WebSocketLinkSend<WebSocket, Message>(SplitSink<WebSocket, Message>);
-pub(crate) struct WebSocketLinkRecv<WebSocket>(SplitStream<WebSocket>);
+pub struct WebSocketLinkSend<WebSocket, Message>(SplitSink<WebSocket, Message>);
+pub struct WebSocketLinkRecv<WebSocket>(SplitStream<WebSocket>);
 
 #[cfg(not(target_arch = "wasm32"))]
 type TungsteniteWebSocket = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
@@ -18,12 +18,12 @@ type ReqwestWebSocket = reqwest_websocket::WebSocket;
 type ReqwestMessage = reqwest_websocket::Message;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn new_tungstenite_ws_link(ws: TungsteniteWebSocket) -> (WebSocketLinkSend<TungsteniteWebSocket, TungsteniteMessage>, WebSocketLinkRecv<TungsteniteWebSocket>) {
+pub fn new_tungstenite_ws_link(ws: TungsteniteWebSocket) -> (WebSocketLinkSend<TungsteniteWebSocket, TungsteniteMessage>, WebSocketLinkRecv<TungsteniteWebSocket>) {
     let (sink, stream) = ws.split();
     (WebSocketLinkSend(sink), WebSocketLinkRecv(stream))
 }
 
-pub(crate) fn new_reqwest_ws_link(ws: ReqwestWebSocket) -> (WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage>, WebSocketLinkRecv<ReqwestWebSocket>) {
+pub fn new_reqwest_ws_link(ws: ReqwestWebSocket) -> (WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage>, WebSocketLinkRecv<ReqwestWebSocket>) {
     let (sink, stream) = ws.split();
     (WebSocketLinkSend(sink), WebSocketLinkRecv(stream))
 }

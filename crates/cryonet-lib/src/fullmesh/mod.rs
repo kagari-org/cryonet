@@ -29,7 +29,7 @@ use crate::{
 
 #[cfg_attr(not(target_arch = "wasm32"), path = "conn_rustrtc.rs")]
 #[cfg_attr(target_arch = "wasm32", path = "conn_wasm.rs")]
-pub(crate) mod conn;
+pub mod conn;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tun;
 
