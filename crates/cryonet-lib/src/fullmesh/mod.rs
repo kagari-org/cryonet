@@ -33,7 +33,7 @@ pub mod conn;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tun;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IceServer {
     pub url: String,
     pub username: Option<String>,

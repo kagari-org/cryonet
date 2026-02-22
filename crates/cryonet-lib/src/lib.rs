@@ -4,3 +4,6 @@ pub mod connection;
 pub mod errors;
 pub mod fullmesh;
 pub mod mesh;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
