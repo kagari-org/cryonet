@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     io,
     path::PathBuf,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use cryonet_lib::{fullmesh::FullMeshHandle, mesh::{MeshHandle, igp::IgpHandle, packet::{Packet, Payload}}};
@@ -14,7 +14,7 @@ use tokio::{
     fs::remove_file,
     net::UnixDatagram,
     sync::mpsc,
-    time::{Interval, interval},
+    time::{Instant, Interval, interval},
 };
 use tracing::{debug, error};
 use uuid::Uuid;

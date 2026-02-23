@@ -57,7 +57,7 @@ fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
 
 #[tokio::main]
 async fn main() -> SactorResult<()> {
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rustrtc=off,webrtc=off"))).init();
+    tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rustrtc=off"))).init();
     let args = Args::parse();
     let runtime_directory = var("RUNTIME_DIRECTORY");
     let ctl_path = match (args.ctl_path, runtime_directory) {

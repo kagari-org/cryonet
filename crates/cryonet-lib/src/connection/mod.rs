@@ -15,10 +15,7 @@ use futures::{SinkExt, StreamExt};
 use reqwest_websocket::{CloseCode, Message, Upgrade};
 use sactor::{error::{SactorError, SactorResult}, sactor};
 use serde::{Deserialize, Serialize};
-use tokio::{
-    sync::Mutex,
-    time::{Interval, interval},
-};
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -27,6 +24,8 @@ use crate::connection::link::new_tungstenite_ws_link;
 use tokio_tungstenite::accept_async;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpListener;
+
+use crate::time::{Interval, interval};
 
 pub mod link;
 
@@ -173,7 +172,7 @@ impl ConnManager {
         #[cfg(not(target_arch = "wasm32"))]
         let result = self.accept_internal(param).await;
         #[cfg(target_arch = "wasm32")]
-        let result = unreachable!();
+        let result = Ok(());
         result
     }
 

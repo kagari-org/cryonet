@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     collections::HashMap,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use cidr::AnyIpCidr;
@@ -14,7 +14,6 @@ use tokio::{
         broadcast::{self, error::RecvError},
         mpsc,
     },
-    time::{Interval, interval},
 };
 use tracing::{debug, error, warn};
 use uuid::Uuid;
@@ -25,6 +24,7 @@ use crate::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
+    time::{Instant, Interval, interval},
 };
 
 #[cfg_attr(not(target_arch = "wasm32"), path = "conn_rustrtc.rs")]

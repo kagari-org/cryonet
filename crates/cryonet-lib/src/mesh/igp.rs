@@ -4,7 +4,7 @@ use std::{
     any::Any,
     cmp::Ordering,
     collections::{HashMap, hash_map::Entry},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::Result;
@@ -15,7 +15,6 @@ use tokio::{
         broadcast::{self, error::RecvError},
         mpsc,
     },
-    time::{Interval, interval},
 };
 use tracing::{debug, error, warn};
 
@@ -24,6 +23,7 @@ use crate::mesh::{
     packet::{NodeId, Packet, Payload},
     seq::{Seq, SeqMetric},
 };
+use crate::time::{Instant, Interval, interval};
 
 pub struct Igp {
     handle: IgpHandle,

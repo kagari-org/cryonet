@@ -1,12 +1,20 @@
-use std::{net::SocketAddr, str::FromStr};
+use std::{future::pending, net::SocketAddr, str::FromStr};
 
 use anyhow::Result;
 use cidr::AnyIpCidr;
 use cryonet_uapi::NodeId;
+use futures::{FutureExt, future::poll_fn, pin_mut};
 use serde::{Deserialize, Serialize};
+use tokio::task::LocalSet;
+use tracing_subscriber::EnvFilter;
+use tracing_web::MakeWebConsoleWriter;
 use wasm_bindgen::prelude::*;
 use web_sys::{Event, EventTarget, js_sys::Function};
 use crate::{connection::{ConnManager, ConnManagerHandle}, fullmesh::{FullMesh, FullMeshHandle, IceServer}, mesh::{Mesh, MeshHandle, igp::{Igp, IgpHandle}}};
+
+thread_local! {
+    static LOCAL_SET: LocalSet = LocalSet::new();
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Args {
@@ -37,6 +45,7 @@ impl Cryonet {
             None => None,
         };
 
+        let _guard = LOCAL_SET.with(|local_set| local_set.enter());
         let mesh = Mesh::new(id);
         let igp = Igp::new(id, mesh.clone()).await
             .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
@@ -77,4 +86,24 @@ impl Drop for Cryonet {
             let _ = Box::from_raw(self.fm);
         }
     }
+}
+
+#[wasm_bindgen(start)]
+fn main() -> Result<(), JsValue> {
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(MakeWebConsoleWriter::new())
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug")))
+        .init();
+    wasm_bindgen_futures::spawn_local(async {
+        poll_fn(|cx| {
+            LOCAL_SET.with(|local_set| {
+                let run = local_set.run_until(pending::<()>());
+                pin_mut!(run);
+                run.poll_unpin(cx)
+            })
+        }).await;
+    });
+    Ok(())
 }

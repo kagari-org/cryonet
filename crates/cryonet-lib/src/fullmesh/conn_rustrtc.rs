@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use cidr::AnyIpCidr;
@@ -10,7 +10,7 @@ use rustrtc::{
 use sactor::error::{SactorError, SactorResult};
 use tokio::sync::{broadcast, watch};
 
-use crate::{errors::Error, fullmesh::IceServer};
+use crate::{errors::Error, fullmesh::IceServer, time::Instant};
 
 pub struct PeerConn {
     candidate_filter_prefix: Option<AnyIpCidr>,
