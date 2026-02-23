@@ -1,14 +1,18 @@
-use std::{
-    any::Any,
-    collections::HashMap,
-    io,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{any::Any, collections::HashMap, io, path::PathBuf, time::Duration};
 
-use cryonet_lib::{fullmesh::FullMeshHandle, mesh::{MeshHandle, igp::IgpHandle, packet::{Packet, Payload}}};
+use cryonet_lib::{
+    fullmesh::FullMeshHandle,
+    mesh::{
+        MeshHandle,
+        igp::IgpHandle,
+        packet::{Packet, Payload},
+    },
+};
 use cryonet_uapi::{CryonetUapi, IgpRoute};
-use sactor::{error::{SactorError, SactorResult}, sactor};
+use sactor::{
+    error::{SactorError, SactorResult},
+    sactor,
+};
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs::remove_file,

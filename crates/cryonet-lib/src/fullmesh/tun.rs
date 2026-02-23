@@ -5,7 +5,10 @@ use std::{
 
 use bytes::Bytes;
 use futures::future::select_all;
-use sactor::{error::{SactorError, SactorResult}, sactor};
+use sactor::{
+    error::{SactorError, SactorResult},
+    sactor,
+};
 use tokio::{
     select,
     sync::broadcast::{self, error::RecvError},

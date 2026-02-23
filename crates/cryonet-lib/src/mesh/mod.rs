@@ -3,7 +3,10 @@ use std::{collections::HashMap, fmt::Debug};
 use async_trait::async_trait;
 use futures::future::join_all;
 use packet::{NodeId, Packet, Payload};
-use sactor::{error::{SactorError, SactorResult}, sactor};
+use sactor::{
+    error::{SactorError, SactorResult},
+    sactor,
+};
 use tokio::{
     select,
     sync::{broadcast, mpsc, watch},

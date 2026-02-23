@@ -1,12 +1,11 @@
-use std::{
-    any::Any,
-    collections::HashMap,
-    time::Duration,
-};
+use std::{any::Any, collections::HashMap, time::Duration};
 
 use cidr::AnyIpCidr;
 use cryonet_uapi::ConnState;
-use sactor::{error::{SactorError, SactorResult}, sactor};
+use sactor::{
+    error::{SactorError, SactorResult},
+    sactor,
+};
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,

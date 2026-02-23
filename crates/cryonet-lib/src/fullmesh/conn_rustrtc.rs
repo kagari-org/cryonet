@@ -28,12 +28,15 @@ pub struct PeerConn {
 impl PeerConn {
     pub async fn new(ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
         let peer = PeerConnection::new(RtcConfiguration {
-            ice_servers: ice_servers.into_iter().map(|s| rustrtc::IceServer {
-                urls: vec![s.url],
-                username: s.username,
-                credential: s.credential,
-                ..Default::default()
-            }).collect(),
+            ice_servers: ice_servers
+                .into_iter()
+                .map(|s| rustrtc::IceServer {
+                    urls: vec![s.url],
+                    username: s.username,
+                    credential: s.credential,
+                    ..Default::default()
+                })
+                .collect(),
             ..Default::default()
         });
         let (source, track, _) = sample_track(MediaKind::Audio, 1024);

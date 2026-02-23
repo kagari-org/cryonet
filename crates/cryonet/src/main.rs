@@ -1,11 +1,16 @@
 #![feature(try_blocks)]
+#![allow(clippy::new_ret_no_self)]
 use std::{env::var, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::{Result, anyhow};
 use cidr::AnyIpCidr;
 use clap::Parser;
 use clap_num::maybe_hex;
-use cryonet_lib::{connection::ConnManager, fullmesh::{FullMesh, IceServer, tun::TunManager}, mesh::{Mesh, igp::Igp}};
+use cryonet_lib::{
+    connection::ConnManager,
+    fullmesh::{FullMesh, IceServer, tun::TunManager},
+    mesh::{Mesh, igp::Igp},
+};
 use cryonet_uapi::NodeId;
 use sactor::error::SactorResult;
 use tokio::{signal::ctrl_c, task::LocalSet};
@@ -40,10 +45,7 @@ struct Args {
 fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
     let parts: Vec<_> = input.split('|').collect();
     if parts.len() == 1 {
-        Ok(IceServer {
-            url: parts[0].to_string(),
-            ..Default::default()
-        })
+        Ok(IceServer { url: parts[0].to_string(), ..Default::default() })
     } else if parts.len() == 3 {
         Ok(IceServer {
             url: parts[0].to_string(),
@@ -66,18 +68,20 @@ async fn main() -> SactorResult<()> {
         (None, Err(_)) => PathBuf::from("cryonet.ctl"),
     };
 
-    LocalSet::new().run_until(async move {
-        let result: SactorResult<()> = try {
-            let mesh = Mesh::new(args.id);
-            let igp = Igp::new(args.id, mesh.clone()).await?;
-            let _mgr = ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen).await?;
-            let fm = FullMesh::new(args.id, mesh.clone(), args.ice_servers, args.candidate_filter_prefix).await?;
-            let _tm = TunManager::new(fm.clone(), args.interface_prefix, args.enable_packet_information).await?;
-            let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;
+    LocalSet::new()
+        .run_until(async move {
+            let result: SactorResult<()> = try {
+                let mesh = Mesh::new(args.id);
+                let igp = Igp::new(args.id, mesh.clone()).await?;
+                let _mgr = ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen).await?;
+                let fm = FullMesh::new(args.id, mesh.clone(), args.ice_servers, args.candidate_filter_prefix).await?;
+                let _tm = TunManager::new(fm.clone(), args.interface_prefix, args.enable_packet_information).await?;
+                let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;
 
-            ctrl_c().await?;
-        };
-        result
-    }).await?;
+                ctrl_c().await?;
+            };
+            result
+        })
+        .await?;
     Ok(())
 }

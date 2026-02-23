@@ -7,7 +7,12 @@ use cryonet_uapi::ConnState;
 use sactor::error::{SactorError, SactorResult};
 use tokio::sync::{Mutex, broadcast, watch};
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{MediaStreamTrack, MediaStreamTrackGenerator, MediaStreamTrackGeneratorInit, MediaStreamTrackProcessor, MediaStreamTrackProcessorInit, ReadableStreamDefaultReader, RtcConfiguration, RtcIceCandidateInit, RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent, RtcPeerConnectionState, RtcSdpType, RtcSessionDescription, RtcSessionDescriptionInit, RtcTrackEvent, WritableStreamDefaultWriter, js_sys::{Array, JSON, Uint8Array}, wasm_bindgen::{JsCast, prelude::Closure}};
+use web_sys::{
+    MediaStreamTrack, MediaStreamTrackGenerator, MediaStreamTrackGeneratorInit, MediaStreamTrackProcessor, MediaStreamTrackProcessorInit, ReadableStreamDefaultReader, RtcConfiguration, RtcIceCandidateInit, RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent,
+    RtcPeerConnectionState, RtcSdpType, RtcSessionDescription, RtcSessionDescriptionInit, RtcTrackEvent, WritableStreamDefaultWriter,
+    js_sys::{Array, JSON, Uint8Array},
+    wasm_bindgen::{JsCast, prelude::Closure},
+};
 
 use crate::{errors::Error, fullmesh::IceServer, time::Instant};
 
@@ -30,17 +35,20 @@ pub struct PeerConn {
 
 impl PeerConn {
     pub async fn new(ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
-        let ice_servers: Vec<_> = ice_servers.into_iter().map(|server| {
-            let ice_server = RtcIceServer::new();
-            ice_server.set_url(&server.url);
-            if let Some(username) = server.username {
-                ice_server.set_username(&username);
-            }
-            if let Some(credential) = server.credential {
-                ice_server.set_credential(&credential);
-            }
-            ice_server
-        }).collect();
+        let ice_servers: Vec<_> = ice_servers
+            .into_iter()
+            .map(|server| {
+                let ice_server = RtcIceServer::new();
+                ice_server.set_url(&server.url);
+                if let Some(username) = server.username {
+                    ice_server.set_username(&username);
+                }
+                if let Some(credential) = server.credential {
+                    ice_server.set_credential(&credential);
+                }
+                ice_server
+            })
+            .collect();
         let ice_servers: Array = Array::from_iter(ice_servers);
         let config = RtcConfiguration::new();
         config.set_ice_servers(&ice_servers);
@@ -124,8 +132,7 @@ impl PeerConn {
             .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         sdp.set_sdp(&offer.sdp());
-        JsFuture::from(self.peer.set_local_description(&sdp)).await
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        JsFuture::from(self.peer.set_local_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
         Ok(offer.sdp())
     }
 
@@ -133,8 +140,7 @@ impl PeerConn {
         // TODO: filter candidate
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         sdp.set_sdp(&sdp_str);
-        JsFuture::from(self.peer.set_remote_description(&sdp)).await
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        JsFuture::from(self.peer.set_remote_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
         let answer: RtcSessionDescription = JsFuture::from(self.peer.create_answer())
             .await
             .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
@@ -142,8 +148,7 @@ impl PeerConn {
             .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
         sdp.set_sdp(&answer.sdp());
-        JsFuture::from(self.peer.set_local_description(&sdp)).await
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        JsFuture::from(self.peer.set_local_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
         Ok(answer.sdp())
     }
 
@@ -151,8 +156,7 @@ impl PeerConn {
         // TODO: filter candidate
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
         sdp.set_sdp(&sdp_str);
-        JsFuture::from(self.peer.set_remote_description(&sdp)).await
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        JsFuture::from(self.peer.set_remote_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
         Ok(())
     }
 
@@ -162,13 +166,8 @@ impl PeerConn {
 
     pub async fn add_ice_candidate(&self, candidate: String) -> SactorResult<()> {
         // TODO: filter candidate
-        let candidate: RtcIceCandidateInit = JSON::parse(&candidate)
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
-            .dyn_into()
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        JsFuture::from(self.peer.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&candidate)))
-            .await
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        let candidate: RtcIceCandidateInit = JSON::parse(&candidate).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?.dyn_into().map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        JsFuture::from(self.peer.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&candidate))).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
         Ok(())
     }
 
@@ -181,8 +180,7 @@ impl PeerConn {
     }
 
     pub async fn receiver(&self) -> SactorResult<PeerConnReceiver> {
-        let track = self.track.lock().await.clone()
-            .ok_or(Error::Unknown)?;
+        let track = self.track.lock().await.clone().ok_or(Error::Unknown)?;
         let track = MediaStreamTrackProcessor::new(&MediaStreamTrackProcessorInit::new(&track))
             .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
             .readable()
@@ -211,15 +209,15 @@ pub struct PeerConnReceiver {
 impl PeerConnSender {
     pub async fn send(&self, data: Bytes) -> SactorResult<()> {
         let data = Uint8Array::from(&data[..]);
-        JsFuture::from(self.track.write_with_chunk(&data)).await
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        JsFuture::from(self.track.write_with_chunk(&data)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
         Ok(())
     }
 }
 
 impl PeerConnReceiver {
     pub async fn recv(&self) -> SactorResult<Bytes> {
-        let result = JsFuture::from(self.track.read()).await
+        let result = JsFuture::from(self.track.read())
+            .await
             .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
             .dyn_into::<web_sys::ReadableStreamReadResult>()
             .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;

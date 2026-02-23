@@ -13,7 +13,10 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use reqwest_websocket::{CloseCode, Message, Upgrade};
-use sactor::{error::{SactorError, SactorResult}, sactor};
+use sactor::{
+    error::{SactorError, SactorResult},
+    sactor,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -21,9 +24,9 @@ use tracing::{error, info, warn};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::link::new_tungstenite_ws_link;
 #[cfg(not(target_arch = "wasm32"))]
-use tokio_tungstenite::accept_async;
-#[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpListener;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio_tungstenite::accept_async;
 
 use crate::time::{Interval, interval};
 
@@ -137,21 +140,18 @@ impl ConnManager {
         info!("Connecting to server {} ...", server);
         let client = reqwest::Client::new();
         let mut ws = client.get(&server).upgrade().send().await?.into_websocket().await?;
-        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&AuthPacket {
-            token: token.clone(),
-            node_id: id,
-        })?))).await?;
-        let AuthPacket { token: neigh_token, node_id: neigh_id }= match ws.next().await {
+        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&AuthPacket { token: token.clone(), node_id: id })?))).await?;
+        let AuthPacket { token: neigh_token, node_id: neigh_id } = match ws.next().await {
             Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
             _ => return Err(SactorError::Other(anyhow!("Failed to receive authentication response from server {}", server))),
         };
         if let Some(token) = &token {
             match neigh_token {
-                Some(neigh_token) if neigh_token == *token => {},
+                Some(neigh_token) if neigh_token == *token => {}
                 _ => {
                     let _ = ws.close(CloseCode::Abnormal, None).await;
-                    return Err(SactorError::Other(anyhow!("Server {} provided invalid authentication token", server)))
-                },
+                    return Err(SactorError::Other(anyhow!("Server {} provided invalid authentication token", server)));
+                }
             }
         }
         servers_map.lock().await.insert(server.clone(), neigh_id);
@@ -183,21 +183,18 @@ impl ConnManager {
         let (stream, addr) = param?;
         info!("Accepted connection from {}", addr);
         let mut ws = accept_async(stream).await?;
-        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&AuthPacket {
-            token: self.token.clone(),
-            node_id: self.id,
-        })?))).await?;
-        let AuthPacket { token: neigh_token, node_id: neigh_id }= match ws.next().await {
+        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&AuthPacket { token: self.token.clone(), node_id: self.id })?))).await?;
+        let AuthPacket { token: neigh_token, node_id: neigh_id } = match ws.next().await {
             Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
             _ => return Err(SactorError::Other(anyhow!("Failed to receive authentication response from connection at {}", addr))),
         };
         if let Some(token) = &self.token {
             match neigh_token {
-                Some(neigh_token) if neigh_token == *token => {},
+                Some(neigh_token) if neigh_token == *token => {}
                 _ => {
                     let _ = ws.close(None).await;
-                    return Err(SactorError::Other(anyhow!("Connection from {} provided invalid authentication token", addr)))
-                },
+                    return Err(SactorError::Other(anyhow!("Connection from {} provided invalid authentication token", addr)));
+                }
             }
         }
         let (sink, stream) = new_tungstenite_ws_link(ws);

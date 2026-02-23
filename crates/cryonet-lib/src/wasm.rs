@@ -1,5 +1,13 @@
 use std::{future::pending, net::SocketAddr, str::FromStr};
 
+use crate::{
+    connection::{ConnManager, ConnManagerHandle},
+    fullmesh::{FullMesh, FullMeshHandle, IceServer},
+    mesh::{
+        Mesh, MeshHandle,
+        igp::{Igp, IgpHandle},
+    },
+};
 use anyhow::Result;
 use cidr::AnyIpCidr;
 use cryonet_uapi::NodeId;
@@ -10,7 +18,6 @@ use tracing_subscriber::EnvFilter;
 use tracing_web::MakeWebConsoleWriter;
 use wasm_bindgen::prelude::*;
 use web_sys::{Event, EventTarget, js_sys::Function};
-use crate::{connection::{ConnManager, ConnManagerHandle}, fullmesh::{FullMesh, FullMeshHandle, IceServer}, mesh::{Mesh, MeshHandle, igp::{Igp, IgpHandle}}};
 
 thread_local! {
     static LOCAL_SET: LocalSet = LocalSet::new();
@@ -38,7 +45,13 @@ pub struct Cryonet {
 #[wasm_bindgen]
 impl Cryonet {
     pub async fn init(args: JsValue) -> Result<Cryonet, JsValue> {
-        let Args { id, token, servers, ice_servers, candidate_filter_prefix } = serde_wasm_bindgen::from_value(args)?;
+        let Args {
+            id,
+            token,
+            servers,
+            ice_servers,
+            candidate_filter_prefix,
+        } = serde_wasm_bindgen::from_value(args)?;
         let candidate_filter_prefix = match candidate_filter_prefix.map(|c| AnyIpCidr::from_str(&c)) {
             Some(Ok(cidr)) => Some(cidr),
             Some(Err(e)) => return Err(JsValue::from_str(e.to_string().as_str())),
@@ -47,14 +60,10 @@ impl Cryonet {
 
         let _guard = LOCAL_SET.with(|local_set| local_set.enter());
         let mesh = Mesh::new(id);
-        let igp = Igp::new(id, mesh.clone()).await
-            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
-        let mgr = ConnManager::new(id, mesh.clone(), token, servers, SocketAddr::from_str("0.0.0.0:0").unwrap()).await
-            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
-        let fm = FullMesh::new(id, mesh.clone(), ice_servers, candidate_filter_prefix).await
-            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
-        let mut refresh = fm.subscribe_refresh().await
-            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
+        let igp = Igp::new(id, mesh.clone()).await.map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
+        let mgr = ConnManager::new(id, mesh.clone(), token, servers, SocketAddr::from_str("0.0.0.0:0").unwrap()).await.map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
+        let fm = FullMesh::new(id, mesh.clone(), ice_servers, candidate_filter_prefix).await.map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
+        let mut refresh = fm.subscribe_refresh().await.map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
         let refresh_et = EventTarget::new()?;
         let refresh2_et = refresh_et.clone();
         tokio::task::spawn_local(async move {
@@ -103,7 +112,8 @@ fn main() -> Result<(), JsValue> {
                 pin_mut!(run);
                 run.poll_unpin(cx)
             })
-        }).await;
+        })
+        .await;
     });
     Ok(())
 }

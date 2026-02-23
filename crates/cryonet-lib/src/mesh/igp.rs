@@ -8,13 +8,14 @@ use std::{
 };
 
 use anyhow::Result;
-use sactor::{error::{SactorError, SactorResult}, sactor};
+use sactor::{
+    error::{SactorError, SactorResult},
+    sactor,
+};
 use serde::{Deserialize, Serialize};
-use tokio::{
-    sync::{
-        broadcast::{self, error::RecvError},
-        mpsc,
-    },
+use tokio::sync::{
+    broadcast::{self, error::RecvError},
+    mpsc,
 };
 use tracing::{debug, error, warn};
 
