@@ -6,18 +6,18 @@ use cidr::AnyIpCidr;
 use cryonet_uapi::ConnState;
 use sactor::error::{SactorError, SactorResult};
 use tokio::sync::{Mutex, broadcast, watch};
+use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     MediaStreamTrack, MediaStreamTrackGenerator, MediaStreamTrackGeneratorInit, MediaStreamTrackProcessor, MediaStreamTrackProcessorInit, ReadableStreamDefaultReader, RtcConfiguration, RtcIceCandidateInit, RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent,
-    RtcPeerConnectionState, RtcSdpType, RtcSessionDescription, RtcSessionDescriptionInit, RtcTrackEvent, WritableStreamDefaultWriter,
-    js_sys::{Array, JSON, Uint8Array},
+    RtcPeerConnectionState, RtcSdpType, RtcSessionDescriptionInit, RtcTrackEvent, WritableStreamDefaultWriter,
+    js_sys::{Array, Reflect, Uint8Array},
     wasm_bindgen::{JsCast, prelude::Closure},
 };
 
-use crate::{errors::Error, fullmesh::IceServer, time::Instant};
+use crate::{errors::Error, fullmesh::IceServer, time::Instant, wasm::LOCAL_SET};
 
 pub struct PeerConn {
-    candidate_filter_prefix: Option<AnyIpCidr>,
     peer: RtcPeerConnection,
     sender: PeerConnSender,
 
@@ -28,13 +28,13 @@ pub struct PeerConn {
     pub time: Instant,
     pub selected: bool,
 
-    _on_connection_state_change: Closure<dyn Fn() -> ()>,
-    _on_ice_candidate: Closure<dyn Fn(RtcPeerConnectionIceEvent) -> ()>,
-    _on_track: Closure<dyn Fn(RtcTrackEvent) -> ()>,
+    _on_connection_state_change: Closure<dyn Fn()>,
+    _on_ice_candidate: Closure<dyn Fn(RtcPeerConnectionIceEvent)>,
+    _on_track: Closure<dyn Fn(RtcTrackEvent)>,
 }
 
 impl PeerConn {
-    pub async fn new(ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
+    pub async fn new(ice_servers: Vec<IceServer>, _candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
         let ice_servers: Vec<_> = ice_servers
             .into_iter()
             .map(|server| {
@@ -56,7 +56,7 @@ impl PeerConn {
         let peer = RtcPeerConnection::new_with_configuration(&config).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
 
         let track = MediaStreamTrackGenerator::new(&MediaStreamTrackGeneratorInit::new("audio")).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        peer.add_track_0(&track, &web_sys::js_sys::Undefined::UNDEFINED.dyn_into().unwrap());
+        peer.add_track_0(&track);
         let track = track.writable().get_writer().map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
 
         let (state_tx, state_rx) = watch::channel(ConnState::New);
@@ -77,24 +77,29 @@ impl PeerConn {
         let (candidate_tx, _) = broadcast::channel(64);
         let candidate_tx2 = candidate_tx.clone();
         let on_ice_candidate = Closure::new(move |candidate: RtcPeerConnectionIceEvent| {
-            if let Some(candidate) = candidate.candidate() {
-                let _ = candidate_tx2.send(JSON::stringify(&candidate.to_json()).unwrap().as_string().unwrap());
+            if let Some(candidate) = candidate.candidate()
+                && let Some(candidate) = candidate.candidate().strip_prefix("candidate:")
+            {
+                let _ = candidate_tx2.send(candidate.to_string());
             }
         });
-        peer.set_onicecandidate(Some(&on_ice_candidate.as_ref().unchecked_ref()));
+        peer.set_onicecandidate(Some(on_ice_candidate.as_ref().unchecked_ref()));
 
         let track_rx = Arc::new(Mutex::new(None));
         let track_rx2 = track_rx.clone();
         let on_track = Closure::new(move |event: RtcTrackEvent| {
             let track_rx = track_rx2.clone();
-            tokio::task::spawn_local(async move {
-                *track_rx.lock().await = Some(event.track());
+            LOCAL_SET.with(|local_set| {
+                local_set.spawn_local(async move {
+                    let track = event.track();
+                    let mut track_rx = track_rx.lock().await;
+                    *track_rx = Some(track);
+                })
             });
         });
-        peer.set_ontrack(Some(&on_track.as_ref().unchecked_ref()));
+        peer.set_ontrack(Some(on_track.as_ref().unchecked_ref()));
 
         Ok(Self {
-            candidate_filter_prefix,
             peer,
             sender: PeerConnSender { track },
             state_watcher: state_rx,
@@ -125,35 +130,27 @@ impl PeerConn {
     }
 
     pub async fn offer(&mut self) -> SactorResult<String> {
-        let offer: RtcSessionDescription = JsFuture::from(self.peer.create_offer())
-            .await
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
-            .dyn_into()
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        let offer = JsFuture::from(self.peer.create_offer()).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        let sdp_str = Reflect::get(&offer, &JsValue::from_str("sdp")).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?.as_string().unwrap();
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
-        sdp.set_sdp(&offer.sdp());
+        sdp.set_sdp(&sdp_str);
         JsFuture::from(self.peer.set_local_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        Ok(offer.sdp())
+        Ok(sdp_str)
     }
 
     pub async fn answer(&mut self, sdp_str: String) -> SactorResult<String> {
-        // TODO: filter candidate
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         sdp.set_sdp(&sdp_str);
         JsFuture::from(self.peer.set_remote_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        let answer: RtcSessionDescription = JsFuture::from(self.peer.create_answer())
-            .await
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
-            .dyn_into()
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        let answer = JsFuture::from(self.peer.create_answer()).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        let sdp_str = Reflect::get(&answer, &JsValue::from_str("sdp")).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?.as_string().unwrap();
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
-        sdp.set_sdp(&answer.sdp());
+        sdp.set_sdp(&sdp_str);
         JsFuture::from(self.peer.set_local_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        Ok(answer.sdp())
+        Ok(sdp_str)
     }
 
     pub async fn answered(&self, sdp_str: String) -> SactorResult<()> {
-        // TODO: filter candidate
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
         sdp.set_sdp(&sdp_str);
         JsFuture::from(self.peer.set_remote_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
@@ -165,8 +162,9 @@ impl PeerConn {
     }
 
     pub async fn add_ice_candidate(&self, candidate: String) -> SactorResult<()> {
-        // TODO: filter candidate
-        let candidate: RtcIceCandidateInit = JSON::parse(&candidate).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?.dyn_into().map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        let candidate = format!("candidate:{}", candidate);
+        let candidate = RtcIceCandidateInit::new(&candidate);
+        candidate.set_sdp_m_line_index(Some(0));
         JsFuture::from(self.peer.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&candidate))).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
         Ok(())
     }
@@ -182,11 +180,11 @@ impl PeerConn {
     pub async fn receiver(&self) -> SactorResult<PeerConnReceiver> {
         let track = self.track.lock().await.clone().ok_or(Error::Unknown)?;
         let track = MediaStreamTrackProcessor::new(&MediaStreamTrackProcessorInit::new(&track))
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
+            .map_err(|err| SactorError::Other(anyhow!("10 {:?}", err)))?
             .readable()
             .get_reader()
             .dyn_into()
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+            .map_err(|err| SactorError::Other(anyhow!("11 {:?}", err)))?;
         Ok(PeerConnReceiver { track })
     }
 }
@@ -228,54 +226,3 @@ impl PeerConnReceiver {
         Ok(Bytes::copy_from_slice(&data.to_vec()))
     }
 }
-
-// fn filter_candidate(sdp: RTCSessionDescription, cidr: &Option<AnyIpCidr>) -> SactorResult<RTCSessionDescription> {
-//     let mut s = sdp.unmarshal()?;
-//     for sections in &mut s.media_descriptions {
-//         sections.attributes.retain(|attr| {
-//             if attr.key != "candidate" {
-//                 return true;
-//             }
-//             if let Some(val) = &attr.value {
-//                 let candidate_value = match val.strip_prefix("candidate:") {
-//                     Some(s) => s,
-//                     None => val.as_str(),
-//                 };
-//                 if candidate_value.is_empty() {
-//                     return false;
-//                 }
-//                 if let Ok(candidate) = unmarshal_candidate(candidate_value)
-//                     && let Some(cidr) = cidr
-//                 {
-//                     if cidr.contains(&candidate.addr().ip()) {
-//                         return false;
-//                     }
-//                 }
-//             }
-//             true
-//         });
-//     }
-//     match sdp.sdp_type {
-//         RTCSdpType::Offer => Ok(RTCSessionDescription::offer(s.marshal())?),
-//         RTCSdpType::Answer => Ok(RTCSessionDescription::answer(s.marshal())?),
-//         RTCSdpType::Pranswer => Ok(RTCSessionDescription::pranswer(s.marshal())?),
-//         _ => Err(Error::Unknown.into()),
-//     }
-// }
-
-// fn check_candidate(candidate: &RTCIceCandidateInit, cidr: &Option<AnyIpCidr>) -> bool {
-//     let Some(cidr) = cidr else {
-//         return true;
-//     };
-//     let candidate_value = match candidate.candidate.strip_prefix("candidate:") {
-//         Some(s) => s,
-//         None => candidate.candidate.as_str(),
-//     };
-//     if candidate_value.is_empty() {
-//         return false;
-//     }
-//     let Ok(candidate) = unmarshal_candidate(candidate_value) else {
-//         return false;
-//     };
-//     !cidr.contains(&candidate.addr().ip())
-// }

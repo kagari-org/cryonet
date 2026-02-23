@@ -9,7 +9,6 @@ use crate::{
     },
 };
 use anyhow::Result;
-use cidr::AnyIpCidr;
 use cryonet_uapi::NodeId;
 use futures::{FutureExt, future::poll_fn, pin_mut};
 use serde::{Deserialize, Serialize};
@@ -20,7 +19,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{Event, EventTarget, js_sys::Function};
 
 thread_local! {
-    static LOCAL_SET: LocalSet = LocalSet::new();
+    pub(crate) static LOCAL_SET: LocalSet = LocalSet::new();
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +28,6 @@ pub struct Args {
     pub token: Option<String>,
     pub servers: Vec<String>,
     pub ice_servers: Vec<IceServer>,
-    pub candidate_filter_prefix: Option<String>,
 }
 
 #[wasm_bindgen]
@@ -45,24 +43,13 @@ pub struct Cryonet {
 #[wasm_bindgen]
 impl Cryonet {
     pub async fn init(args: JsValue) -> Result<Cryonet, JsValue> {
-        let Args {
-            id,
-            token,
-            servers,
-            ice_servers,
-            candidate_filter_prefix,
-        } = serde_wasm_bindgen::from_value(args)?;
-        let candidate_filter_prefix = match candidate_filter_prefix.map(|c| AnyIpCidr::from_str(&c)) {
-            Some(Ok(cidr)) => Some(cidr),
-            Some(Err(e)) => return Err(JsValue::from_str(e.to_string().as_str())),
-            None => None,
-        };
+        let Args { id, token, servers, ice_servers } = serde_wasm_bindgen::from_value(args)?;
 
         let _guard = LOCAL_SET.with(|local_set| local_set.enter());
         let mesh = Mesh::new(id);
         let igp = Igp::new(id, mesh.clone()).await.map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
         let mgr = ConnManager::new(id, mesh.clone(), token, servers, SocketAddr::from_str("0.0.0.0:0").unwrap()).await.map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
-        let fm = FullMesh::new(id, mesh.clone(), ice_servers, candidate_filter_prefix).await.map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
+        let fm = FullMesh::new(id, mesh.clone(), ice_servers, None).await.map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
         let mut refresh = fm.subscribe_refresh().await.map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
         let refresh_et = EventTarget::new()?;
         let refresh2_et = refresh_et.clone();
