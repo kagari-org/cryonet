@@ -1,22 +1,31 @@
-use std::sync::Arc;
+use std::{future::pending, sync::Arc};
 
+use anyhow::anyhow;
+use async_recursion::async_recursion;
 use bytes::Bytes;
 use cidr::AnyIpCidr;
 use cryonet_uapi::ConnState;
 use rustrtc::{
-    IceCandidate, PeerConnection, PeerConnectionState, RtcConfiguration, RtpCodecParameters, SdpType, SessionDescription,
+    DataChannelEvent, IceCandidate, PeerConnection, PeerConnectionEvent, PeerConnectionState, RtcConfiguration, RtpCodecParameters, SdpType, SessionDescription,
     media::{AudioFrame, AudioStreamTrack, MediaKind, SampleStreamSource, SampleStreamTrack, sample_track},
+    transports::sctp::DataChannel,
 };
 use sactor::error::{SactorError, SactorResult};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{Mutex, broadcast, watch};
 
-use crate::{errors::Error, fullmesh::IceServer, time::Instant};
+use crate::{
+    errors::Error,
+    fullmesh::{FullMeshType, IceServer},
+    time::Instant,
+};
 
 pub struct PeerConn {
     candidate_filter_prefix: Option<AnyIpCidr>,
 
     peer: PeerConnection,
-    sender: PeerConnSender,
+    send_source: Arc<SampleStreamSource>,
+    dc: Arc<Mutex<Option<Arc<DataChannel>>>>,
+    full_mesh_type: FullMeshType,
 
     state_watcher: watch::Receiver<ConnState>,
     candidate_tx: broadcast::Sender<String>,
@@ -67,12 +76,25 @@ impl PeerConn {
             }
         });
 
+        let peer2 = peer.clone();
+        let dc = Arc::new(Mutex::new(None));
+        let dc2 = dc.clone();
+        tokio::spawn(async move {
+            while let Some(event) = peer2.recv().await {
+                if let PeerConnectionEvent::DataChannel(dc) = event {
+                    *dc2.lock().await = Some(dc);
+                }
+            }
+        });
+
         Ok(Self {
             candidate_filter_prefix,
             peer,
-            sender: PeerConnSender { source: Arc::new(source) },
             state_watcher,
             candidate_tx,
+            send_source: Arc::new(source),
+            dc,
+            full_mesh_type: FullMeshType::Any,
             time: Instant::now(),
             selected: false,
         })
@@ -95,25 +117,28 @@ impl PeerConn {
         self.peer.remote_description().is_some()
     }
 
-    pub async fn offer(&mut self) -> SactorResult<String> {
+    pub async fn offer(&mut self) -> SactorResult<(String, FullMeshType)> {
+        *self.dc.lock().await = Some(self.peer.create_data_channel("cryonet", None)?);
         let offer = self.peer.create_offer().await?;
         self.peer.set_local_description(offer.clone())?;
-        Ok(offer.to_sdp_string())
+        Ok((offer.to_sdp_string(), FullMeshType::Any))
     }
 
-    pub async fn answer(&mut self, sdp: String) -> SactorResult<String> {
+    pub async fn answer(&mut self, sdp: String, full_mesh_type: FullMeshType) -> SactorResult<(String, FullMeshType)> {
         let mut sdp = SessionDescription::parse(SdpType::Offer, &sdp)?;
         filter_candidate(&mut sdp, &self.candidate_filter_prefix);
         self.peer.set_remote_description(sdp).await?;
         let answer = self.peer.create_answer().await?;
         self.peer.set_local_description(answer.clone())?;
-        Ok(answer.to_sdp_string())
+        self.full_mesh_type = full_mesh_type;
+        Ok((answer.to_sdp_string(), full_mesh_type))
     }
 
-    pub async fn answered(&self, sdp: String) -> SactorResult<()> {
+    pub async fn answered(&mut self, sdp: String, full_mesh_type: FullMeshType) -> SactorResult<()> {
         let mut sdp = SessionDescription::parse(SdpType::Answer, &sdp)?;
         filter_candidate(&mut sdp, &self.candidate_filter_prefix);
         self.peer.set_remote_description(sdp).await?;
+        self.full_mesh_type = full_mesh_type;
         Ok(())
     }
 
@@ -133,13 +158,24 @@ impl PeerConn {
         self.peer.ice_transport().get_selected_pair().await.map(|pair| pair.remote.to_sdp())
     }
 
-    pub async fn sender(&self) -> PeerConnSender {
-        self.sender.clone()
+    pub async fn sender(&self) -> SactorResult<PeerConnSender> {
+        match self.full_mesh_type {
+            FullMeshType::Any => Ok(PeerConnSender::Srtp(self.send_source.clone())),
+            FullMeshType::DataChannel => Ok(PeerConnSender::DataChannel(self.peer.clone())),
+        }
     }
 
     pub async fn receiver(&self) -> SactorResult<PeerConnReceiver> {
-        let track = self.peer.get_transceivers()[0].receiver().ok_or(Error::Unknown)?.track();
-        Ok(PeerConnReceiver { track })
+        match self.full_mesh_type {
+            FullMeshType::Any => {
+                let track = self.peer.get_transceivers()[0].receiver().ok_or(Error::Unknown)?.track();
+                Ok(PeerConnReceiver::Srtp(track))
+            }
+            FullMeshType::DataChannel => {
+                let recv_dc = self.dc.lock().await.as_ref().ok_or(Error::Unknown)?.clone();
+                Ok(PeerConnReceiver::DataChannel(self.peer.clone(), recv_dc))
+            }
+        }
     }
 }
 
@@ -150,24 +186,44 @@ impl Drop for PeerConn {
 }
 
 #[derive(Clone)]
-pub struct PeerConnSender {
-    source: Arc<SampleStreamSource>,
+pub enum PeerConnSender {
+    Srtp(Arc<SampleStreamSource>),
+    DataChannel(PeerConnection),
 }
 
-pub struct PeerConnReceiver {
-    track: Arc<SampleStreamTrack>,
+pub enum PeerConnReceiver {
+    Srtp(Arc<SampleStreamTrack>),
+    DataChannel(PeerConnection, Arc<DataChannel>),
 }
 
 impl PeerConnSender {
     pub async fn send(&self, data: Bytes) -> SactorResult<()> {
-        self.source.send_audio(AudioFrame { data, ..Default::default() }).await?;
+        match self {
+            PeerConnSender::Srtp(source) => source.send_audio(AudioFrame { data, ..Default::default() }).await?,
+            PeerConnSender::DataChannel(peer) => peer.send_data(0, &data).await?,
+        }
         Ok(())
     }
 }
 
 impl PeerConnReceiver {
+    #[async_recursion]
     pub async fn recv(&self) -> SactorResult<Bytes> {
-        Ok(self.track.recv_audio().await?.data)
+        match self {
+            PeerConnReceiver::Srtp(track) => Ok(track.recv_audio().await?.data),
+            PeerConnReceiver::DataChannel(pc, dc) => {
+                let event = dc.recv().await.ok_or_else(|| SactorError::Other(anyhow!("Data channel closed")))?;
+                match event {
+                    DataChannelEvent::Open => self.recv().await,
+                    DataChannelEvent::Message(bytes) => Ok(bytes),
+                    DataChannelEvent::Close => {
+                        pc.close();
+                        // wait for refresh
+                        pending().await
+                    }
+                }
+            }
+        }
     }
 }
 

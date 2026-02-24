@@ -39,6 +39,12 @@ pub struct IceServer {
     pub credential: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FullMeshType {
+    Any,
+    DataChannel,
+}
+
 pub struct FullMesh {
     handle: FullMeshHandle,
 
@@ -61,8 +67,8 @@ pub struct FullMesh {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum FullMeshPayload {
-    Offer(Uuid, String),
-    Answer(Uuid, String),
+    Offer(Uuid, String, FullMeshType),
+    Answer(Uuid, String, FullMeshType),
     Candidate(Uuid, String),
 }
 
@@ -114,26 +120,26 @@ impl FullMesh {
             return Ok(());
         }
         match payload {
-            FullMeshPayload::Offer(id, offer) if self.id > src => {
+            FullMeshPayload::Offer(id, offer, fmt) if self.id > src => {
                 let mut conn = PeerConn::new(self.ice_servers.clone(), self.candidate_filter_prefix).await?;
                 start_peer_loop(self.handle.clone(), self.mesh.clone(), src, *id, &conn);
-                let answer = conn.answer(offer.clone()).await?;
+                let (answer, fmt) = conn.answer(offer.clone(), *fmt).await?;
                 if let Some((_, candidates)) = self.pending_candidates.remove(id) {
                     for candidate in candidates {
                         conn.add_ice_candidate(candidate).await?;
                     }
                 }
-                self.mesh.send_packet(src, Box::new(FullMeshPayload::Answer(*id, answer))).await?;
+                self.mesh.send_packet(src, Box::new(FullMeshPayload::Answer(*id, answer, fmt))).await?;
                 self.peers.entry(src).or_default().insert(*id, conn);
                 let _ = self.refresh.send(());
             }
-            FullMeshPayload::Answer(id, answer) if self.id < src => {
-                let conn = self.peers.get(&src).and_then(|conns| conns.get(id));
+            FullMeshPayload::Answer(id, answer, fmt) if self.id < src => {
+                let conn = self.peers.get_mut(&src).and_then(|conns| conns.get_mut(id));
                 let Some(conn) = conn else {
                     warn!("No PeerConn found for node {:X} id {}, ignoring", src, id);
                     return Ok(());
                 };
-                conn.answered(answer.clone()).await?;
+                conn.answered(answer.clone(), *fmt).await?;
                 if let Some((_, candidates)) = self.pending_candidates.remove(id) {
                     for candidate in candidates {
                         conn.add_ice_candidate(candidate).await?;
@@ -199,8 +205,8 @@ impl FullMesh {
                 let mut conn = PeerConn::new(self.ice_servers.clone(), self.candidate_filter_prefix).await?;
                 let id = Uuid::new_v4();
                 start_peer_loop(self.handle.clone(), self.mesh.clone(), node_id, id, &conn);
-                let offer = conn.offer().await?;
-                self.mesh.send_packet(node_id, Box::new(FullMeshPayload::Offer(id, offer))).await?;
+                let (offer, fmt) = conn.offer().await?;
+                self.mesh.send_packet(node_id, Box::new(FullMeshPayload::Offer(id, offer, fmt))).await?;
                 conns.insert(id, conn);
             };
             if let Err(err) = result {
@@ -260,7 +266,13 @@ impl FullMesh {
         for (node_id, conns) in &self.peers {
             for conn in conns.values() {
                 if conn.selected {
-                    senders.insert(*node_id, conn.sender().await);
+                    match conn.sender().await {
+                        Ok(sender) => senders.insert(*node_id, sender),
+                        Err(err) => {
+                            warn!("Failed to get sender from node {:X}: {}", node_id, err);
+                            continue;
+                        }
+                    };
                     break;
                 }
             }
