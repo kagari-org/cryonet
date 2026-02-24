@@ -33,29 +33,18 @@ wasm-bindgen-futures = "0.4.61"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tracing-web = "0.1.3"
 web-sys = { version = "0.3.87", features = [
-  "MediaStream",
-  "MediaStreamTrack",
-  "MediaStreamTrackGenerator",
-  "MediaStreamTrackGeneratorInit",
-  "MediaStreamTrackProcessor",
-  "MediaStreamTrackProcessorInit",
-  "ReadableStream",
-  "ReadableStreamDefaultReader",
-  "ReadableStreamReadResult",
   "RtcConfiguration",
+  "RtcDataChannel",
+  "RtcDataChannelEvent",
   "RtcIceCandidate",
   "RtcIceCandidateInit",
   "RtcIceServer",
   "RtcPeerConnection",
   "RtcPeerConnectionIceEvent",
   "RtcPeerConnectionState",
-  "RtcRtpSender",
   "RtcSdpType",
   "RtcSessionDescription",
   "RtcSessionDescriptionInit",
-  "RtcTrackEvent",
-  "WritableStream",
-  "WritableStreamDefaultWriter",
 ] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

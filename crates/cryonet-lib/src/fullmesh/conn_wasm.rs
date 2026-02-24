@@ -1,18 +1,15 @@
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use bytes::Bytes;
 use cidr::AnyIpCidr;
 use cryonet_uapi::ConnState;
 use sactor::error::{SactorError, SactorResult};
 use tokio::sync::{Mutex, broadcast, watch};
+use uuid::Uuid;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    MediaStreamTrack, MediaStreamTrackGenerator, MediaStreamTrackGeneratorInit, MediaStreamTrackProcessor, MediaStreamTrackProcessorInit, ReadableStreamDefaultReader, RtcConfiguration, RtcIceCandidateInit, RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent,
-    RtcPeerConnectionState, RtcSdpType, RtcSessionDescriptionInit, RtcTrackEvent, WritableStreamDefaultWriter,
-    js_sys::{Array, Reflect, Uint8Array},
-    wasm_bindgen::{JsCast, prelude::Closure},
+    RtcConfiguration, RtcDataChannel, RtcDataChannelEvent, RtcIceCandidateInit, RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent, RtcPeerConnectionState, RtcSdpType, RtcSessionDescriptionInit, js_sys::{Array, Reflect}, wasm_bindgen::{JsCast, prelude::Closure}
 };
 
 use crate::{errors::Error, fullmesh::IceServer, time::Instant, wasm::LOCAL_SET};
@@ -23,14 +20,14 @@ pub struct PeerConn {
 
     state_watcher: watch::Receiver<ConnState>,
     candidate_tx: broadcast::Sender<String>,
-    track: Arc<Mutex<Option<MediaStreamTrack>>>,
+    recv_dc: Arc<Mutex<Option<RtcDataChannel>>>,
 
     pub time: Instant,
     pub selected: bool,
 
     _on_connection_state_change: Closure<dyn Fn()>,
     _on_ice_candidate: Closure<dyn Fn(RtcPeerConnectionIceEvent)>,
-    _on_track: Closure<dyn Fn(RtcTrackEvent)>,
+    _on_dc: Closure<dyn Fn(RtcDataChannelEvent)>,
 }
 
 impl PeerConn {
@@ -55,9 +52,7 @@ impl PeerConn {
 
         let peer = RtcPeerConnection::new_with_configuration(&config).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
 
-        let track = MediaStreamTrackGenerator::new(&MediaStreamTrackGeneratorInit::new("audio")).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        peer.add_track_0(&track);
-        let track = track.writable().get_writer().map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        let dc = peer.create_data_channel(&Uuid::new_v4().to_string());
 
         let (state_tx, state_rx) = watch::channel(ConnState::New);
         let peer2 = peer.clone();
@@ -85,31 +80,29 @@ impl PeerConn {
         });
         peer.set_onicecandidate(Some(on_ice_candidate.as_ref().unchecked_ref()));
 
-        let track_rx = Arc::new(Mutex::new(None));
-        let track_rx2 = track_rx.clone();
-        let on_track = Closure::new(move |event: RtcTrackEvent| {
-            let track_rx = track_rx2.clone();
+        let recv_dc_rx = Arc::new(Mutex::new(None));
+        let recv_dc_rx2 = recv_dc_rx.clone();
+        let on_dc = Closure::new(move |event: RtcDataChannelEvent| {
+            let recv_dc_rx = recv_dc_rx2.clone();
             LOCAL_SET.with(|local_set| {
                 local_set.spawn_local(async move {
-                    let track = event.track();
-                    let mut track_rx = track_rx.lock().await;
-                    *track_rx = Some(track);
+                    *recv_dc_rx.lock().await = Some(event.channel());
                 })
             });
         });
-        peer.set_ontrack(Some(on_track.as_ref().unchecked_ref()));
+        peer.set_ondatachannel(Some(on_dc.as_ref().unchecked_ref()));
 
         Ok(Self {
             peer,
-            sender: PeerConnSender { track },
+            sender: dc,
             state_watcher: state_rx,
             candidate_tx,
-            track: track_rx,
+            recv_dc: recv_dc_rx,
             time: Instant::now(),
             selected: false,
             _on_connection_state_change: on_connection_state_change,
             _on_ice_candidate: on_ice_candidate,
-            _on_track: on_track,
+            _on_dc: on_dc,
         })
     }
 
@@ -178,14 +171,7 @@ impl PeerConn {
     }
 
     pub async fn receiver(&self) -> SactorResult<PeerConnReceiver> {
-        let track = self.track.lock().await.clone().ok_or(Error::Unknown)?;
-        let track = MediaStreamTrackProcessor::new(&MediaStreamTrackProcessorInit::new(&track))
-            .map_err(|err| SactorError::Other(anyhow!("10 {:?}", err)))?
-            .readable()
-            .get_reader()
-            .dyn_into()
-            .map_err(|err| SactorError::Other(anyhow!("11 {:?}", err)))?;
-        Ok(PeerConnReceiver { track })
+        Ok(self.recv_dc.lock().await.clone().ok_or(Error::Unknown)?)
     }
 }
 
@@ -195,34 +181,5 @@ impl Drop for PeerConn {
     }
 }
 
-#[derive(Clone)]
-pub struct PeerConnSender {
-    track: WritableStreamDefaultWriter,
-}
-
-pub struct PeerConnReceiver {
-    track: ReadableStreamDefaultReader,
-}
-
-impl PeerConnSender {
-    pub async fn send(&self, data: Bytes) -> SactorResult<()> {
-        let data = Uint8Array::from(&data[..]);
-        JsFuture::from(self.track.write_with_chunk(&data)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        Ok(())
-    }
-}
-
-impl PeerConnReceiver {
-    pub async fn recv(&self) -> SactorResult<Bytes> {
-        let result = JsFuture::from(self.track.read())
-            .await
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?
-            .dyn_into::<web_sys::ReadableStreamReadResult>()
-            .map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        if let Some(true) = result.get_done() {
-            return Err(Error::Unknown.into());
-        }
-        let data = Uint8Array::new(&result.get_value());
-        Ok(Bytes::copy_from_slice(&data.to_vec()))
-    }
-}
+pub type PeerConnSender = RtcDataChannel;
+pub type PeerConnReceiver = RtcDataChannel;

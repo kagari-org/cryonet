@@ -15,7 +15,7 @@ use tokio::task::LocalSet;
 use tracing_subscriber::EnvFilter;
 use tracing_web::MakeWebConsoleWriter;
 use wasm_bindgen::prelude::*;
-use web_sys::{Event, EventTarget, js_sys::Function};
+use web_sys::{Event, EventTarget, js_sys::{Array, Function, Map}};
 
 thread_local! {
     pub(crate) static LOCAL_SET: Rc<LocalSet> = Rc::new(LocalSet::new());
@@ -69,6 +69,32 @@ impl Cryonet {
 
     pub fn on_refresh(&self, callback: &Function) -> Result<(), JsValue> {
         self.on_refresh.add_event_listener_with_callback("refresh", callback)
+    }
+
+    pub async fn get_receivers(&self) -> Result<Map, JsValue> {
+        let fm = unsafe { &*self.fm };
+        let receivers = fm.get_receivers().await
+            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
+        let result = Map::new();
+        for (node_id, receivers) in receivers {
+            let recv = Array::new();
+            for receiver in receivers {
+                recv.push(&JsValue::from(receiver));
+            }
+            result.set(&JsValue::from(node_id), &recv);
+        }
+        Ok(result)
+    }
+
+    pub async fn get_senders(&self) -> Result<Map, JsValue> {
+        let fm = unsafe { &*self.fm };
+        let senders = fm.get_senders().await
+            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
+        let result = Map::new();
+        for (node_id, sender) in senders {
+            result.set(&JsValue::from(node_id), &JsValue::from(sender));
+        }
+        Ok(result)
     }
 }
 
