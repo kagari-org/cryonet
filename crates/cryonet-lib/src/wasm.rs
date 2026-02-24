@@ -1,4 +1,4 @@
-use std::{future::pending, net::SocketAddr, str::FromStr};
+use std::{future::pending, net::SocketAddr, rc::Rc, str::FromStr};
 
 use crate::{
     connection::{ConnManager, ConnManagerHandle},
@@ -10,7 +10,6 @@ use crate::{
 };
 use anyhow::Result;
 use cryonet_uapi::NodeId;
-use futures::{FutureExt, future::poll_fn, pin_mut};
 use serde::{Deserialize, Serialize};
 use tokio::task::LocalSet;
 use tracing_subscriber::EnvFilter;
@@ -19,7 +18,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{Event, EventTarget, js_sys::Function};
 
 thread_local! {
-    pub(crate) static LOCAL_SET: LocalSet = LocalSet::new();
+    pub(crate) static LOCAL_SET: Rc<LocalSet> = Rc::new(LocalSet::new());
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,14 +92,8 @@ fn main() -> Result<(), JsValue> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug")))
         .init();
     wasm_bindgen_futures::spawn_local(async {
-        poll_fn(|cx| {
-            LOCAL_SET.with(|local_set| {
-                let run = local_set.run_until(pending::<()>());
-                pin_mut!(run);
-                run.poll_unpin(cx)
-            })
-        })
-        .await;
+        let set = LOCAL_SET.with(|local_set| local_set.clone());
+        set.run_until(pending::<()>()).await;
     });
     Ok(())
 }
