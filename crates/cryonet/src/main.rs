@@ -1,6 +1,6 @@
 #![feature(try_blocks)]
 #![allow(clippy::new_ret_no_self)]
-use std::{env::var, net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{env::var, future::pending, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::{Result, anyhow};
 use cidr::AnyIpCidr;
@@ -13,7 +13,7 @@ use cryonet_lib::{
 };
 use cryonet_uapi::NodeId;
 use sactor::error::SactorResult;
-use tokio::{signal::ctrl_c, task::LocalSet};
+use tokio::task::LocalSet;
 use tracing_subscriber::EnvFilter;
 
 use crate::uapi::Uapi;
@@ -78,7 +78,7 @@ async fn main() -> SactorResult<()> {
                 let _tm = TunManager::new(fm.clone(), args.interface_prefix, args.enable_packet_information).await?;
                 let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;
 
-                ctrl_c().await?;
+                pending().await
             };
             result
         })
