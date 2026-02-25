@@ -1,0 +1,9 @@
+{
+  "name": "web",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev": "yarn workspace web dev",
+    "build": "yarn workspace web build"
+  }
+}

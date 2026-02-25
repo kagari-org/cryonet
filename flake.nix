@@ -3,16 +3,25 @@
   outputs = inputs@{
     self, nixpkgs, flake-parts,
   }: let
+    src = with nixpkgs.lib.fileset; toSource {
+      root = ./.;
+      fileset = unions [
+        ./crates
+        ./.cargo
+        ./Cargo.toml
+        ./Cargo.lock
+      ];
+    };
     cryonet = { rustPlatform }: rustPlatform.buildRustPackage {
+      inherit src;
       name = "cryonet";
       RUSTC_BOOTSTRAP = "1";
-      src = ./.;
       cargoLock.lockFile = ./Cargo.lock;
     };
     cryonet-wasm = { rustPlatform, wasm-pack, wasm-bindgen-cli, binaryen, lld }: rustPlatform.buildRustPackage {
+      inherit src;
       name = "cryonet";
       RUSTC_BOOTSTRAP = "1";
-      src = ./.;
       cargoLock.lockFile = ./Cargo.lock;
       doCheck = false;
       nativeBuildInputs = [ wasm-pack wasm-bindgen-cli binaryen lld ];
@@ -36,6 +45,10 @@
         nativeBuildInputs = with pkgs; [
           clippy
         ];
+        shellHook = ''
+          rm -rf web/packages/cryonet-lib
+          ln -sf ${self'.packages.wasm} web/packages/cryonet-lib
+        '';
       };
     };
   };
