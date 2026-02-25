@@ -27,6 +27,11 @@
     "@babel/helper-string-parser" "^7.27.1"
     "@babel/helper-validator-identifier" "^7.28.5"
 
+"@bjorn3/browser_wasi_shim@^0.3.0":
+  version "0.3.0"
+  resolved "https://registry.yarnpkg.com/@bjorn3/browser_wasi_shim/-/browser_wasi_shim-0.3.0.tgz#8aa310eed2298bab435bd1f73ab100fbc3f018da"
+  integrity sha512-FlRBYttPRLcWORzBe6g8nmYTafBkOEFeOqMYM4tAHJzFsQy4+xJA94z85a9BCs8S+Uzfh9LrkpII7DXr2iUVFg==
+
 "@bufbuild/protobuf@^2.5.0":
   version "2.11.0"
   resolved "https://registry.yarnpkg.com/@bufbuild/protobuf/-/protobuf-2.11.0.tgz#3ec3985c9074b23aea337957225fe15a0e845f8e"
@@ -515,6 +520,18 @@
   version "4.59.0"
   resolved "https://registry.yarnpkg.com/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.59.0.tgz#4584a8a87b29188a4c1fe987a9fcf701e256d86c"
   integrity sha512-2HRCml6OztYXyJXAvdDXPKcawukWY2GpR5/nxKp4iBgiO3wcoEGkAaqctIbZcNB6KlUQBIqt8VYkNSj2397EfA==
+
+"@tcpip/dns@0.2":
+  version "0.2.1"
+  resolved "https://registry.yarnpkg.com/@tcpip/dns/-/dns-0.2.1.tgz#8782699dfae77d590a7bcf07dd042ca00f8f124c"
+  integrity sha512-Vq61X4rCY6pz+WD8sVX3S3T7geZ8JIcgf/hgi2D2bCucziQ92wzkJB4+TitIX4tjiiQ6jtERLn6NV7ESYClKHg==
+  dependencies:
+    "@tcpip/wire" "0.1"
+
+"@tcpip/wire@0.1":
+  version "0.1.2"
+  resolved "https://registry.yarnpkg.com/@tcpip/wire/-/wire-0.1.2.tgz#3bae4e61170e570d6e2924f87c8c683606cb103a"
+  integrity sha512-jwcNGc4xP//6kwSlAJlov4UPSbZpMgA/zHPqezQQip770a1kDwP79Ytw7yPNmGgfpb3JhyYi2vuKSu2pN8zEKQ==
 
 "@types/debug@^4.0.0":
   version "4.1.12"
@@ -1781,6 +1798,15 @@ sync-message-port@^1.0.0:
   version "1.2.0"
   resolved "https://registry.yarnpkg.com/sync-message-port/-/sync-message-port-1.2.0.tgz#4b0d622085f21496061037125dec61755d96e330"
   integrity sha512-gAQ9qrUN/UCypHtGFbbe7Rc/f9bzO88IwrG8TDo/aMKAApKyD6E3W4Cm0EfhfBb6Z6SKt59tTCTfD+n1xmAvMg==
+
+tcpip@^0.3.3:
+  version "0.3.3"
+  resolved "https://registry.yarnpkg.com/tcpip/-/tcpip-0.3.3.tgz#8ddc27831fbcb23a4ea6437a8822a57548c3fab0"
+  integrity sha512-Q89DJXYGNwmX2W7TXrNKyVaE3h4mk0DDoLmpBzRueXzId/hnU+BLG6wayXfPsgqqbVRTBXR9FEQo3N/NPq/cAw==
+  dependencies:
+    "@bjorn3/browser_wasi_shim" "^0.3.0"
+    "@tcpip/dns" "0.2"
+    "@tcpip/wire" "0.1"
 
 tinyexec@^1.0.2:
   version "1.0.2"
