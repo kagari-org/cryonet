@@ -6,12 +6,7 @@
       name = "cryonet";
       RUSTC_BOOTSTRAP = "1";
       src = ./.;
-      cargoLock = {
-        lockFile = ./Cargo.lock;
-        outputHashes = {
-          "rustrtc-0.3.21" = "sha256-COrbCMUcrYDX/35s9/c6nIteuEPPPBaZ/j6sc2FMMKw=";
-        };
-      };
+      cargoLock.lockFile = ./Cargo.lock;
       nativeBuildInputs = [ pkg-config ];
       buildInputs = [ openssl ];
     };
