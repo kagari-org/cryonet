@@ -11,7 +11,7 @@ use rustrtc::{
     transports::sctp::DataChannel,
 };
 use sactor::error::{SactorError, SactorResult};
-use tokio::sync::{Mutex, broadcast, watch};
+use tokio::{select, sync::{Mutex, broadcast, watch}};
 
 use crate::{
     errors::Error,
@@ -29,6 +29,8 @@ pub struct PeerConn {
 
     state_watcher: watch::Receiver<ConnState>,
     candidate_tx: broadcast::Sender<String>,
+
+    stop: watch::Sender<bool>,
 
     pub time: Instant,
     pub selected: bool,
@@ -51,38 +53,61 @@ impl PeerConn {
         let (source, track, _) = sample_track(MediaKind::Audio, 1024);
         peer.add_track(track, RtpCodecParameters::default())?;
 
+        let (stop_tx, _) = watch::channel(false);
+
         let (state_tx, state_watcher) = watch::channel(ConnState::New);
         let mut peer_state = peer.subscribe_peer_state();
+        let mut stop_rx = state_tx.subscribe();
         tokio::spawn(async move {
-            while peer_state.changed().await.is_ok() {
-                let state = match *peer_state.borrow_and_update() {
-                    PeerConnectionState::New => ConnState::New,
-                    PeerConnectionState::Connecting => ConnState::Connecting,
-                    PeerConnectionState::Connected => ConnState::Connected,
-                    PeerConnectionState::Disconnected => ConnState::Disconnected,
-                    PeerConnectionState::Failed => ConnState::Failed,
-                    PeerConnectionState::Closed => ConnState::Closed,
-                };
-                let _ = state_tx.send(state);
+            loop {
+                select! {
+                    _ = stop_rx.changed() => break,
+                    Ok(_) = peer_state.changed() => {
+                        let state = match *peer_state.borrow_and_update() {
+                            PeerConnectionState::New => ConnState::New,
+                            PeerConnectionState::Connecting => ConnState::Connecting,
+                            PeerConnectionState::Connected => ConnState::Connected,
+                            PeerConnectionState::Disconnected => ConnState::Disconnected,
+                            PeerConnectionState::Failed => ConnState::Failed,
+                            PeerConnectionState::Closed => ConnState::Closed,
+                        };
+                        let _ = state_tx.send(state);
+                    }
+                    else => break,
+                }
             }
         });
 
         let (candidate_tx, _) = broadcast::channel(64);
         let candidate_tx2 = candidate_tx.clone();
         let mut peer_candidate = peer.subscribe_ice_candidates();
+        let mut stop_rx = stop_tx.subscribe();
         tokio::spawn(async move {
-            while let Ok(candidate) = peer_candidate.recv().await {
-                let _ = candidate_tx2.send(candidate.to_sdp());
+            loop {
+                select! {
+                    _ = stop_rx.changed() => break,
+                    Ok(candidate) = peer_candidate.recv() => {
+                        let _ = candidate_tx2.send(candidate.to_sdp());
+                    }
+                    else => break,
+                }
             }
         });
 
         let peer2 = peer.clone();
         let dc = Arc::new(Mutex::new(None));
         let dc2 = dc.clone();
+        let mut stop_rx = stop_tx.subscribe();
         tokio::spawn(async move {
-            while let Some(event) = peer2.recv().await {
-                if let PeerConnectionEvent::DataChannel(dc) = event {
-                    *dc2.lock().await = Some(dc);
+            loop {
+                select! {
+                    _ = stop_rx.changed() => break,
+                    Some(event) = peer2.recv() => {
+                        if let PeerConnectionEvent::DataChannel(dc) = event {
+                            *dc2.lock().await = Some(dc);
+                        }
+                    }
+                    else => break,
                 }
             }
         });
@@ -95,6 +120,7 @@ impl PeerConn {
             send_source: Arc::new(source),
             dc,
             full_mesh_type: FullMeshType::Any,
+            stop: stop_tx,
             time: Instant::now(),
             selected: false,
         })
@@ -182,6 +208,7 @@ impl PeerConn {
 impl Drop for PeerConn {
     fn drop(&mut self) {
         self.peer.close();
+        let _ = self.stop.send(true);
     }
 }
 
