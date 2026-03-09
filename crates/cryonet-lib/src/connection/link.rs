@@ -32,8 +32,8 @@ pub fn new_reqwest_ws_link(ws: ReqwestWebSocket) -> (WebSocketLinkSend<ReqwestWe
 #[async_trait(?Send)]
 impl LinkSend for WebSocketLinkSend<TungsteniteWebSocket, TungsteniteMessage> {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
-        let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?;
-        self.0.send(TungsteniteMessage::binary(data)).await.map_err(|e| LinkError::Unknown(anyhow!(e)))?;
+        let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(e.into()))?;
+        self.0.send(TungsteniteMessage::binary(data)).await.map_err(|e| LinkError::Unknown(e.into()))?;
         Ok(())
     }
 }
@@ -48,18 +48,18 @@ impl LinkRecv for WebSocketLinkRecv<TungsteniteWebSocket> {
             None => Err(LinkError::Closed)?,
             Some(Ok(TungsteniteMessage::Close(_))) => Err(LinkError::Closed)?,
 
-            Some(Err(e)) => Err(LinkError::Unknown(anyhow!(e)))?,
+            Some(Err(e)) => Err(LinkError::Unknown(e.into()))?,
             Some(Ok(_)) => Err(LinkError::Unknown(anyhow!("Unexpected message type")))?,
         };
-        Ok(serde_json::from_slice(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?)
+        Ok(serde_json::from_slice(&packet).map_err(|e| LinkError::Unknown(e.into()))?)
     }
 }
 
 #[async_trait(?Send)]
 impl LinkSend for WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage> {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
-        let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?;
-        self.0.send(ReqwestMessage::Binary(data.into())).await.map_err(|e| LinkError::Unknown(anyhow!(e)))?;
+        let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(e.into()))?;
+        self.0.send(ReqwestMessage::Binary(data.into())).await.map_err(|e| LinkError::Unknown(e.into()))?;
         Ok(())
     }
 }
@@ -73,9 +73,9 @@ impl LinkRecv for WebSocketLinkRecv<ReqwestWebSocket> {
             None => Err(LinkError::Closed)?,
             Some(Ok(ReqwestMessage::Close { .. })) => Err(LinkError::Closed)?,
 
-            Some(Err(e)) => Err(LinkError::Unknown(anyhow!(e)))?,
+            Some(Err(e)) => Err(LinkError::Unknown(e.into()))?,
             Some(Ok(_)) => Err(LinkError::Unknown(anyhow!("Unexpected message type")))?,
         };
-        Ok(serde_json::from_slice(&packet).map_err(|e| LinkError::Unknown(anyhow!(e)))?)
+        Ok(serde_json::from_slice(&packet).map_err(|e| LinkError::Unknown(e.into()))?)
     }
 }

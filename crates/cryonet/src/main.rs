@@ -2,7 +2,7 @@
 #![allow(clippy::new_ret_no_self)]
 use std::{env::var, future::pending, net::SocketAddr, path::PathBuf, str::FromStr};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, bail};
 use cidr::AnyIpCidr;
 use clap::Parser;
 use clap_num::maybe_hex;
@@ -12,7 +12,6 @@ use cryonet_lib::{
     mesh::{Mesh, igp::Igp},
 };
 use cryonet_uapi::NodeId;
-use sactor::error::SactorResult;
 use tokio::task::LocalSet;
 use tracing_subscriber::EnvFilter;
 
@@ -53,12 +52,12 @@ fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
             credential: Some(parts[2].to_string()),
         })
     } else {
-        Err(anyhow!("Unexpected ice server: {input}"))
+        bail!("Unexpected ice server: {input}");
     }
 }
 
 #[tokio::main]
-async fn main() -> SactorResult<()> {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rustrtc=off"))).init();
     let args = Args::parse();
     let runtime_directory = var("RUNTIME_DIRECTORY");
@@ -70,7 +69,7 @@ async fn main() -> SactorResult<()> {
 
     LocalSet::new()
         .run_until(async move {
-            let result: SactorResult<()> = try {
+            let result: Result<()> = try {
                 let mesh = Mesh::new(args.id);
                 let igp = Igp::new(args.id, mesh.clone()).await?;
                 let _mgr = ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen).await?;

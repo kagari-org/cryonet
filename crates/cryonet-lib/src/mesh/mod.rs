@@ -1,19 +1,17 @@
 use std::{collections::HashMap, fmt::Debug};
 
+use anyhow::{Error, Result};
 use async_trait::async_trait;
 use futures::future::join_all;
 use packet::{NodeId, Packet, Payload};
-use sactor::{
-    error::{SactorError, SactorResult},
-    sactor,
-};
+use sactor::sactor;
 use tokio::{
     select,
     sync::{broadcast, mpsc, watch},
 };
 use tracing::{debug, error, warn};
 
-use crate::errors::Error;
+use crate::errors::CryonetError;
 
 pub mod igp;
 pub mod packet;
@@ -77,7 +75,7 @@ impl Mesh {
     }
 
     #[no_reply]
-    async fn handle_packet(&mut self, from: NodeId, packet: Result<Packet, LinkError>) -> SactorResult<()> {
+    async fn handle_packet(&mut self, from: NodeId, packet: Result<Packet, LinkError>) -> Result<()> {
         let mut packet = match packet {
             Ok(packet) => packet,
             Err(LinkError::Closed) => {
@@ -108,12 +106,12 @@ impl Mesh {
         Ok(())
     }
 
-    async fn send_packet_internal(&mut self, packet: Packet) -> SactorResult<()> {
+    async fn send_packet_internal(&mut self, packet: Packet) -> Result<()> {
         let Some(next_hop) = self.routes.get(&packet.dst) else {
-            return Err(Error::Unreachable(packet.dst).into());
+            return Err(CryonetError::Unreachable(packet.dst).into());
         };
         let Some(link) = self.link_send.get_mut(next_hop) else {
-            return Err(Error::Unreachable(packet.dst).into());
+            return Err(CryonetError::Unreachable(packet.dst).into());
         };
         debug!("Sending packet {:?} to {:X} via link {:X}", &packet, packet.dst, next_hop);
         let res = link.send(packet).await;
@@ -125,14 +123,14 @@ impl Mesh {
     }
 
     #[no_reply]
-    pub async fn send_packet(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> SactorResult<()> {
+    pub async fn send_packet(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> Result<()> {
         self.send_packet_internal(Packet { src: self.id, dst, ttl: 16, payload }).await
     }
 
     #[no_reply]
-    pub async fn send_packet_link(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> SactorResult<()> {
+    pub async fn send_packet_link(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> Result<()> {
         let Some(link) = self.link_send.get_mut(&dst) else {
-            return Err(Error::NoSuchLink(dst).into());
+            return Err(CryonetError::NoSuchLink(dst).into());
         };
         let packet = Packet { src: self.id, dst, ttl: 16, payload };
         debug!("Sending packet {:?} to {:X} via direct link", &packet, dst);
@@ -145,7 +143,7 @@ impl Mesh {
     }
 
     #[no_reply]
-    pub async fn broadcast_packet_local(&mut self, payload: Box<dyn Payload>) -> SactorResult<()> {
+    pub async fn broadcast_packet_local(&mut self, payload: Box<dyn Payload>) -> Result<()> {
         debug!("Broadcasting packet {:?} to all links", &payload);
         let futures = self
             .link_send
@@ -267,7 +265,7 @@ impl Mesh {
     }
 
     #[handle_error]
-    fn handle_error(&mut self, err: &SactorError) {
+    fn handle_error(&mut self, err: &Error) {
         error!("Error: {:?}", err);
     }
 }

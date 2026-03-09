@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
+use anyhow::{Error, Result, anyhow};
 use cidr::AnyIpCidr;
 use cryonet_uapi::ConnState;
-use sactor::error::{SactorError, SactorResult};
 use tokio::sync::{Mutex, broadcast, watch};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
@@ -14,7 +13,7 @@ use web_sys::{
 };
 
 use crate::{
-    errors::Error,
+    errors::CryonetError,
     fullmesh::{FullMeshType, IceServer},
     time::Instant,
     wasm::LOCAL_SET,
@@ -36,7 +35,7 @@ pub struct PeerConn {
 }
 
 impl PeerConn {
-    pub async fn new(ice_servers: Vec<IceServer>, _candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<Self> {
+    pub async fn new(ice_servers: Vec<IceServer>, _candidate_filter_prefix: Option<AnyIpCidr>) -> Result<Self> {
         let ice_servers: Vec<_> = ice_servers
             .into_iter()
             .map(|server| {
@@ -55,7 +54,7 @@ impl PeerConn {
         let config = RtcConfiguration::new();
         config.set_ice_servers(&ice_servers);
 
-        let peer = RtcPeerConnection::new_with_configuration(&config).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        let peer = RtcPeerConnection::new_with_configuration(&config).map_err(map_err)?;
 
         let (state_tx, state_rx) = watch::channel(ConnState::New);
         let peer2 = peer.clone();
@@ -124,32 +123,32 @@ impl PeerConn {
         self.peer.remote_description().is_some()
     }
 
-    pub async fn offer(&mut self) -> SactorResult<(String, FullMeshType)> {
+    pub async fn offer(&mut self) -> Result<(String, FullMeshType)> {
         *self.dc.lock().await = Some(self.peer.create_data_channel("cryonet"));
-        let offer = JsFuture::from(self.peer.create_offer()).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        let sdp_str = Reflect::get(&offer, &JsValue::from_str("sdp")).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?.as_string().unwrap();
+        let offer = JsFuture::from(self.peer.create_offer()).await.map_err(map_err)?;
+        let sdp_str = Reflect::get(&offer, &JsValue::from_str("sdp")).map_err(map_err)?.as_string().unwrap();
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         sdp.set_sdp(&sdp_str);
-        JsFuture::from(self.peer.set_local_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        JsFuture::from(self.peer.set_local_description(&sdp)).await.map_err(map_err)?;
         Ok((sdp_str, FullMeshType::DataChannel))
     }
 
-    pub async fn answer(&mut self, sdp_str: String, _: FullMeshType) -> SactorResult<(String, FullMeshType)> {
+    pub async fn answer(&mut self, sdp_str: String, _: FullMeshType) -> Result<(String, FullMeshType)> {
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         sdp.set_sdp(&sdp_str);
-        JsFuture::from(self.peer.set_remote_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        let answer = JsFuture::from(self.peer.create_answer()).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
-        let sdp_str = Reflect::get(&answer, &JsValue::from_str("sdp")).map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?.as_string().unwrap();
+        JsFuture::from(self.peer.set_remote_description(&sdp)).await.map_err(map_err)?;
+        let answer = JsFuture::from(self.peer.create_answer()).await.map_err(map_err)?;
+        let sdp_str = Reflect::get(&answer, &JsValue::from_str("sdp")).map_err(map_err)?.as_string().unwrap();
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
         sdp.set_sdp(&sdp_str);
-        JsFuture::from(self.peer.set_local_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        JsFuture::from(self.peer.set_local_description(&sdp)).await.map_err(map_err)?;
         Ok((sdp_str, FullMeshType::DataChannel))
     }
 
-    pub async fn answered(&self, sdp_str: String, _: FullMeshType) -> SactorResult<()> {
+    pub async fn answered(&self, sdp_str: String, _: FullMeshType) -> Result<()> {
         let sdp = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
         sdp.set_sdp(&sdp_str);
-        JsFuture::from(self.peer.set_remote_description(&sdp)).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        JsFuture::from(self.peer.set_remote_description(&sdp)).await.map_err(map_err)?;
         Ok(())
     }
 
@@ -157,11 +156,11 @@ impl PeerConn {
         self.candidate_tx.subscribe()
     }
 
-    pub async fn add_ice_candidate(&self, candidate: String) -> SactorResult<()> {
+    pub async fn add_ice_candidate(&self, candidate: String) -> Result<()> {
         let candidate = format!("candidate:{}", candidate);
         let candidate = RtcIceCandidateInit::new(&candidate);
         candidate.set_sdp_m_line_index(Some(0));
-        JsFuture::from(self.peer.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&candidate))).await.map_err(|err| SactorError::Other(anyhow!("{:?}", err)))?;
+        JsFuture::from(self.peer.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&candidate))).await.map_err(map_err)?;
         Ok(())
     }
 
@@ -169,12 +168,12 @@ impl PeerConn {
         None
     }
 
-    pub async fn sender(&self) -> SactorResult<PeerConnSender> {
-        Ok(self.dc.lock().await.clone().ok_or(Error::Unknown)?)
+    pub async fn sender(&self) -> Result<PeerConnSender> {
+        Ok(self.dc.lock().await.clone().ok_or(CryonetError::Unknown)?)
     }
 
-    pub async fn receiver(&self) -> SactorResult<PeerConnReceiver> {
-        Ok(self.dc.lock().await.clone().ok_or(Error::Unknown)?)
+    pub async fn receiver(&self) -> Result<PeerConnReceiver> {
+        Ok(self.dc.lock().await.clone().ok_or(CryonetError::Unknown)?)
     }
 }
 
@@ -186,3 +185,7 @@ impl Drop for PeerConn {
 
 pub type PeerConnSender = RtcDataChannel;
 pub type PeerConnReceiver = RtcDataChannel;
+
+fn map_err(error: JsValue) -> Error {
+    anyhow!("{:?}", error)
+}

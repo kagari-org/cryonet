@@ -1,11 +1,9 @@
 use std::{any::Any, collections::HashMap, time::Duration};
 
+use anyhow::{Error, Result};
 use cidr::AnyIpCidr;
 use cryonet_uapi::ConnState;
-use sactor::{
-    error::{SactorError, SactorResult},
-    sactor,
-};
+use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,
@@ -77,11 +75,11 @@ impl Payload for FullMeshPayload {}
 
 #[sactor(pub)]
 impl FullMesh {
-    pub async fn new(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<FullMeshHandle> {
+    pub async fn new(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> Result<FullMeshHandle> {
         Self::new_with_parameters(id, mesh, ice_servers, Duration::from_secs(30), Duration::from_secs(60), 5, candidate_filter_prefix).await
     }
 
-    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, timeout: Duration, discard_timeout: Duration, max_connected: usize, candidate_filter_prefix: Option<AnyIpCidr>) -> SactorResult<FullMeshHandle> {
+    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, timeout: Duration, discard_timeout: Duration, max_connected: usize, candidate_filter_prefix: Option<AnyIpCidr>) -> Result<FullMeshHandle> {
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>())).await?;
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle,
@@ -108,7 +106,7 @@ impl FullMesh {
     }
 
     #[no_reply]
-    async fn handle_packet(&mut self, packet: Option<Packet>) -> SactorResult<()> {
+    async fn handle_packet(&mut self, packet: Option<Packet>) -> Result<()> {
         let Some(packet) = packet else {
             self.handle.stop();
             return Ok(());
@@ -163,7 +161,7 @@ impl FullMesh {
     }
 
     #[no_reply]
-    async fn tick(&mut self) -> SactorResult<()> {
+    async fn tick(&mut self) -> Result<()> {
         // gc
         let time = Instant::now();
         self.pending_candidates.retain(|_, (created, _)| time.duration_since(*created) < self.timeout);
@@ -176,7 +174,7 @@ impl FullMesh {
         // check connected
         let peers = self.mesh.get_routes().await?.keys().cloned().collect::<Vec<_>>();
         for node_id in peers {
-            let result: SactorResult<()> = try {
+            let result: Result<()> = try {
                 let conns = self.peers.entry(node_id).or_default();
                 let connected = conns.values().filter(|conn| conn.is_connected()).count();
                 if connected >= self.max_connected {
@@ -323,7 +321,7 @@ impl FullMesh {
     }
 
     #[handle_error]
-    fn handle_error(&mut self, err: &SactorError) {
+    fn handle_error(&mut self, err: &Error) {
         error!("Error: {:?}", err);
     }
 }

@@ -19,7 +19,7 @@ thiserror = "2.0.17"
 tracing = "0.1.44"
 typetag = "0.2.21"
 cryonet-uapi = { path = "../cryonet-uapi" }
-sactor = "0.1.5"
+sactor = "0.1.6"
 reqwest = "0.13.2"
 reqwest-websocket = "0.6.0"
 tokio = { version = "1.49.0", features = ["rt"] }

@@ -1,5 +1,6 @@
 use std::{any::Any, collections::HashMap, io, path::PathBuf, time::Duration};
 
+use anyhow::{Error, Result};
 use cryonet_lib::{
     fullmesh::FullMeshHandle,
     mesh::{
@@ -9,10 +10,7 @@ use cryonet_lib::{
     },
 };
 use cryonet_uapi::{CryonetUapi, IgpRoute};
-use sactor::{
-    error::{SactorError, SactorResult},
-    sactor,
-};
+use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs::remove_file,
@@ -49,11 +47,11 @@ enum UapiPayload {
 
 #[sactor(pub)]
 impl Uapi {
-    pub async fn new(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshHandle, path: PathBuf) -> SactorResult<UapiHandle> {
+    pub async fn new(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshHandle, path: PathBuf) -> Result<UapiHandle> {
         Self::new_with_parameters(mesh, igp, fm, path, Duration::from_secs(30), Duration::from_secs(60)).await
     }
 
-    pub async fn new_with_parameters(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshHandle, path: PathBuf, gc_interval: Duration, ping_timeout: Duration) -> SactorResult<UapiHandle> {
+    pub async fn new_with_parameters(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshHandle, path: PathBuf, gc_interval: Duration, ping_timeout: Duration) -> Result<UapiHandle> {
         let _ = remove_file(&path).await;
         let socket = UnixDatagram::bind(path).unwrap();
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<UapiPayload>())).await?;
@@ -83,7 +81,7 @@ impl Uapi {
     }
 
     #[no_reply]
-    async fn handle_packet(&mut self, packet: Option<Packet>) -> SactorResult<()> {
+    async fn handle_packet(&mut self, packet: Option<Packet>) -> Result<()> {
         let Some(packet) = packet else {
             self.handle.stop();
             return Ok(());
@@ -109,7 +107,7 @@ impl Uapi {
     }
 
     #[no_reply]
-    async fn handle_message(&mut self, result: io::Result<(usize, tokio::net::unix::SocketAddr)>) -> SactorResult<()> {
+    async fn handle_message(&mut self, result: io::Result<(usize, tokio::net::unix::SocketAddr)>) -> Result<()> {
         let (len, addr) = result?;
         let Some(path) = addr.as_pathname() else {
             error!("Received uapi message from non-path address, dropping");
@@ -121,7 +119,7 @@ impl Uapi {
         Ok(())
     }
 
-    async fn dispatch_message(&mut self, cmd: CryonetUapi, path: PathBuf) -> SactorResult<()> {
+    async fn dispatch_message(&mut self, cmd: CryonetUapi, path: PathBuf) -> Result<()> {
         use CryonetUapi::*;
         match cmd {
             GetLinks => {
@@ -180,7 +178,7 @@ impl Uapi {
     }
 
     #[no_reply]
-    async fn gc(&mut self) -> SactorResult<()> {
+    async fn gc(&mut self) -> Result<()> {
         let now = Instant::now();
         let ping_timeout = self.ping_timeout;
         self.ping.retain(|uuid, (_, instant)| {
@@ -195,7 +193,7 @@ impl Uapi {
     }
 
     #[handle_error]
-    fn handle_error(&mut self, err: &SactorError) {
+    fn handle_error(&mut self, err: &Error) {
         error!("Error: {:?}", err);
     }
 }

@@ -8,7 +8,7 @@ anyhow = { version = "1.0.100", features = ["backtrace"] }
 clap = { version = "4.5.54", features = ["derive", "env"] }
 clap-num = "1.2.0"
 cidr = "0.3.2"
-sactor = "0.1.5"
+sactor = "0.1.6"
 tokio = { version = "1.49.0", features = ["full"] }
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 typetag = "0.2.21"

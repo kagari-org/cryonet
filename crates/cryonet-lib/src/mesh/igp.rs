@@ -7,11 +7,8 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
-use sactor::{
-    error::{SactorError, SactorResult},
-    sactor,
-};
+use anyhow::{Error, Result};
+use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{
     broadcast::{self, error::RecvError},
@@ -85,7 +82,7 @@ pub struct Route {
 
 #[sactor(pub)]
 impl Igp {
-    pub async fn new(id: NodeId, mesh: MeshHandle) -> SactorResult<IgpHandle> {
+    pub async fn new(id: NodeId, mesh: MeshHandle) -> Result<IgpHandle> {
         Self::new_with_parameters(
             Duration::from_secs(4),
             Duration::from_secs(16),
@@ -113,7 +110,7 @@ impl Igp {
         update_threshold: u32,
         id: NodeId,
         mesh: MeshHandle,
-    ) -> SactorResult<IgpHandle> {
+    ) -> Result<IgpHandle> {
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<IgpPayload>())).await?;
         let mesh_event_rx = mesh.subscribe_mesh_events().await?;
         let (future, igp) = Igp::run(move |handle| Igp {
@@ -151,7 +148,7 @@ impl Igp {
     }
 
     #[no_reply]
-    async fn hello(&mut self) -> SactorResult<()> {
+    async fn hello(&mut self) -> Result<()> {
         for link in self.mesh.get_links().await? {
             let cost = self
                 .costs
@@ -167,7 +164,7 @@ impl Igp {
     }
 
     #[no_reply]
-    async fn dump(&mut self, neigh: Option<NodeId>) -> SactorResult<()> {
+    async fn dump(&mut self, neigh: Option<NodeId>) -> Result<()> {
         // add self route
         self.routes.entry((self.id, self.id)).and_modify(|route| route.timeout = Instant::now() + self.route_timeout).or_insert_with(|| Route {
             metric: SeqMetric { seq: Seq(0), metric: 0 },
@@ -209,7 +206,7 @@ impl Igp {
     }
 
     #[no_reply]
-    async fn gc(&mut self) -> SactorResult<()> {
+    async fn gc(&mut self) -> Result<()> {
         let now = Instant::now();
         self.sources.retain(|_, (_, expiry)| *expiry > now);
         self.requests.retain(|_, request| request.expiry > now);
@@ -230,7 +227,7 @@ impl Igp {
     }
 
     #[no_reply]
-    async fn handle_packet(&mut self, packet: Option<Packet>) -> SactorResult<()> {
+    async fn handle_packet(&mut self, packet: Option<Packet>) -> Result<()> {
         let packet = match packet {
             Some(packet) => packet,
             None => {
@@ -460,7 +457,7 @@ impl Igp {
     }
 
     #[no_reply]
-    async fn handle_mesh_event(&mut self, event: Result<MeshEvent, broadcast::error::RecvError>) -> SactorResult<()> {
+    async fn handle_mesh_event(&mut self, event: Result<MeshEvent, broadcast::error::RecvError>) -> Result<()> {
         let event = match event {
             Ok(event) => event,
             Err(RecvError::Lagged(_)) => return Ok(()),
@@ -485,7 +482,7 @@ impl Igp {
         Ok(())
     }
 
-    async fn select_route(&mut self) -> SactorResult<()> {
+    async fn select_route(&mut self) -> Result<()> {
         let mut routes = HashMap::new();
         for ((dst, neigh), route) in &mut self.routes {
             route.selected = false;
@@ -551,7 +548,7 @@ impl Igp {
         Ok(())
     }
 
-    async fn export(&self) -> SactorResult<()> {
+    async fn export(&self) -> Result<()> {
         for ((dst, neigh), route) in &self.routes {
             if route.selected {
                 self.mesh.set_route(*dst, *neigh).await?;
@@ -560,7 +557,7 @@ impl Igp {
         Ok(())
     }
 
-    async fn update_route_costs(&mut self, node_id: NodeId, cost: u32) -> SactorResult<()> {
+    async fn update_route_costs(&mut self, node_id: NodeId, cost: u32) -> Result<()> {
         let mut changed = false;
         for ((_, neigh), route) in &mut self.routes {
             if *neigh != node_id {
@@ -580,7 +577,7 @@ impl Igp {
     }
 
     #[handle_error]
-    fn handle_error(&mut self, err: &SactorError) {
+    fn handle_error(&mut self, err: &Error) {
         error!("Error: {:?}", err);
     }
 }

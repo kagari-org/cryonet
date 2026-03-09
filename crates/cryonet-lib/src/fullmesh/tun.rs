@@ -3,12 +3,10 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use anyhow::{Error, Result};
 use bytes::Bytes;
 use futures::future::select_all;
-use sactor::{
-    error::{SactorError, SactorResult},
-    sactor,
-};
+use sactor::sactor;
 use tokio::{
     select,
     sync::broadcast::{self, error::RecvError},
@@ -35,7 +33,7 @@ pub struct TunManager {
 
 #[sactor(pub)]
 impl TunManager {
-    pub async fn new(fm: FullMeshHandle, interface_prefix: String, enable_packet_information: bool) -> SactorResult<TunManagerHandle> {
+    pub async fn new(fm: FullMeshHandle, interface_prefix: String, enable_packet_information: bool) -> Result<TunManagerHandle> {
         let refresh = fm.subscribe_refresh().await?;
         let (future, tm) = TunManager::run(move |handle| TunManager {
             handle,
@@ -57,15 +55,15 @@ impl TunManager {
     }
 
     #[no_reply]
-    async fn handle_refresh(&mut self, refresh: Result<(), broadcast::error::RecvError>) -> SactorResult<()> {
+    async fn handle_refresh(&mut self, refresh: Result<(), broadcast::error::RecvError>) -> Result<()> {
         if let Err(broadcast::error::RecvError::Closed) = refresh {
             self.handle.stop();
             return Ok(());
         }
         let receivers = self.fm.get_receivers().await?;
         let senders = self.fm.get_senders().await?;
-        let mut create_device = |node_id: NodeId| -> SactorResult<Arc<AsyncDevice>> {
-            let create_device = || -> SactorResult<AsyncDevice> {
+        let mut create_device = |node_id: NodeId| -> Result<Arc<AsyncDevice>> {
+            let create_device = || -> Result<AsyncDevice> {
                 let mut builder = DeviceBuilder::new().mtu(1280).name(format!("{}{:X}", self.interface_prefix, node_id)).enable(true);
                 if self.enable_packet_information {
                     builder = builder.packet_information(true);
@@ -124,12 +122,12 @@ impl TunManager {
     }
 
     #[handle_error]
-    fn handle_error(&mut self, err: &SactorError) {
+    fn handle_error(&mut self, err: &Error) {
         error!("Error: {:?}", err);
     }
 }
 
-async fn receive(node_id: NodeId, fm: FullMeshHandle, device: Arc<AsyncDevice>) -> SactorResult<()> {
+async fn receive(node_id: NodeId, fm: FullMeshHandle, device: Arc<AsyncDevice>) -> Result<()> {
     let mut refresh = fm.subscribe_refresh().await?;
     'outer: loop {
         let mut receivers = fm.get_receivers().await?;
@@ -168,7 +166,7 @@ async fn receive(node_id: NodeId, fm: FullMeshHandle, device: Arc<AsyncDevice>) 
     Ok(())
 }
 
-async fn send(node_id: NodeId, fm: FullMeshHandle, device: Arc<AsyncDevice>) -> SactorResult<()> {
+async fn send(node_id: NodeId, fm: FullMeshHandle, device: Arc<AsyncDevice>) -> Result<()> {
     let mut refresh = fm.subscribe_refresh().await?;
     'outer: loop {
         let mut senders = fm.get_senders().await?;

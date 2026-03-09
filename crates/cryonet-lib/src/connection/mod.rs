@@ -9,14 +9,11 @@ use crate::{
     connection::link::new_reqwest_ws_link,
     mesh::{MeshHandle, packet::NodeId},
 };
-use anyhow::anyhow;
+use anyhow::{Error, Result, bail};
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use reqwest_websocket::{Message, Upgrade};
-use sactor::{
-    error::{SactorError, SactorResult},
-    sactor,
-};
+use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -61,12 +58,12 @@ struct AuthPacket {
 
 #[sactor(pub)]
 impl ConnManager {
-    pub async fn new(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr) -> SactorResult<ConnManagerHandle> {
+    pub async fn new(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr) -> Result<ConnManagerHandle> {
         Self::new_with_parameters(id, mesh, token, servers, listen, Duration::from_secs(8)).await
     }
 
     #[allow(unused_variables)]
-    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr, connect_interval: Duration) -> SactorResult<ConnManagerHandle> {
+    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr, connect_interval: Duration) -> Result<ConnManagerHandle> {
         #[cfg(not(target_arch = "wasm32"))]
         let listener = {
             let listener = TcpListener::bind(listen).await?;
@@ -98,7 +95,7 @@ impl ConnManager {
     }
 
     #[no_reply]
-    async fn connect(&mut self) -> SactorResult<()> {
+    async fn connect(&mut self) -> Result<()> {
         for server in &self.servers {
             if server.is_empty() {
                 continue;
@@ -126,7 +123,7 @@ impl ConnManager {
         Ok(())
     }
 
-    async fn connect_task(id: NodeId, mesh: MeshHandle, token: Option<String>, servers_map: Arc<Mutex<HashMap<String, NodeId>>>, server: String) -> SactorResult<()> {
+    async fn connect_task(id: NodeId, mesh: MeshHandle, token: Option<String>, servers_map: Arc<Mutex<HashMap<String, NodeId>>>, server: String) -> Result<()> {
         let links = mesh.get_links().await?;
         {
             let servers_map = servers_map.lock().await;
@@ -143,7 +140,7 @@ impl ConnManager {
         ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&AuthPacket { token: token.clone(), node_id: id })?))).await?;
         let AuthPacket { node_id: neigh_id, .. } = match ws.next().await {
             Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
-            _ => return Err(SactorError::Other(anyhow!("Failed to receive authentication response from server {}", server))),
+            _ => bail!("Failed to receive authentication response from server {}", server),
         };
         servers_map.lock().await.insert(server.clone(), neigh_id);
 
@@ -159,7 +156,7 @@ impl ConnManager {
 
     #[no_reply]
     #[allow(unused)]
-    async fn accept(&mut self, param: AcceptParam) -> SactorResult<()> {
+    async fn accept(&mut self, param: AcceptParam) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         let result = self.accept_internal(param).await;
         #[cfg(target_arch = "wasm32")]
@@ -169,7 +166,7 @@ impl ConnManager {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[skip]
-    async fn accept_internal(&mut self, param: AcceptParam) -> SactorResult<()> {
+    async fn accept_internal(&mut self, param: AcceptParam) -> Result<()> {
         use tokio_tungstenite::tungstenite::Message;
         let (stream, addr) = param?;
         info!("Accepted connection from {}", addr);
@@ -177,14 +174,14 @@ impl ConnManager {
         ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&AuthPacket { token: None, node_id: self.id })?))).await?;
         let AuthPacket { token: neigh_token, node_id: neigh_id } = match ws.next().await {
             Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
-            _ => return Err(SactorError::Other(anyhow!("Failed to receive authentication response from connection at {}", addr))),
+            _ => bail!("Failed to receive authentication response from connection at {}", addr),
         };
         if let Some(token) = &self.token {
             match neigh_token {
                 Some(neigh_token) if neigh_token == *token => {}
                 _ => {
                     let _ = ws.close(None).await;
-                    return Err(SactorError::Other(anyhow!("Connection from {} provided invalid authentication token", addr)));
+                    bail!("Connection from {} provided invalid authentication token", addr);
                 }
             }
         }
@@ -199,12 +196,12 @@ impl ConnManager {
     }
 
     #[allow(dead_code)]
-    pub async fn disconnect(&mut self, id: NodeId) -> SactorResult<()> {
+    pub async fn disconnect(&mut self, id: NodeId) -> Result<()> {
         self.mesh.remove_link(id).await
     }
 
     #[handle_error]
-    async fn handle_error(&mut self, err: &SactorError) {
+    async fn handle_error(&mut self, err: &Error) {
         error!("Error: {:?}", err);
     }
 }
