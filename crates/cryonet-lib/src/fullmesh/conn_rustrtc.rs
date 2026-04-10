@@ -1,47 +1,31 @@
-use std::{future::pending, sync::Arc};
+use std::{net::SocketAddr, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
-use anyhow::{Result, bail};
-use async_recursion::async_recursion;
-use bytes::Bytes;
+use aes_gcm::{Aes128Gcm, KeyInit, Nonce, aead::Aead};
+use anyhow::Result;
+use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
 use cidr::AnyIpCidr;
-use cryonet_uapi::ConnState;
-use rustrtc::{
-    DataChannelEvent, IceCandidate, PeerConnection, PeerConnectionEvent, PeerConnectionState, RtcConfiguration, RtpCodecParameters, SdpType, SessionDescription,
-    media::{AudioFrame, AudioStreamTrack, MediaKind, SampleStreamSource, SampleStreamTrack, sample_track},
-    transports::sctp::DataChannel,
-};
-use tokio::{
-    select,
-    sync::{Mutex, broadcast, watch},
-};
+use rustrtc::{IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, RtcConfiguration, transports::{PacketReceiver, ice::{IceParameters, IceSocketWrapper}}};
+use tokio::sync::{mpsc, watch};
+use tracing::debug;
 
-use crate::{
-    errors::CryonetError,
-    fullmesh::{FullMeshType, IceServer},
-    time::Instant,
-};
+use crate::{fullmesh::{FullMeshKey, IceServer}, mesh::packet::NodeId};
 
-pub struct PeerConn {
+pub struct Connection {
+    id: NodeId,
+    peer_id: NodeId,
+    ice: IceTransport,
     candidate_filter_prefix: Option<AnyIpCidr>,
+    key: watch::Sender<FullMeshKey>,
 
-    peer: PeerConnection,
-    send_source: Arc<SampleStreamSource>,
-    dc: Arc<Mutex<Option<Arc<DataChannel>>>>,
-    full_mesh_type: FullMeshType,
-
-    state_watcher: watch::Receiver<ConnState>,
-    candidate_tx: broadcast::Sender<String>,
-
-    stop: watch::Sender<bool>,
-
-    pub time: Instant,
-    pub selected: bool,
+    sent: Arc<AtomicU64>,
+    received: Arc<AtomicU64>,
 }
 
-impl PeerConn {
-    pub async fn new(ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> Result<Self> {
-        let peer = PeerConnection::new(RtcConfiguration {
-            ice_servers: ice_servers
+impl Connection {
+    pub async fn new(id: NodeId, peer_id: NodeId, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, controlling: bool, key: FullMeshKey) -> Result<(Self, IceParameters)> {
+        let (ice, future) = IceTransport::new(RtcConfiguration {
+           ice_servers: ice_servers
                 .into_iter()
                 .map(|s| rustrtc::IceServer {
                     urls: vec![s.url],
@@ -52,232 +36,233 @@ impl PeerConn {
                 .collect(),
             ..Default::default()
         });
-        let (source, track, _) = sample_track(MediaKind::Audio, 1024);
-        peer.add_track(track, RtpCodecParameters::default())?;
-
-        let (stop_tx, _) = watch::channel(false);
-
-        let (state_tx, state_watcher) = watch::channel(ConnState::New);
-        let mut peer_state = peer.subscribe_peer_state();
-        let mut stop_rx = state_tx.subscribe();
-        tokio::spawn(async move {
-            loop {
-                select! {
-                    _ = stop_rx.changed() => break,
-                    Ok(_) = peer_state.changed() => {
-                        let state = match *peer_state.borrow_and_update() {
-                            PeerConnectionState::New => ConnState::New,
-                            PeerConnectionState::Connecting => ConnState::Connecting,
-                            PeerConnectionState::Connected => ConnState::Connected,
-                            PeerConnectionState::Disconnected => ConnState::Disconnected,
-                            PeerConnectionState::Failed => ConnState::Failed,
-                            PeerConnectionState::Closed => ConnState::Closed,
-                        };
-                        let _ = state_tx.send(state);
-                    }
-                    else => break,
-                }
-            }
-        });
-
-        let (candidate_tx, _) = broadcast::channel(64);
-        let candidate_tx2 = candidate_tx.clone();
-        let mut peer_candidate = peer.subscribe_ice_candidates();
-        let mut stop_rx = stop_tx.subscribe();
-        tokio::spawn(async move {
-            loop {
-                select! {
-                    _ = stop_rx.changed() => break,
-                    Ok(candidate) = peer_candidate.recv() => {
-                        let _ = candidate_tx2.send(candidate.to_sdp());
-                    }
-                    else => break,
-                }
-            }
-        });
-
-        let peer2 = peer.clone();
-        let dc = Arc::new(Mutex::new(None));
-        let dc2 = dc.clone();
-        let mut stop_rx = stop_tx.subscribe();
-        tokio::spawn(async move {
-            loop {
-                select! {
-                    _ = stop_rx.changed() => break,
-                    Some(event) = peer2.recv() => {
-                        if let PeerConnectionEvent::DataChannel(dc) = event {
-                            *dc2.lock().await = Some(dc);
-                        }
-                    }
-                    else => break,
-                }
-            }
-        });
-
-        Ok(Self {
+        if controlling {
+            ice.set_role(IceRole::Controlling);
+        } else {
+            ice.set_role(IceRole::Controlled);
+        }
+        tokio::spawn(future);
+        let local_parameters = ice.local_parameters();
+        Ok((Connection {
+            id,
+            peer_id,
+            ice,
             candidate_filter_prefix,
-            peer,
-            state_watcher,
-            candidate_tx,
-            send_source: Arc::new(source),
-            dc,
-            full_mesh_type: FullMeshType::Any,
-            stop: stop_tx,
-            time: Instant::now(),
-            selected: false,
-        })
+            key: watch::channel(key).0,
+            sent: Arc::new(AtomicU64::new(0)),
+            received: Arc::new(AtomicU64::new(0)),
+        }, local_parameters))
     }
 
-    pub fn subscribe_state(&self) -> watch::Receiver<ConnState> {
-        self.state_watcher.clone()
+    pub async fn start(&mut self, remote_parameters: IceParameters) -> Result<()> {
+        self.ice.start(remote_parameters)
     }
 
-    pub fn get_state(&self) -> ConnState {
-        *self.state_watcher.borrow()
-    }
-
-    pub fn is_connected(&self) -> bool {
-        let status = *self.state_watcher.borrow();
-        status == ConnState::Connected
-    }
-
-    pub async fn is_answered(&self) -> bool {
-        self.peer.remote_description().is_some()
-    }
-
-    pub async fn offer(&mut self) -> Result<(String, FullMeshType)> {
-        *self.dc.lock().await = Some(self.peer.create_data_channel("cryonet", None)?);
-        let offer = self.peer.create_offer().await?;
-        self.peer.set_local_description(offer.clone())?;
-        Ok((offer.to_sdp_string(), FullMeshType::Any))
-    }
-
-    pub async fn answer(&mut self, sdp: String, full_mesh_type: FullMeshType) -> Result<(String, FullMeshType)> {
-        let mut sdp = SessionDescription::parse(SdpType::Offer, &sdp)?;
-        filter_candidate(&mut sdp, &self.candidate_filter_prefix);
-        self.peer.set_remote_description(sdp).await?;
-        let answer = self.peer.create_answer().await?;
-        self.peer.set_local_description(answer.clone())?;
-        self.full_mesh_type = full_mesh_type;
-        Ok((answer.to_sdp_string(), full_mesh_type))
-    }
-
-    pub async fn answered(&mut self, sdp: String, full_mesh_type: FullMeshType) -> Result<()> {
-        let mut sdp = SessionDescription::parse(SdpType::Answer, &sdp)?;
-        filter_candidate(&mut sdp, &self.candidate_filter_prefix);
-        self.peer.set_remote_description(sdp).await?;
-        self.full_mesh_type = full_mesh_type;
-        Ok(())
-    }
-
-    pub fn subscribe_candidates(&self) -> broadcast::Receiver<String> {
-        self.candidate_tx.subscribe()
-    }
-
-    pub async fn add_ice_candidate(&self, candidate: String) -> Result<()> {
-        let candidate = IceCandidate::from_sdp(&candidate)?;
-        if check_candidate(&candidate, &self.candidate_filter_prefix) {
-            self.peer.add_ice_candidate(candidate)?;
-        }
-        Ok(())
-    }
-
-    pub async fn get_selected_candidate(&self) -> Option<String> {
-        self.peer.ice_transport().get_selected_pair().await.map(|pair| pair.remote.to_sdp())
-    }
-
-    pub async fn sender(&self) -> Result<PeerConnSender> {
-        match self.full_mesh_type {
-            FullMeshType::Any => Ok(PeerConnSender::Srtp(self.send_source.clone())),
-            FullMeshType::DataChannel => Ok(PeerConnSender::DataChannel(self.peer.clone())),
-        }
-    }
-
-    pub async fn receiver(&self) -> Result<PeerConnReceiver> {
-        match self.full_mesh_type {
-            FullMeshType::Any => {
-                let track = self.peer.get_transceivers()[0].receiver().ok_or(CryonetError::Unknown)?.track();
-                Ok(PeerConnReceiver::Srtp(track))
+    pub async fn gather(&self) -> Result<Vec<IceCandidate>> {
+        let mut gather = self.ice.subscribe_gathering_state();
+        loop {
+            if *gather.borrow_and_update() == IceGathererState::Complete {
+                break;
             }
-            FullMeshType::DataChannel => {
-                let recv_dc = self.dc.lock().await.as_ref().ok_or(CryonetError::Unknown)?.clone();
-                Ok(PeerConnReceiver::DataChannel(self.peer.clone(), recv_dc))
-            }
+            gather.changed().await?;
         }
-    }
-}
-
-impl Drop for PeerConn {
-    fn drop(&mut self) {
-        self.peer.close();
-        let _ = self.stop.send(true);
-    }
-}
-
-#[derive(Clone)]
-pub enum PeerConnSender {
-    Srtp(Arc<SampleStreamSource>),
-    DataChannel(PeerConnection),
-}
-
-pub enum PeerConnReceiver {
-    Srtp(Arc<SampleStreamTrack>),
-    DataChannel(PeerConnection, Arc<DataChannel>),
-}
-
-impl PeerConnSender {
-    pub async fn send(&self, data: Bytes) -> Result<()> {
-        match self {
-            PeerConnSender::Srtp(source) => source.send_audio(AudioFrame { data, ..Default::default() }).await?,
-            PeerConnSender::DataChannel(peer) => peer.send_data(0, &data).await?,
+        let mut candidates = self.ice.local_candidates();
+        if let Some(prefix) = &self.candidate_filter_prefix {
+            candidates.retain(|candidate| !prefix.contains(&candidate.address.ip()));
         }
-        Ok(())
+        Ok(candidates)
     }
-}
 
-impl PeerConnReceiver {
-    #[async_recursion]
-    pub async fn recv(&self) -> Result<Bytes> {
-        match self {
-            PeerConnReceiver::Srtp(track) => Ok(track.recv_audio().await?.data),
-            PeerConnReceiver::DataChannel(pc, dc) => {
-                let Some(event) = dc.recv().await else {
-                    bail!("Data channel closed");
-                };
-                match event {
-                    DataChannelEvent::Open => self.recv().await,
-                    DataChannelEvent::Message(bytes) => Ok(bytes),
-                    DataChannelEvent::Close => {
-                        pc.close();
-                        // wait for refresh
-                        pending().await
-                    }
+    pub async fn add_candidates(&self, candidates: Vec<IceCandidate>) {
+        for candidate in candidates {
+            if let Some(prefix) = &self.candidate_filter_prefix {
+                if prefix.contains(&candidate.address.ip()) {
+                    continue;
                 }
             }
+            self.ice.add_remote_candidate(candidate);
+        }
+    }
+
+    pub fn sender(&self) -> ConnectionSender {
+        ConnectionSender {
+            id: self.id,
+            peer_id: self.peer_id,
+            socket: self.ice.subscribe_selected_socket(),
+            pair: self.ice.subscribe_selected_pair(),
+            key: self.key.subscribe(),
+            aes: Aes128Gcm::new(&self.key.borrow().key),
+            counter: 0,
+            sent: self.sent.clone(),
+        }
+    }
+    
+    pub async fn receiver(&self) -> ConnectionReceiver {
+        // TODO: check this
+        let (tx, rx) = mpsc::channel(1024);
+        self.ice.set_data_receiver(Arc::new(MpscSender(tx))).await;
+        ConnectionReceiver {
+            rx,
+            key: self.key.subscribe(),
+            aes: [Aes128Gcm::new(&self.key.borrow().key), Aes128Gcm::new(&self.key.borrow().key)],
+            received: self.received.clone(),
         }
     }
 }
 
-fn filter_candidate(sdp: &mut SessionDescription, cidr: &Option<AnyIpCidr>) {
-    for sections in &mut sdp.media_sections {
-        sections.attributes.retain(|attr| {
-            if attr.key != "candidate" {
-                return true;
-            }
-            if let Some(val) = &attr.value
-                && let Ok(candidate) = IceCandidate::from_sdp(val)
-                && !check_candidate(&candidate, cidr)
-            {
-                return false;
-            }
-            true
-        });
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.ice.stop();
     }
 }
 
-fn check_candidate(candidate: &IceCandidate, cidr: &Option<AnyIpCidr>) -> bool {
-    let Some(cidr) = cidr else {
-        return true;
-    };
-    !cidr.contains(&candidate.address.ip())
+pub struct ConnectionSender {
+    id: NodeId,
+    peer_id: NodeId,
+    socket: watch::Receiver<Option<IceSocketWrapper>>,
+    pair: watch::Receiver<Option<IceCandidatePair>>,
+    key: watch::Receiver<FullMeshKey>,
+    aes: Aes128Gcm,
+    counter: u32,
+
+    sent: Arc<AtomicU64>,
+}
+
+impl ConnectionSender {
+    pub async fn send(&mut self, data: Bytes) -> Result<usize> {
+        if let Some(socket) = &*self.socket.borrow() && let Some(pair) = &*self.pair.borrow() {
+            let mut key = self.key.borrow();
+            if self.key.has_changed()? {
+                drop(key);
+                key = self.key.borrow_and_update();
+                self.aes = Aes128Gcm::new(&key.key);
+                self.counter = 0;
+            }
+
+            // TODO: dont encrypt local packets
+            if self.counter >= 0b00011111_11111111_11111111_11111111 {
+                anyhow::bail!("Counter overflow");
+            }
+            let mut nonce_header: u32 = 0b10000000_00000000_00000000_00000000 | self.counter;
+            if self.id > self.peer_id {
+                nonce_header |= 0b01000000_00000000_00000000_00000000;
+            }
+            if key.index {
+                nonce_header |= 0b00100000_00000000_00000000_00000000;
+            }
+            let nonce_header = nonce_header.to_be_bytes();
+            let mut nonce = [0u8; 12];
+            nonce[8..].copy_from_slice(&nonce_header);
+            let nonce = Nonce::from_slice(&nonce);
+            let data = self.aes.encrypt(nonce, data.as_ref())?;
+            self.counter += 1;
+
+            let mut packet = BytesMut::with_capacity(nonce_header.len() + data.len());
+            packet.extend_from_slice(&nonce_header);
+            packet.extend_from_slice(&data);
+            let packet = packet.freeze();
+
+            self.sent.fetch_add(data.len() as u64, Ordering::Relaxed);
+            return socket.send_to(&packet, pair.remote.address).await;
+        }
+        anyhow::bail!("Connection is not yet established")
+    }
+}
+
+pub struct MpscSender(mpsc::Sender<(Bytes, SocketAddr)>);
+
+pub struct ConnectionReceiver {
+    rx: mpsc::Receiver<(Bytes, SocketAddr)>,
+    key: watch::Receiver<FullMeshKey>,
+    aes: [Aes128Gcm; 2],
+
+    received: Arc<AtomicU64>,
+}
+
+#[async_trait]
+impl PacketReceiver for MpscSender {
+    async fn receive(&self, packet: Bytes, addr: SocketAddr) {
+        if let Err(err) = self.0.send((packet, addr)).await {
+            debug!("Failed to send received packet to channel: {}", err);
+        }
+    }
+}
+
+impl ConnectionReceiver{
+    pub async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
+        if self.key.has_changed()? {
+            let key = self.key.borrow_and_update();
+            if key.index {
+                self.aes[1] = Aes128Gcm::new(&key.key);
+            } else {
+                self.aes[0] = Aes128Gcm::new(&key.key);
+            }
+        }
+        let (data, addr) = self.rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
+        self.received.fetch_add(data.len() as u64, Ordering::Relaxed);
+        let index = (data[0] >> 5) & 0b1 == 1;
+        let key = if index { &self.aes[1] } else { &self.aes[0] };
+        let mut nonce = [0u8; 12];
+        nonce[8..].copy_from_slice(&data[0..4]);
+        let nonce = Nonce::from_slice(&nonce);
+        let decrypted = key.decrypt(nonce, &data[4..])?;
+        Ok((Bytes::from(decrypted), addr))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aes_gcm::aead::OsRng;
+    use rustrtc::IceTransportState;
+
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_connection() -> Result<()> {
+        let key = FullMeshKey {
+            index: false,
+            key: Aes128Gcm::generate_key(OsRng),
+        };
+        let (mut conn1, local_parameters) = Connection::new(1, 2, vec![], None, true, key.clone()).await?;
+        let (mut conn2, remote_parameters) = Connection::new(2, 1, vec![], None, false, key.clone()).await?;
+        conn1.start(remote_parameters).await?;
+        conn2.start(local_parameters).await?;
+
+        let candidates1 = conn1.gather().await?;
+        let candidates2 = conn2.gather().await?;
+        conn2.add_candidates(candidates1).await;
+        conn1.add_candidates(candidates2).await;
+
+        let mut state = conn1.ice.subscribe_state();
+        loop {
+            if *state.borrow() == IceTransportState::Connected {
+                break;
+            }
+            state.changed().await?;
+        }
+
+        let mut sender1 = conn1.sender();
+        let mut receiver2 = conn2.receiver().await;
+
+        let data = Bytes::from("Hello, world!");
+        sender1.send(data.clone()).await?;
+        let (received, _) = receiver2.recv().await?;
+        assert_eq!(data, received);
+
+        let new_key = FullMeshKey {
+            index: true,
+            key: Aes128Gcm::generate_key(OsRng),
+        };
+
+        conn2.key.send(new_key.clone())?;
+        sender1.send(data.clone()).await?;
+        let (received, _) = receiver2.recv().await?;
+        assert_eq!(data, received);
+
+        conn1.key.send(new_key.clone())?;
+        sender1.send(data.clone()).await?;
+        let (received, _) = receiver2.recv().await?;
+        assert_eq!(data, received);
+        Ok(())
+    }
 }
