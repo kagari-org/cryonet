@@ -32,8 +32,20 @@ pub struct IceServer {
 struct FullMeshConnection {
     last_seen: Instant,
     last_rekey: Instant,
+    once_connected: bool,
     connection: Connection,
     ecdh_key: EphemeralSecret,
+}
+
+pub enum FullMeshEvent {
+    Connected {
+        node_id: NodeId,
+        sender: conn::ConnectionSender,
+        receiver: conn::ConnectionReceiver,
+    },
+    Disconnected {
+        node_id: NodeId,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -55,6 +67,8 @@ pub struct FullMesh {
     packet_rx: mpsc::Receiver<Packet>,
     ticker: Interval,
     connections: HashMap<NodeId, FullMeshConnection>,
+
+    event_tx: mpsc::Sender<FullMeshEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,11 +90,11 @@ impl Payload for FullMeshPayload {}
 
 #[sactor(pub)]
 impl FullMesh {
-    pub async fn new(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> Result<FullMeshHandle> {
-        Self::new_with_parameters(id, mesh, ice_servers, Duration::from_secs(30), Duration::from_secs(120), candidate_filter_prefix).await
+    pub async fn new(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, event_tx: mpsc::Sender<FullMeshEvent>) -> Result<FullMeshHandle> {
+        Self::new_with_parameters(id, mesh, ice_servers, Duration::from_secs(30), Duration::from_secs(120), candidate_filter_prefix, event_tx).await
     }
 
-    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, timeout: Duration, rekey_timeout: Duration, candidate_filter_prefix: Option<AnyIpCidr>) -> Result<FullMeshHandle> {
+    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, timeout: Duration, rekey_timeout: Duration, candidate_filter_prefix: Option<AnyIpCidr>, event_tx: mpsc::Sender<FullMeshEvent>) -> Result<FullMeshHandle> {
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>())).await?;
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle,
@@ -93,6 +107,7 @@ impl FullMesh {
             packet_rx,
             ticker: interval(Duration::from_secs(10)),
             connections: HashMap::new(),
+            event_tx,
         });
         tokio::task::spawn_local(future);
         Ok(fm)
@@ -118,7 +133,7 @@ impl FullMesh {
         match payload {
             FullMeshPayload::Shake { ufrag, pwd, candidates, public_key } => {
                 if src < self.id {
-                    let (mut connection, parameters, local_candidates) = Connection::new(self.id, src, self.ice_servers.clone(), self.candidate_filter_prefix, false).await?;
+                    let (mut connection, parameters, local_candidates) = Connection::new(self.id, src, self.handle.clone(), self.ice_servers.clone(), self.candidate_filter_prefix, false).await?;
                     let ecdh_key = EphemeralSecret::generate();
                     let local_public_key = ecdh_key.public_key();
                     connection.start(IceParameters::new(ufrag, pwd)).await?;
@@ -134,6 +149,7 @@ impl FullMesh {
                         last_rekey: Instant::now(),
                         connection,
                         ecdh_key,
+                        once_connected: false,
                     });
                     self.mesh.send_packet(src, Box::new(FullMeshPayload::Shake {
                         ufrag: parameters.username_fragment,
@@ -202,9 +218,10 @@ impl FullMesh {
     async fn tick(&mut self) -> Result<()> {
         let time = Instant::now();
         // gc
-        self.connections.retain(|_, conn| {
+        let mut disconnected = Vec::new();
+        self.connections.retain(|node_id, conn| {
             use IceTransportState::*;
-            match conn.connection.status() {
+            let keep = match conn.connection.status() {
                 Connected | Completed => {
                     conn.last_seen = time;
                     true
@@ -213,8 +230,26 @@ impl FullMesh {
                 New | Checking | Disconnected => {
                     time.duration_since(conn.last_seen) < self.timeout
                 }
+            };
+            if !keep && conn.once_connected {
+                disconnected.push(*node_id);
             }
+            keep
         });
+        for node_id in disconnected {
+            let _ = self.event_tx.send(FullMeshEvent::Disconnected { node_id });
+        }
+        // mark connected
+        for (node_id, conn) in &mut self.connections {
+            if !conn.once_connected && conn.connection.status() == IceTransportState::Connected {
+                conn.once_connected = true;
+                let _ = self.event_tx.send(FullMeshEvent::Connected {
+                    node_id: *node_id,
+                    sender: conn.connection.sender(),
+                    receiver: conn.connection.receiver().await,
+                });
+            }
+        }
         // connect
         let peers = self.mesh.get_routes().await?.keys().cloned().collect::<Vec<_>>();
         for peer_id in peers {
@@ -240,7 +275,7 @@ impl FullMesh {
             } else {
                 // new connection
                 let result: Result<()> = try {
-                    let (connection, parameters, candidates) = Connection::new(self.id, peer_id, self.ice_servers.clone(), self.candidate_filter_prefix, true).await?;
+                    let (connection, parameters, candidates) = Connection::new(self.id, peer_id, self.handle.clone(), self.ice_servers.clone(), self.candidate_filter_prefix, true).await?;
                     let ecdh_key = EphemeralSecret::generate();
                     let public_key = ecdh_key.public_key();
                     self.connections.insert(peer_id, FullMeshConnection {
@@ -248,6 +283,7 @@ impl FullMesh {
                         last_rekey: Instant::now(),
                         connection,
                         ecdh_key,
+                        once_connected: false,
                     });
                     self.mesh.send_packet(peer_id, Box::new(FullMeshPayload::Shake {
                         ufrag: parameters.username_fragment,
