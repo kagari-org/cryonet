@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use cidr::AnyIpCidr;
-use rustrtc::{IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, RtcConfiguration, transports::{PacketReceiver, ice::{IceParameters, IceSocketWrapper}}};
+use rustrtc::{IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, IceTransportState, RtcConfiguration, transports::{PacketReceiver, ice::{IceParameters, IceSocketWrapper}}};
 use tokio::sync::{mpsc, watch};
 use tracing::debug;
 
@@ -16,14 +16,14 @@ pub struct Connection {
     peer_id: NodeId,
     ice: IceTransport,
     candidate_filter_prefix: Option<AnyIpCidr>,
-    key: watch::Sender<FullMeshKey>,
+    key: watch::Sender<Option<FullMeshKey>>,
 
     sent: Arc<AtomicU64>,
     received: Arc<AtomicU64>,
 }
 
 impl Connection {
-    pub async fn new(id: NodeId, peer_id: NodeId, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, controlling: bool, key: FullMeshKey) -> Result<(Self, IceParameters)> {
+    pub async fn new(id: NodeId, peer_id: NodeId, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, controlling: bool) -> Result<(Self, IceParameters, Vec<String>)> {
         let (ice, future) = IceTransport::new(RtcConfiguration {
            ice_servers: ice_servers
                 .into_iter()
@@ -43,45 +43,59 @@ impl Connection {
         }
         tokio::spawn(future);
         let local_parameters = ice.local_parameters();
-        Ok((Connection {
-            id,
-            peer_id,
-            ice,
-            candidate_filter_prefix,
-            key: watch::channel(key).0,
-            sent: Arc::new(AtomicU64::new(0)),
-            received: Arc::new(AtomicU64::new(0)),
-        }, local_parameters))
-    }
 
-    pub async fn start(&mut self, remote_parameters: IceParameters) -> Result<()> {
-        self.ice.start(remote_parameters)
-    }
-
-    pub async fn gather(&self) -> Result<Vec<IceCandidate>> {
-        let mut gather = self.ice.subscribe_gathering_state();
+        ice.start_gathering()?;
+        let mut gather = ice.subscribe_gathering_state();
         loop {
             if *gather.borrow_and_update() == IceGathererState::Complete {
                 break;
             }
             gather.changed().await?;
         }
-        let mut candidates = self.ice.local_candidates();
-        if let Some(prefix) = &self.candidate_filter_prefix {
+        let mut candidates = ice.local_candidates();
+        if let Some(prefix) = &candidate_filter_prefix {
             candidates.retain(|candidate| !prefix.contains(&candidate.address.ip()));
         }
-        Ok(candidates)
+        let candidates = candidates.into_iter().map(|c| c.to_sdp()).collect();
+
+        Ok((Connection {
+            id,
+            peer_id,
+            ice,
+            candidate_filter_prefix,
+            key: watch::channel(None).0,
+            sent: Arc::new(AtomicU64::new(0)),
+            received: Arc::new(AtomicU64::new(0)),
+        }, local_parameters, candidates))
     }
 
-    pub async fn add_candidates(&self, candidates: Vec<IceCandidate>) {
+    pub async fn start(&mut self, remote_parameters: IceParameters) -> Result<()> {
+        self.ice.start(remote_parameters)
+    }
+
+    pub fn add_candidates(&self, candidates: &Vec<String>) {
         for candidate in candidates {
-            if let Some(prefix) = &self.candidate_filter_prefix {
-                if prefix.contains(&candidate.address.ip()) {
-                    continue;
+            if let Ok(candidate) = IceCandidate::from_sdp(candidate) {
+                if let Some(prefix) = &self.candidate_filter_prefix {
+                    if prefix.contains(&candidate.address.ip()) {
+                        continue;
+                    }
                 }
+                self.ice.add_remote_candidate(candidate);
             }
-            self.ice.add_remote_candidate(candidate);
         }
+    }
+
+    pub fn set_key(&self, key: FullMeshKey) {
+        self.key.send_replace(Some(key));
+    }
+
+    pub fn key(&self) -> Option<FullMeshKey> {
+        self.key.borrow().clone()
+    }
+
+    pub fn status(&self) -> IceTransportState {
+        self.ice.state()
     }
 
     pub fn sender(&self) -> ConnectionSender {
@@ -91,7 +105,7 @@ impl Connection {
             socket: self.ice.subscribe_selected_socket(),
             pair: self.ice.subscribe_selected_pair(),
             key: self.key.subscribe(),
-            aes: Aes128Gcm::new(&self.key.borrow().key),
+            aes: Aes128Gcm::new(&[0u8; 16].into()),
             counter: 0,
             sent: self.sent.clone(),
         }
@@ -104,7 +118,7 @@ impl Connection {
         ConnectionReceiver {
             rx,
             key: self.key.subscribe(),
-            aes: [Aes128Gcm::new(&self.key.borrow().key), Aes128Gcm::new(&self.key.borrow().key)],
+            aes: [Aes128Gcm::new(&[0u8; 16].into()), Aes128Gcm::new(&[0u8; 16].into())],
             received: self.received.clone(),
         }
     }
@@ -121,7 +135,7 @@ pub struct ConnectionSender {
     peer_id: NodeId,
     socket: watch::Receiver<Option<IceSocketWrapper>>,
     pair: watch::Receiver<Option<IceCandidatePair>>,
-    key: watch::Receiver<FullMeshKey>,
+    key: watch::Receiver<Option<FullMeshKey>>,
     aes: Aes128Gcm,
     counter: u32,
 
@@ -131,10 +145,11 @@ pub struct ConnectionSender {
 impl ConnectionSender {
     pub async fn send(&mut self, data: Bytes) -> Result<usize> {
         if let Some(socket) = &*self.socket.borrow() && let Some(pair) = &*self.pair.borrow() {
-            let mut key = self.key.borrow();
+            let Some(mut key) = *self.key.borrow() else {
+                anyhow::bail!("Encryption key is not set yet");
+            };
             if self.key.has_changed()? {
-                drop(key);
-                key = self.key.borrow_and_update();
+                key = self.key.borrow_and_update().unwrap();
                 self.aes = Aes128Gcm::new(&key.key);
                 self.counter = 0;
             }
@@ -173,7 +188,7 @@ pub struct MpscSender(mpsc::Sender<(Bytes, SocketAddr)>);
 
 pub struct ConnectionReceiver {
     rx: mpsc::Receiver<(Bytes, SocketAddr)>,
-    key: watch::Receiver<FullMeshKey>,
+    key: watch::Receiver<Option<FullMeshKey>>,
     aes: [Aes128Gcm; 2],
 
     received: Arc<AtomicU64>,
@@ -191,7 +206,7 @@ impl PacketReceiver for MpscSender {
 impl ConnectionReceiver{
     pub async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
         if self.key.has_changed()? {
-            let key = self.key.borrow_and_update();
+            let key = self.key.borrow_and_update().unwrap();
             if key.index {
                 self.aes[1] = Aes128Gcm::new(&key.key);
             } else {
@@ -223,15 +238,14 @@ mod tests {
             index: false,
             key: Aes128Gcm::generate_key(OsRng),
         };
-        let (mut conn1, local_parameters) = Connection::new(1, 2, vec![], None, true, key.clone()).await?;
-        let (mut conn2, remote_parameters) = Connection::new(2, 1, vec![], None, false, key.clone()).await?;
+        let (mut conn1, local_parameters, candidates1) = Connection::new(1, 2, vec![], None, true).await?;
+        let (mut conn2, remote_parameters, candidates2) = Connection::new(2, 1, vec![], None, false).await?;
+        conn1.set_key(key);
         conn1.start(remote_parameters).await?;
+        conn2.add_candidates(&candidates1);
+        conn2.set_key(key);
         conn2.start(local_parameters).await?;
-
-        let candidates1 = conn1.gather().await?;
-        let candidates2 = conn2.gather().await?;
-        conn2.add_candidates(candidates1).await;
-        conn1.add_candidates(candidates2).await;
+        conn1.add_candidates(&candidates2);
 
         let mut state = conn1.ice.subscribe_state();
         loop {
@@ -254,12 +268,12 @@ mod tests {
             key: Aes128Gcm::generate_key(OsRng),
         };
 
-        conn2.key.send(new_key.clone())?;
+        conn2.set_key(new_key);
         sender1.send(data.clone()).await?;
         let (received, _) = receiver2.recv().await?;
         assert_eq!(data, received);
 
-        conn1.key.send(new_key.clone())?;
+        conn1.set_key(new_key);
         sender1.send(data.clone()).await?;
         let (received, _) = receiver2.recv().await?;
         assert_eq!(data, received);
