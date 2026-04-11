@@ -8,6 +8,8 @@ pub enum CryonetError {
     NoSuchLink(NodeId),
     #[error("Route to node {0:X} is unreachable")]
     Unreachable(NodeId),
+    #[error("Channel closed")]
+    ChannelClosed,
     #[error("Unknown error")]
     Unknown,
 }

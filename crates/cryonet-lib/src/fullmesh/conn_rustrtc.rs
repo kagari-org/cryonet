@@ -9,7 +9,7 @@ use rustrtc::{IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTran
 use tokio::sync::{mpsc, watch};
 use tracing::debug;
 
-use crate::{fullmesh::{FullMeshHandle, FullMeshKey, IceServer}, mesh::packet::NodeId};
+use crate::{errors::CryonetError, fullmesh::{FullMeshHandle, FullMeshKey, IceServer}, mesh::packet::NodeId};
 
 pub struct Connection {
     id: NodeId,
@@ -136,8 +136,7 @@ impl Connection {
     }
     
     pub async fn receiver(&self) -> ConnectionReceiver {
-        // TODO: check this
-        let (tx, rx) = mpsc::channel(1024);
+        let (tx, rx) = mpsc::channel(16384);
         self.ice.set_data_receiver(Arc::new(MpscSender(tx))).await;
         ConnectionReceiver {
             rx,
@@ -239,7 +238,7 @@ impl ConnectionReceiver{
                 self.aes[0] = Aes128Gcm::new(&key.key);
             }
         }
-        let (data, addr) = self.rx.recv().await.ok_or_else(|| anyhow::anyhow!("Channel closed"))?;
+        let (data, addr) = self.rx.recv().await.ok_or_else(|| CryonetError::ChannelClosed)?;
         self.received.fetch_add(data.len() as u64, Ordering::Relaxed);
         let index = (data[0] >> 5) & 0b1 == 1;
         let key = if index { &self.aes[1] } else { &self.aes[0] };

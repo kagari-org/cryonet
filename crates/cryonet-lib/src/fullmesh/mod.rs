@@ -12,7 +12,7 @@ use sha2::Sha256;
 use tokio::{sync::mpsc, time::{Interval, interval}};
 use tracing::{error, warn};
 
-use crate::{fullmesh::conn::Connection, mesh::{
+use crate::{fullmesh::{conn::Connection, tun::TunManagerHandle}, mesh::{
     MeshHandle,
     packet::{NodeId, Packet, Payload},
 }};
@@ -38,17 +38,6 @@ struct FullMeshConnection {
     ecdh_key: EphemeralSecret,
 }
 
-pub enum FullMeshEvent {
-    Connected {
-        node_id: NodeId,
-        sender: conn::ConnectionSender,
-        receiver: conn::ConnectionReceiver,
-    },
-    Disconnected {
-        node_id: NodeId,
-    },
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct FullMeshKey {
     index: bool,
@@ -60,6 +49,7 @@ pub struct FullMesh {
 
     id: NodeId,
     mesh: MeshHandle,
+    tm: TunManagerHandle,
     ice_servers: Vec<IceServer>,
     candidate_filter_prefix: Option<AnyIpCidr>,
     timeout: Duration,
@@ -68,8 +58,6 @@ pub struct FullMesh {
     packet_rx: mpsc::Receiver<Packet>,
     ticker: Interval,
     connections: HashMap<NodeId, FullMeshConnection>,
-
-    event_tx: mpsc::Sender<FullMeshEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,16 +79,17 @@ impl Payload for FullMeshPayload {}
 
 #[sactor(pub)]
 impl FullMesh {
-    pub async fn new(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, event_tx: mpsc::Sender<FullMeshEvent>) -> Result<FullMeshHandle> {
-        Self::new_with_parameters(id, mesh, ice_servers, Duration::from_secs(30), Duration::from_secs(120), candidate_filter_prefix, event_tx).await
+    pub async fn new(id: NodeId, mesh: MeshHandle, tm: TunManagerHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> Result<FullMeshHandle> {
+        Self::new_with_parameters(id, mesh, tm, ice_servers, Duration::from_secs(30), Duration::from_secs(120), candidate_filter_prefix).await
     }
 
-    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, ice_servers: Vec<IceServer>, timeout: Duration, rekey_timeout: Duration, candidate_filter_prefix: Option<AnyIpCidr>, event_tx: mpsc::Sender<FullMeshEvent>) -> Result<FullMeshHandle> {
+    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, tm: TunManagerHandle, ice_servers: Vec<IceServer>, timeout: Duration, rekey_timeout: Duration, candidate_filter_prefix: Option<AnyIpCidr>) -> Result<FullMeshHandle> {
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>())).await?;
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle,
             id,
             mesh,
+            tm,
             ice_servers,
             timeout,
             rekey_timeout,
@@ -108,7 +97,6 @@ impl FullMesh {
             packet_rx,
             ticker: interval(Duration::from_secs(10)),
             connections: HashMap::new(),
-            event_tx,
         });
         tokio::task::spawn_local(future);
         Ok(fm)
@@ -238,17 +226,13 @@ impl FullMesh {
             keep
         });
         for node_id in disconnected {
-            let _ = self.event_tx.send(FullMeshEvent::Disconnected { node_id }).await;
+            self.tm.disconnected(node_id).await?;
         }
         // mark connected
         for (node_id, conn) in &mut self.connections {
             if !conn.once_connected && conn.connection.status() == IceTransportState::Connected {
                 conn.once_connected = true;
-                let _ = self.event_tx.send(FullMeshEvent::Connected {
-                    node_id: *node_id,
-                    sender: conn.connection.sender(),
-                    receiver: conn.connection.receiver().await,
-                }).await;
+                self.tm.connected(*node_id, conn.connection.sender(), conn.connection.receiver().await).await??;
             }
         }
         // connect
