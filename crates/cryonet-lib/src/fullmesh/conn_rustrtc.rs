@@ -118,6 +118,10 @@ impl Connection {
         self.ice.state()
     }
 
+    pub async fn selected_candidate(&self) -> Option<String> {
+        self.ice.get_selected_pair().await.map(|pair| pair.remote.to_sdp())
+    }
+
     pub fn sender(&self) -> ConnectionSender {
         ConnectionSender {
             id: self.id,

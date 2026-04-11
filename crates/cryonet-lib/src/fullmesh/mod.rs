@@ -3,6 +3,7 @@ use std::{any::Any, collections::HashMap, time::{Duration, Instant}};
 use aes_gcm::{Aes128Gcm, Key};
 use anyhow::{Error, Result};
 use cidr::AnyIpCidr;
+use cryonet_uapi::{Conn, ConnState};
 use p256::{PublicKey, ecdh::EphemeralSecret, elliptic_curve::Generate};
 use rustrtc::{IceTransportState, transports::ice::IceParameters};
 use sactor::sactor;
@@ -298,6 +299,26 @@ impl FullMesh {
             }
         }
         Ok(())
+    }
+
+    pub async fn get_peers(&self) -> HashMap<NodeId, Conn> {
+        let mut result = HashMap::new();
+        for (node_id, conn) in &self.connections {
+            let state = match conn.connection.status() {
+                IceTransportState::New => ConnState::New,
+                IceTransportState::Checking => ConnState::Connecting,
+                IceTransportState::Connected | IceTransportState::Completed => ConnState::Connected,
+                IceTransportState::Disconnected => ConnState::Disconnected,
+                IceTransportState::Failed => ConnState::Failed,
+                IceTransportState::Closed => ConnState::Closed,
+            };
+            let selected_candidate = conn.connection.selected_candidate().await;
+            result.insert(*node_id, Conn {
+                state,
+                selected_candidate,
+            });
+        }
+        result
     }
 
     #[handle_error]

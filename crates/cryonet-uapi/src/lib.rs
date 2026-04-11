@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 pub type NodeId = u32;
 
@@ -29,10 +28,8 @@ pub enum ConnState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conn {
-    pub selected: bool,
     pub state: ConnState,
     pub selected_candidate: Option<String>,
-    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,7 +41,7 @@ pub enum CryonetUapi {
     GetIgpRoutes,
     GetIgpRoutesResponse(Vec<IgpRoute>),
     GetFullMeshPeers,
-    GetFullMeshPeersResponse(HashMap<NodeId, HashMap<Uuid, Conn>>),
+    GetFullMeshPeersResponse(HashMap<NodeId, Conn>),
     Ping(NodeId),
     Pong,
 }

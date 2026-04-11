@@ -88,13 +88,8 @@ async fn main() -> Result<()> {
             let mut peers: Vec<_> = hash_map.into_iter().collect();
             peers.sort_by_key(|(node_id, _)| *node_id);
             println!("Full Mesh Peers:");
-            for (node_id, conns) in peers {
-                let mut conns: Vec<_> = conns.into_iter().collect();
-                conns.sort_by(|a, b| b.1.elapsed_ms.cmp(&a.1.elapsed_ms));
-                println!("  Node {node_id:X}:");
-                for (uuid, conn) in conns {
-                    println!("    Conn {uuid}: state: {:?}, selected: {}, candidate: {:?}, elapsed: {}ms", conn.state, conn.selected, conn.selected_candidate, conn.elapsed_ms);
-                }
+            for (node_id, conn) in peers {
+                println!("  Node {node_id:X}: state: {:?}, candidate: {:?}", conn.state, conn.selected_candidate);
             }
         }
         CryonetUapi::Pong => {

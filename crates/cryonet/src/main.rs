@@ -73,8 +73,9 @@ async fn main() -> Result<()> {
                 let mesh = Mesh::new(args.id);
                 let igp = Igp::new(args.id, mesh.clone()).await?;
                 let _mgr = ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen).await?;
-                let fm = FullMesh::new(args.id, mesh.clone(), args.ice_servers, args.candidate_filter_prefix).await?;
-                let _tm = TunManager::new(fm.clone(), args.interface_prefix, args.enable_packet_information).await?;
+                let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
+                let fm = FullMesh::new(args.id, mesh.clone(), args.ice_servers, args.candidate_filter_prefix, event_tx).await?;
+                let _tm = TunManager::new(event_rx, args.interface_prefix, args.enable_packet_information).await?;
                 let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;
 
                 pending().await
