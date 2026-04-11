@@ -120,7 +120,13 @@ impl TunManager {
 
 async fn recv_loop(node_id: NodeId, mut receiver: ConnectionReceiver, device: Arc<AsyncDevice>) -> Result<()> {
     loop {
-        let (packet, _) = receiver.recv().await?;
+        let (packet, _) = match receiver.recv().await {
+            Ok(p) => p,
+            Err(err) => {
+                error!("Failed to receive from node {:X}: {}", node_id, err);
+                continue;
+            }
+        };
         if let Err(err) = device.send(&packet).await {
             error!("Failed to write to TUN device for node {:X}: {}", node_id, err);
             break;
@@ -136,8 +142,6 @@ async fn send_loop(node_id: NodeId, mut sender: ConnectionSender, device: Arc<As
         let bytes = Bytes::copy_from_slice(&buf[..size]);
         if let Err(err) = sender.send(bytes).await {
             error!("Failed to send to node {:X}: {}", node_id, err);
-            break;
         }
     }
-    Ok(())
 }

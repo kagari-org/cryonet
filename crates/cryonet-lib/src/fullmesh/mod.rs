@@ -238,7 +238,7 @@ impl FullMesh {
             keep
         });
         for node_id in disconnected {
-            let _ = self.event_tx.send(FullMeshEvent::Disconnected { node_id });
+            let _ = self.event_tx.send(FullMeshEvent::Disconnected { node_id }).await;
         }
         // mark connected
         for (node_id, conn) in &mut self.connections {
@@ -248,13 +248,13 @@ impl FullMesh {
                     node_id: *node_id,
                     sender: conn.connection.sender(),
                     receiver: conn.connection.receiver().await,
-                });
+                }).await;
             }
         }
         // connect
         let peers = self.mesh.get_routes().await?.keys().cloned().collect::<Vec<_>>();
         for peer_id in peers {
-            if peer_id > self.id {
+            if self.id > peer_id {
                 continue;
             }
             if let Some(conn) = self.connections.get_mut(&peer_id) {
