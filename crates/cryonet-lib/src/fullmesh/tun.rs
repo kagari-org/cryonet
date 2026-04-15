@@ -11,7 +11,9 @@ use tracing::error;
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::{
-    errors::CryonetError, fullmesh::conn::{ConnectionReceiver, ConnectionSender}, mesh::packet::NodeId
+    errors::CryonetError,
+    fullmesh::conn::{ConnectionReceiver, ConnectionSender},
+    mesh::packet::NodeId,
 };
 
 pub struct TunManager {

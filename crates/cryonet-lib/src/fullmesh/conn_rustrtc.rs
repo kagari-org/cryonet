@@ -1,4 +1,10 @@
-use std::{net::{IpAddr, SocketAddr}, sync::{Arc, atomic::{AtomicU64, Ordering}}};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use aes_gcm::{Aes128Gcm, KeyInit, Nonce, aead::Aead};
 use anyhow::Result;
@@ -6,11 +12,21 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use cidr::AnyIpCidr;
 use memoize::memoize;
-use rustrtc::{IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, IceTransportState, RtcConfiguration, transports::{PacketReceiver, ice::{IceParameters, IceSocketWrapper}}};
+use rustrtc::{
+    IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, IceTransportState, RtcConfiguration,
+    transports::{
+        PacketReceiver,
+        ice::{IceParameters, IceSocketWrapper},
+    },
+};
 use tokio::sync::{mpsc, watch};
 use tracing::debug;
 
-use crate::{errors::CryonetError, fullmesh::{FullMeshHandle, FullMeshKey, IceServer}, mesh::packet::NodeId};
+use crate::{
+    errors::CryonetError,
+    fullmesh::{FullMeshHandle, FullMeshKey, IceServer},
+    mesh::packet::NodeId,
+};
 
 pub struct Connection {
     id: NodeId,
@@ -28,7 +44,7 @@ pub struct Connection {
 impl Connection {
     pub async fn new(id: NodeId, peer_id: NodeId, fm: FullMeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool, controlling: bool) -> Result<(Self, IceParameters, Vec<String>)> {
         let (ice, future) = IceTransport::new(RtcConfiguration {
-           ice_servers: ice_servers
+            ice_servers: ice_servers
                 .into_iter()
                 .map(|s| rustrtc::IceServer {
                     urls: vec![s.url],
@@ -52,11 +68,11 @@ impl Connection {
             loop {
                 use IceTransportState::*;
                 match *state.borrow_and_update() {
-                    Failed | Closed  => {
+                    Failed | Closed => {
                         let _ = fm.tick().await;
                         break;
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
                 if let Err(err) = state.changed().await {
                     debug!("ICE state change error: {}", err);
@@ -81,17 +97,21 @@ impl Connection {
         }
         let candidates = candidates.into_iter().map(|c| c.to_sdp()).collect();
 
-        Ok((Connection {
-            id,
-            peer_id,
-            ice,
-            candidate_filter_prefix,
-            encrypt_local_packets,
-            send_key: watch::channel(None).0,
-            recv_key: watch::channel(None).0,
-            sent: Arc::new(AtomicU64::new(0)),
-            received: Arc::new(AtomicU64::new(0)),
-        }, local_parameters, candidates))
+        Ok((
+            Connection {
+                id,
+                peer_id,
+                ice,
+                candidate_filter_prefix,
+                encrypt_local_packets,
+                send_key: watch::channel(None).0,
+                recv_key: watch::channel(None).0,
+                sent: Arc::new(AtomicU64::new(0)),
+                received: Arc::new(AtomicU64::new(0)),
+            },
+            local_parameters,
+            candidates,
+        ))
     }
 
     pub async fn start(&mut self, remote_parameters: IceParameters) -> Result<()> {
@@ -101,10 +121,10 @@ impl Connection {
     pub fn add_candidates(&self, candidates: &Vec<String>) {
         for candidate in candidates {
             if let Ok(candidate) = IceCandidate::from_sdp(candidate) {
-                if let Some(prefix) = &self.candidate_filter_prefix {
-                    if prefix.contains(&candidate.address.ip()) {
-                        continue;
-                    }
+                if let Some(prefix) = &self.candidate_filter_prefix
+                    && prefix.contains(&candidate.address.ip())
+                {
+                    continue;
                 }
                 self.ice.add_remote_candidate(candidate);
             }
@@ -120,7 +140,7 @@ impl Connection {
     }
 
     pub fn key(&self) -> Option<FullMeshKey> {
-        self.send_key.borrow().clone()
+        *self.send_key.borrow()
     }
 
     pub fn status(&self) -> IceTransportState {
@@ -145,7 +165,7 @@ impl Connection {
             sent: self.sent.clone(),
         }
     }
-    
+
     pub async fn receiver(&self) -> ConnectionReceiver {
         let (tx, rx) = mpsc::channel(16384);
         self.ice.set_data_receiver(Arc::new(MpscSender(tx))).await;
@@ -181,7 +201,9 @@ impl ConnectionSender {
     pub async fn send(&mut self, data: Bytes) -> Result<usize> {
         let socket = self.socket.borrow().clone();
         let pair = self.pair.borrow().clone();
-        if let Some(socket) = socket && let Some(pair) = pair {
+        if let Some(socket) = socket
+            && let Some(pair) = pair
+        {
             let Some(mut key) = *self.key.borrow() else {
                 anyhow::bail!("Encryption key is not set yet");
             };
@@ -249,7 +271,7 @@ impl PacketReceiver for MpscSender {
     }
 }
 
-impl ConnectionReceiver{
+impl ConnectionReceiver {
     pub async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
         if self.key.has_changed()? {
             let key = self.key.borrow_and_update().unwrap();
@@ -259,7 +281,7 @@ impl ConnectionReceiver{
                 self.aes[0] = Aes128Gcm::new(&key.key);
             }
         }
-        let (data, addr) = self.rx.recv().await.ok_or_else(|| CryonetError::ChannelClosed)?;
+        let (data, addr) = self.rx.recv().await.ok_or(CryonetError::ChannelClosed)?;
         if data.len() < 4 {
             anyhow::bail!("Received packet is too short");
         }
