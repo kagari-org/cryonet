@@ -329,7 +329,9 @@ impl FullMesh {
                 IceTransportState::Closed => ConnState::Closed,
             };
             let selected_candidate = conn.connection.selected_candidate().await;
-            result.insert(*node_id, Conn { state, selected_candidate });
+            let sent = conn.connection.sent();
+            let received = conn.connection.received();
+            result.insert(*node_id, Conn { state, selected_candidate, sent, received });
         }
         result
     }

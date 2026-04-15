@@ -151,6 +151,14 @@ impl Connection {
         self.ice.get_selected_pair().await.map(|pair| pair.remote.to_sdp())
     }
 
+    pub fn sent(&self) -> u64 {
+        self.sent.load(Ordering::Relaxed)
+    }
+
+    pub fn received(&self) -> u64 {
+        self.received.load(Ordering::Relaxed)
+    }
+
     pub fn sender(&self) -> ConnectionSender {
         ConnectionSender {
             id: self.id,

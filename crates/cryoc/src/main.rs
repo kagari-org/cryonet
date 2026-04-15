@@ -7,6 +7,18 @@ use cryonet_uapi::{CryonetUapi, NodeId};
 use tempfile::tempdir;
 use tokio::net::UnixDatagram;
 
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    for unit in UNITS {
+        if value < 1024.0 {
+            return format!("{value:.2} {unit}");
+        }
+        value /= 1024.0;
+    }
+    format!("{value:.2} PiB")
+}
+
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(short, default_value = "/run/cryonet/cryonet.ctl")]
@@ -89,7 +101,8 @@ async fn main() -> Result<()> {
             peers.sort_by_key(|(node_id, _)| *node_id);
             println!("Full Mesh Peers:");
             for (node_id, conn) in peers {
-                println!("  Node {node_id:X}: state: {:?}, candidate: {:?}", conn.state, conn.selected_candidate);
+                let candidate = conn.selected_candidate.as_deref().unwrap_or("none");
+                println!("  Node {node_id:X}: state: {:?}, sent: {}, received: {}, candidate: {candidate}", conn.state, format_bytes(conn.sent), format_bytes(conn.received),);
             }
         }
         CryonetUapi::Pong => {
