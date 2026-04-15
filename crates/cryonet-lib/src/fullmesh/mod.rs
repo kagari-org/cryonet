@@ -52,6 +52,7 @@ pub struct FullMesh {
     tm: TunManagerHandle,
     ice_servers: Vec<IceServer>,
     candidate_filter_prefix: Option<AnyIpCidr>,
+    encrypt_local_packets: bool,
     timeout: Duration,
     rekey_timeout: Duration,
 
@@ -83,11 +84,11 @@ impl Payload for FullMeshPayload {}
 
 #[sactor(pub)]
 impl FullMesh {
-    pub async fn new(id: NodeId, mesh: MeshHandle, tm: TunManagerHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) -> Result<FullMeshHandle> {
-        Self::new_with_parameters(id, mesh, tm, ice_servers, Duration::from_secs(30), Duration::from_secs(120), candidate_filter_prefix).await
+    pub async fn new(id: NodeId, mesh: MeshHandle, tm: TunManagerHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool) -> Result<FullMeshHandle> {
+        Self::new_with_parameters(id, mesh, tm, ice_servers, Duration::from_secs(30), Duration::from_secs(120), candidate_filter_prefix, encrypt_local_packets).await
     }
 
-    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, tm: TunManagerHandle, ice_servers: Vec<IceServer>, timeout: Duration, rekey_timeout: Duration, candidate_filter_prefix: Option<AnyIpCidr>) -> Result<FullMeshHandle> {
+    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, tm: TunManagerHandle, ice_servers: Vec<IceServer>, timeout: Duration, rekey_timeout: Duration, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool) -> Result<FullMeshHandle> {
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>())).await?;
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle,
@@ -98,6 +99,7 @@ impl FullMesh {
             timeout,
             rekey_timeout,
             candidate_filter_prefix,
+            encrypt_local_packets,
             packet_rx,
             ticker: interval(Duration::from_secs(10)),
             connections: HashMap::new(),
@@ -126,7 +128,7 @@ impl FullMesh {
         match payload {
             FullMeshPayload::Shake { ufrag, pwd, candidates, public_key } => {
                 if self.id > src {
-                    let (mut connection, parameters, local_candidates) = Connection::new(self.id, src, self.handle.clone(), self.ice_servers.clone(), self.candidate_filter_prefix, false).await?;
+                    let (mut connection, parameters, local_candidates) = Connection::new(self.id, src, self.handle.clone(), self.ice_servers.clone(), self.candidate_filter_prefix, self.encrypt_local_packets, false).await?;
                     let ecdh_key = EphemeralSecret::generate();
                     let local_public_key = ecdh_key.public_key();
                     connection.start(IceParameters::new(ufrag, pwd)).await?;
@@ -292,7 +294,7 @@ impl FullMesh {
             } else {
                 // new connection
                 let result: Result<()> = try {
-                    let (connection, parameters, candidates) = Connection::new(self.id, peer_id, self.handle.clone(), self.ice_servers.clone(), self.candidate_filter_prefix, true).await?;
+                    let (connection, parameters, candidates) = Connection::new(self.id, peer_id, self.handle.clone(), self.ice_servers.clone(), self.candidate_filter_prefix, self.encrypt_local_packets, true).await?;
                     let ecdh_key = EphemeralSecret::generate();
                     let public_key = ecdh_key.public_key();
                     self.connections.insert(peer_id, FullMeshConnection {

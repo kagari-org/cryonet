@@ -1,10 +1,11 @@
-use std::{net::SocketAddr, sync::{Arc, atomic::{AtomicU64, Ordering}}};
+use std::{net::{IpAddr, SocketAddr}, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
 use aes_gcm::{Aes128Gcm, KeyInit, Nonce, aead::Aead};
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use cidr::AnyIpCidr;
+use memoize::memoize;
 use rustrtc::{IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, IceTransportState, RtcConfiguration, transports::{PacketReceiver, ice::{IceParameters, IceSocketWrapper}}};
 use tokio::sync::{mpsc, watch};
 use tracing::debug;
@@ -16,6 +17,7 @@ pub struct Connection {
     peer_id: NodeId,
     ice: IceTransport,
     candidate_filter_prefix: Option<AnyIpCidr>,
+    encrypt_local_packets: bool,
     send_key: watch::Sender<Option<FullMeshKey>>,
     recv_key: watch::Sender<Option<FullMeshKey>>,
 
@@ -24,7 +26,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub async fn new(id: NodeId, peer_id: NodeId, fm: FullMeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, controlling: bool) -> Result<(Self, IceParameters, Vec<String>)> {
+    pub async fn new(id: NodeId, peer_id: NodeId, fm: FullMeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool, controlling: bool) -> Result<(Self, IceParameters, Vec<String>)> {
         let (ice, future) = IceTransport::new(RtcConfiguration {
            ice_servers: ice_servers
                 .into_iter()
@@ -84,6 +86,7 @@ impl Connection {
             peer_id,
             ice,
             candidate_filter_prefix,
+            encrypt_local_packets,
             send_key: watch::channel(None).0,
             recv_key: watch::channel(None).0,
             sent: Arc::new(AtomicU64::new(0)),
@@ -132,11 +135,13 @@ impl Connection {
         ConnectionSender {
             id: self.id,
             peer_id: self.peer_id,
+            encrypt_local_packets: self.encrypt_local_packets,
             socket: self.ice.subscribe_selected_socket(),
             pair: self.ice.subscribe_selected_pair(),
             key: self.send_key.subscribe(),
             aes: Aes128Gcm::new(&[0u8; 16].into()),
-            counter: 0,
+            // We use counter=0 to indicate unencrypted packets.
+            counter: 1,
             sent: self.sent.clone(),
         }
     }
@@ -162,6 +167,7 @@ impl Drop for Connection {
 pub struct ConnectionSender {
     id: NodeId,
     peer_id: NodeId,
+    encrypt_local_packets: bool,
     socket: watch::Receiver<Option<IceSocketWrapper>>,
     pair: watch::Receiver<Option<IceCandidatePair>>,
     key: watch::Receiver<Option<FullMeshKey>>,
@@ -185,31 +191,40 @@ impl ConnectionSender {
                 self.counter = 0;
             }
 
-            // TODO: dont encrypt local packets
-            if self.counter >= 0b00011111_11111111_11111111_11111111 {
-                anyhow::bail!("Counter overflow");
-            }
-            let mut nonce_header: u32 = 0b10000000_00000000_00000000_00000000 | self.counter;
-            if self.id > self.peer_id {
-                nonce_header |= 0b01000000_00000000_00000000_00000000;
-            }
-            if key.index {
-                nonce_header |= 0b00100000_00000000_00000000_00000000;
-            }
-            let nonce_header = nonce_header.to_be_bytes();
-            let mut nonce = [0u8; 12];
-            nonce[8..].copy_from_slice(&nonce_header);
-            let nonce = Nonce::from_slice(&nonce);
-            let data = self.aes.encrypt(nonce, data.as_ref())?;
-            self.counter += 1;
+            if self.encrypt_local_packets || !is_private(pair.remote.address) {
+                if self.counter >= 0b00011111_11111111_11111111_11111111 {
+                    anyhow::bail!("Counter overflow");
+                }
+                let mut nonce_header: u32 = 0b10000000_00000000_00000000_00000000 | self.counter;
+                if self.id > self.peer_id {
+                    nonce_header |= 0b01000000_00000000_00000000_00000000;
+                }
+                if key.index {
+                    nonce_header |= 0b00100000_00000000_00000000_00000000;
+                }
+                let nonce_header = nonce_header.to_be_bytes();
+                let mut nonce = [0u8; 12];
+                nonce[8..].copy_from_slice(&nonce_header);
+                let nonce = Nonce::from_slice(&nonce);
+                let data = self.aes.encrypt(nonce, data.as_ref())?;
+                self.counter += 1;
 
-            let mut packet = BytesMut::with_capacity(nonce_header.len() + data.len());
-            packet.extend_from_slice(&nonce_header);
-            packet.extend_from_slice(&data);
-            let packet = packet.freeze();
+                let mut packet = BytesMut::with_capacity(nonce_header.len() + data.len());
+                packet.extend_from_slice(&nonce_header);
+                packet.extend_from_slice(&data);
+                let packet = packet.freeze();
 
-            self.sent.fetch_add(data.len() as u64, Ordering::Relaxed);
-            return socket.send_to(&packet, pair.remote.address).await;
+                self.sent.fetch_add(data.len() as u64, Ordering::Relaxed);
+                return socket.send_to(&packet, pair.remote.address).await;
+            } else {
+                let nonce_header = 0b10000000_00000000_00000000_00000000u32.to_be_bytes();
+                let mut packet = BytesMut::with_capacity(nonce_header.len() + data.len());
+                packet.extend_from_slice(&nonce_header);
+                packet.extend_from_slice(&data);
+                let packet = packet.freeze();
+                self.sent.fetch_add(data.len() as u64, Ordering::Relaxed);
+                return socket.send_to(&packet, pair.remote.address).await;
+            }
         }
         anyhow::bail!("Connection is not yet established")
     }
@@ -245,7 +260,15 @@ impl ConnectionReceiver{
             }
         }
         let (data, addr) = self.rx.recv().await.ok_or_else(|| CryonetError::ChannelClosed)?;
+        if data.len() < 4 {
+            anyhow::bail!("Received packet is too short");
+        }
         self.received.fetch_add(data.len() as u64, Ordering::Relaxed);
+        let counter = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) & 0b00011111_11111111_11111111_11111111;
+        if counter == 0 {
+            // unencrypted packet
+            return Ok((data.slice(4..), addr));
+        }
         let index = (data[0] >> 5) & 0b1 == 1;
         let key = if index { &self.aes[1] } else { &self.aes[0] };
         let mut nonce = [0u8; 12];
@@ -253,6 +276,14 @@ impl ConnectionReceiver{
         let nonce = Nonce::from_slice(&nonce);
         let decrypted = key.decrypt(nonce, &data[4..])?;
         Ok((Bytes::from(decrypted), addr))
+    }
+}
+
+#[memoize]
+fn is_private(addr: SocketAddr) -> bool {
+    match addr.ip() {
+        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+        IpAddr::V6(ip) => ip.is_unique_local() || ip.is_loopback() || ip.is_unicast_link_local(),
     }
 }
 
