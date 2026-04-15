@@ -97,13 +97,12 @@ async fn send_loop(node_id: NodeId, mut sender: ConnectionSender, device: Arc<As
                     Ok(s) => s,
                     Err(err) => {
                         error!("Failed to read from TUN device for node {:X}: {}", node_id, err);
-                        break;
+                        continue;
                     }
                 };
                 let bytes = Bytes::copy_from_slice(&buf[..size]);
                 if let Err(err) = sender.send(bytes).await {
                     error!("Failed to send to node {:X}: {}", node_id, err);
-                    continue;
                 }
             }
         }
@@ -127,7 +126,6 @@ async fn recv_loop(node_id: NodeId, mut receiver: ConnectionReceiver, device: Ar
                 };
                 if let Err(err) = device.send(&packet).await {
                     error!("Failed to write to TUN device for node {:X}: {}", node_id, err);
-                    break;
                 }
             }
         }
