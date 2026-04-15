@@ -178,6 +178,7 @@ impl Connection {
         let (tx, rx) = mpsc::channel(16384);
         self.ice.set_data_receiver(Arc::new(MpscSender(tx))).await;
         ConnectionReceiver {
+            encrypt_local_packets: self.encrypt_local_packets,
             rx,
             key: self.recv_key.subscribe(),
             aes: [Aes128Gcm::new(&[0u8; 16].into()), Aes128Gcm::new(&[0u8; 16].into())],
@@ -263,6 +264,8 @@ impl ConnectionSender {
 pub struct MpscSender(mpsc::Sender<(Bytes, SocketAddr)>);
 
 pub struct ConnectionReceiver {
+    encrypt_local_packets: bool,
+
     rx: mpsc::Receiver<(Bytes, SocketAddr)>,
     key: watch::Receiver<Option<FullMeshKey>>,
     aes: [Aes128Gcm; 2],
@@ -297,6 +300,9 @@ impl ConnectionReceiver {
         let counter = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) & 0b00011111_11111111_11111111_11111111;
         if counter == 0 {
             // unencrypted packet
+            if self.encrypt_local_packets || !is_private(addr) {
+                anyhow::bail!("Received unexpected unencrypted packet from {}", addr);
+            }
             return Ok((data.slice(4..), addr));
         }
         let index = (data[0] >> 5) & 0b1 == 1;
