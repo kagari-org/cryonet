@@ -16,7 +16,8 @@ pub struct Connection {
     peer_id: NodeId,
     ice: IceTransport,
     candidate_filter_prefix: Option<AnyIpCidr>,
-    key: watch::Sender<Option<FullMeshKey>>,
+    send_key: watch::Sender<Option<FullMeshKey>>,
+    recv_key: watch::Sender<Option<FullMeshKey>>,
 
     sent: Arc<AtomicU64>,
     received: Arc<AtomicU64>,
@@ -83,7 +84,8 @@ impl Connection {
             peer_id,
             ice,
             candidate_filter_prefix,
-            key: watch::channel(None).0,
+            send_key: watch::channel(None).0,
+            recv_key: watch::channel(None).0,
             sent: Arc::new(AtomicU64::new(0)),
             received: Arc::new(AtomicU64::new(0)),
         }, local_parameters, candidates))
@@ -106,12 +108,16 @@ impl Connection {
         }
     }
 
-    pub fn set_key(&self, key: FullMeshKey) {
-        self.key.send_replace(Some(key));
+    pub fn set_recv_key(&self, key: FullMeshKey) {
+        self.recv_key.send_replace(Some(key));
+    }
+
+    pub fn set_send_key(&self, key: FullMeshKey) {
+        self.send_key.send_replace(Some(key));
     }
 
     pub fn key(&self) -> Option<FullMeshKey> {
-        self.key.borrow().clone()
+        self.send_key.borrow().clone()
     }
 
     pub fn status(&self) -> IceTransportState {
@@ -128,7 +134,7 @@ impl Connection {
             peer_id: self.peer_id,
             socket: self.ice.subscribe_selected_socket(),
             pair: self.ice.subscribe_selected_pair(),
-            key: self.key.subscribe(),
+            key: self.send_key.subscribe(),
             aes: Aes128Gcm::new(&[0u8; 16].into()),
             counter: 0,
             sent: self.sent.clone(),
@@ -140,7 +146,7 @@ impl Connection {
         self.ice.set_data_receiver(Arc::new(MpscSender(tx))).await;
         ConnectionReceiver {
             rx,
-            key: self.key.subscribe(),
+            key: self.recv_key.subscribe(),
             aes: [Aes128Gcm::new(&[0u8; 16].into()), Aes128Gcm::new(&[0u8; 16].into())],
             received: self.received.clone(),
         }

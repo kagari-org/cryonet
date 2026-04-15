@@ -10,7 +10,7 @@ use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tokio::{sync::mpsc, time::{Interval, interval}};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::{fullmesh::{conn::Connection, tun::TunManagerHandle}, mesh::{
     MeshHandle,
@@ -72,6 +72,10 @@ enum FullMeshPayload {
         index: bool,
         public_key: PublicKey,
     },
+    RekeyConfirm {
+        index: bool,
+        public_key: PublicKey,
+    },
 }
 
 #[typetag::serde]
@@ -121,7 +125,7 @@ impl FullMesh {
         }
         match payload {
             FullMeshPayload::Shake { ufrag, pwd, candidates, public_key } => {
-                if src < self.id {
+                if self.id > src {
                     let (mut connection, parameters, local_candidates) = Connection::new(self.id, src, self.handle.clone(), self.ice_servers.clone(), self.candidate_filter_prefix, false).await?;
                     let ecdh_key = EphemeralSecret::generate();
                     let local_public_key = ecdh_key.public_key();
@@ -129,10 +133,12 @@ impl FullMesh {
                     connection.add_candidates(candidates);
                     let mut key = [0; 16];
                     ecdh_key.diffie_hellman(public_key).extract::<Sha256>(None).expand(b"", &mut key)?;
-                    connection.set_key(FullMeshKey {
+                    let key = FullMeshKey {
                         index: false,
                         key: key.into(),
-                    });
+                    };
+                    connection.set_recv_key(key.clone());
+                    connection.set_send_key(key);
                     self.connections.insert(src, FullMeshConnection {
                         last_seen: Instant::now(),
                         last_rekey: Instant::now(),
@@ -159,10 +165,12 @@ impl FullMesh {
                     conn.connection.add_candidates(candidates);
                     let mut key = [0; 16];
                     conn.ecdh_key.diffie_hellman(public_key).extract::<Sha256>(None).expand(b"", &mut key)?;
-                    conn.connection.set_key(FullMeshKey {
+                    let key = FullMeshKey {
                         index: false,
                         key: key.into(),
-                    });
+                    };
+                    conn.connection.set_recv_key(key.clone());
+                    conn.connection.set_send_key(key);
                 }
             },
             FullMeshPayload::Rekey { index, public_key } => {
@@ -173,13 +181,13 @@ impl FullMesh {
                         return Ok(());
                     }
                 };
-                if src < self.id {
+                if self.id > src {
+                    // we received the rekey request
                     let new_ecdh_key = EphemeralSecret::generate();
                     let new_public_key = new_ecdh_key.public_key();
                     let mut key = [0; 16];
                     new_ecdh_key.diffie_hellman(public_key).extract::<Sha256>(None).expand(b"", &mut key)?;
-                    // TODO: ack?
-                    conn.connection.set_key(FullMeshKey {
+                    conn.connection.set_recv_key(FullMeshKey {
                         index: *index,
                         key: key.into(),
                     });
@@ -190,14 +198,37 @@ impl FullMesh {
                         public_key: new_public_key,
                     })).await?;
                 } else {
+                    // we received the rekey response
                     let mut key = [0; 16];
                     conn.ecdh_key.diffie_hellman(public_key).extract::<Sha256>(None).expand(b"", &mut key)?;
-                    conn.connection.set_key(FullMeshKey {
+                    let new_key = FullMeshKey {
                         index: *index,
                         key: key.into(),
-                    });
+                    };
+                    conn.connection.set_recv_key(new_key.clone());
+                    conn.connection.set_send_key(new_key);
                     conn.last_rekey = Instant::now();
+                    self.mesh.send_packet(src, Box::new(FullMeshPayload::RekeyConfirm {
+                        index: *index,
+                        public_key: conn.ecdh_key.public_key(),
+                    })).await?;
                 }
+            },
+            FullMeshPayload::RekeyConfirm { index, public_key } => {
+                let conn = match self.connections.get_mut(&src) {
+                    Some(conn) => conn,
+                    None => {
+                        warn!("Received rekey ack from peer {:X} but no connection exists, ignoring", src);
+                        return Ok(());
+                    }
+                };
+                // we confirmed the rekey
+                let mut key = [0; 16];
+                conn.ecdh_key.diffie_hellman(public_key).extract::<Sha256>(None).expand(b"", &mut key)?;
+                conn.connection.set_send_key(FullMeshKey {
+                    index: *index,
+                    key: key.into(),
+                });
             },
         }
         Ok(())
@@ -250,6 +281,7 @@ impl FullMesh {
                 let Some(key) = conn.connection.key() else {
                     continue;
                 };
+                info!("Rekeying connection to peer {:X}", peer_id);
                 let new_ecdh_key = EphemeralSecret::generate();
                 let new_public_key = new_ecdh_key.public_key();
                 conn.ecdh_key = new_ecdh_key;
