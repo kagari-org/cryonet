@@ -41,8 +41,8 @@ pub struct IceServer {
 }
 
 struct FullMeshConnection {
-    last_seen: Instant,
     last_rekey: Instant,
+    last_received: (u64, Instant),
     once_connected: bool,
     connection: Connection,
     ecdh_key: EphemeralSecret,
@@ -141,8 +141,8 @@ impl FullMesh {
                     self.connections.insert(
                         src,
                         FullMeshConnection {
-                            last_seen: Instant::now(),
                             last_rekey: Instant::now(),
+                            last_received: (0, Instant::now()),
                             connection,
                             ecdh_key,
                             once_connected: false,
@@ -239,12 +239,14 @@ impl FullMesh {
         self.connections.retain(|node_id, conn| {
             use IceTransportState::*;
             let keep = match conn.connection.status() {
-                Connected | Completed => {
-                    conn.last_seen = time;
-                    true
-                }
                 Failed | Closed => false,
-                New | Checking | Disconnected => time.duration_since(conn.last_seen) < self.timeout,
+                _ => {
+                    let received = conn.connection.received();
+                    if received != conn.last_received.0 {
+                        conn.last_received = (received, time);
+                    }
+                    time.duration_since(conn.last_received.1) < self.timeout
+                }
             };
             if !keep && conn.once_connected {
                 disconnected.push(*node_id);
@@ -290,8 +292,8 @@ impl FullMesh {
                     self.connections.insert(
                         peer_id,
                         FullMeshConnection {
-                            last_seen: Instant::now(),
                             last_rekey: Instant::now(),
+                            last_received: (0, Instant::now()),
                             connection,
                             ecdh_key,
                             once_connected: false,
