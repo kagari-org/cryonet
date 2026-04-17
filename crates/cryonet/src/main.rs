@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
                 let mesh = Mesh::new(args.id);
                 let igp = Igp::new(args.id, mesh.clone()).await?;
                 let _mgr = ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen).await?;
-                let tm = TunManager::new(args.interface_prefix, args.enable_packet_information).await?;
+                let tm = TunManager::new(args.interface_prefix, args.enable_packet_information);
                 let fm = FullMesh::new(args.id, mesh.clone(), tm, args.ice_servers, args.candidate_filter_prefix, args.encrypt_local_packets).await?;
                 let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;
 

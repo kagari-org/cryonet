@@ -6,6 +6,7 @@ use std::{
 
 use aes_gcm::{Aes128Gcm, Key};
 use anyhow::{Error, Result};
+use async_trait::async_trait;
 use cidr::AnyIpCidr;
 use cryonet_uapi::{Conn, ConnState};
 use p256::{PublicKey, ecdh::EphemeralSecret, elliptic_curve::Generate};
@@ -20,7 +21,7 @@ use tokio::{
 use tracing::{error, info, warn};
 
 use crate::{
-    fullmesh::{conn::Connection, tun::TunManagerHandle},
+    fullmesh::conn::{Connection, ConnectionReceiver, ConnectionSender},
     mesh::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
@@ -32,6 +33,12 @@ use crate::{
 pub mod conn;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tun;
+
+#[async_trait]
+pub trait DeviceManager {
+    async fn connected(&mut self, node_id: NodeId, sender: ConnectionSender, receiver: ConnectionReceiver) -> Result<()>;
+    async fn disconnected(&mut self, node_id: NodeId) -> Result<()>;
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IceServer {
@@ -59,7 +66,7 @@ pub struct FullMesh {
 
     id: NodeId,
     mesh: MeshHandle,
-    tm: TunManagerHandle,
+    dm: Box<dyn DeviceManager>,
     ice_servers: Vec<IceServer>,
     candidate_filter_prefix: Option<AnyIpCidr>,
     encrypt_local_packets: bool,
@@ -83,18 +90,24 @@ impl Payload for FullMeshPayload {}
 
 #[sactor(pub)]
 impl FullMesh {
-    pub async fn new(id: NodeId, mesh: MeshHandle, tm: TunManagerHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool) -> Result<FullMeshHandle> {
-        Self::new_with_parameters(id, mesh, tm, ice_servers, Duration::from_secs(30), Duration::from_secs(120), candidate_filter_prefix, encrypt_local_packets).await
+    pub async fn new<D>(id: NodeId, mesh: MeshHandle, dm: D, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool) -> Result<FullMeshHandle>
+    where
+        D: DeviceManager + 'static,
+    {
+        Self::new_with_parameters(id, mesh, dm, ice_servers, Duration::from_secs(30), Duration::from_secs(120), candidate_filter_prefix, encrypt_local_packets).await
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, tm: TunManagerHandle, ice_servers: Vec<IceServer>, timeout: Duration, rekey_timeout: Duration, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool) -> Result<FullMeshHandle> {
+    pub async fn new_with_parameters<D>(id: NodeId, mesh: MeshHandle, dm: D, ice_servers: Vec<IceServer>, timeout: Duration, rekey_timeout: Duration, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool) -> Result<FullMeshHandle>
+    where
+        D: DeviceManager + 'static,
+    {
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>())).await?;
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle,
             id,
             mesh,
-            tm,
+            dm: Box::new(dm),
             ice_servers,
             timeout,
             rekey_timeout,
@@ -254,13 +267,13 @@ impl FullMesh {
             keep
         });
         for node_id in disconnected {
-            self.tm.disconnected(node_id).await?;
+            self.dm.disconnected(node_id).await?;
         }
         // mark connected
         for (node_id, conn) in &mut self.connections {
             if !conn.once_connected && conn.connection.status() == IceTransportState::Connected {
                 conn.once_connected = true;
-                self.tm.connected(*node_id, conn.connection.sender(), conn.connection.receiver().await).await??;
+                self.dm.connected(*node_id, conn.connection.sender(), conn.connection.receiver().await).await?;
             }
         }
         // connect

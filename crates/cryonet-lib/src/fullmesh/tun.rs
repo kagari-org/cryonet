@@ -3,16 +3,19 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use anyhow::{Error, Result};
+use anyhow::Result;
+use async_trait::async_trait;
 use bytes::Bytes;
-use sactor::sactor;
 use tokio::{select, sync::watch};
 use tracing::error;
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::{
     errors::CryonetError,
-    fullmesh::conn::{ConnectionReceiver, ConnectionSender},
+    fullmesh::{
+        DeviceManager,
+        conn::{ConnectionReceiver, ConnectionSender},
+    },
     mesh::packet::NodeId,
 };
 
@@ -24,35 +27,13 @@ pub struct TunManager {
     tasks: HashMap<NodeId, watch::Sender<bool>>,
 }
 
-#[sactor(pub)]
 impl TunManager {
-    pub async fn new(interface_prefix: String, enable_packet_information: bool) -> Result<TunManagerHandle> {
-        let (future, tm) = TunManager::run(move |_| TunManager {
+    pub fn new(interface_prefix: String, enable_packet_information: bool) -> TunManager {
+        TunManager {
             interface_prefix,
             enable_packet_information,
             devices: HashMap::new(),
             tasks: HashMap::new(),
-        });
-        tokio::task::spawn_local(future);
-        Ok(tm)
-    }
-
-    pub async fn connected(&mut self, node_id: NodeId, sender: ConnectionSender, receiver: ConnectionReceiver) -> Result<()> {
-        if let Some(stop) = self.tasks.remove(&node_id) {
-            let _ = stop.send(true);
-        }
-        let dev_send = self.create_device(node_id)?;
-        let dev_recv = dev_send.clone();
-        let stop_tx = watch::channel(false).0;
-        tokio::spawn(send_loop(node_id, sender, dev_send, stop_tx.subscribe()));
-        tokio::spawn(recv_loop(node_id, receiver, dev_recv, stop_tx.subscribe()));
-        self.tasks.insert(node_id, stop_tx);
-        Ok(())
-    }
-
-    pub async fn disconnected(&mut self, node_id: NodeId) {
-        if let Some(stop_tx) = self.tasks.remove(&node_id) {
-            let _ = stop_tx.send(true);
         }
     }
 
@@ -80,10 +61,28 @@ impl TunManager {
             }
         }
     }
+}
 
-    #[handle_error]
-    fn handle_error(&mut self, err: &Error) {
-        error!("Error: {:?}", err);
+#[async_trait]
+impl DeviceManager for TunManager {
+    async fn connected(&mut self, node_id: NodeId, sender: ConnectionSender, receiver: ConnectionReceiver) -> Result<()> {
+        if let Some(stop) = self.tasks.remove(&node_id) {
+            let _ = stop.send(true);
+        }
+        let dev_send = self.create_device(node_id)?;
+        let dev_recv = dev_send.clone();
+        let stop_tx = watch::channel(false).0;
+        tokio::spawn(send_loop(node_id, sender, dev_send, stop_tx.subscribe()));
+        tokio::spawn(recv_loop(node_id, receiver, dev_recv, stop_tx.subscribe()));
+        self.tasks.insert(node_id, stop_tx);
+        Ok(())
+    }
+
+    async fn disconnected(&mut self, node_id: NodeId) -> Result<()> {
+        if let Some(stop_tx) = self.tasks.remove(&node_id) {
+            let _ = stop_tx.send(true);
+        }
+        Ok(())
     }
 }
 
