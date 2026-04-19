@@ -41,6 +41,11 @@ struct Args {
     enable_packet_information: bool,
     #[clap(env, long)]
     ctl_path: Option<PathBuf>,
+
+    #[clap(env, long, default_value_t = false)]
+    tap_mode: bool,
+    #[clap(env, long, default_value_t = 0x0200)]
+    tap_mac_prefix: u16,
 }
 
 fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {

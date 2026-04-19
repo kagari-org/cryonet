@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    net::IpAddr,
     sync::{Arc, Weak},
 };
 
@@ -83,6 +84,18 @@ impl DeviceManager for TunManager {
             let _ = stop_tx.send(true);
         }
         Ok(())
+    }
+
+    async fn ips(&self) -> Result<Vec<IpAddr>> {
+        let mut result = Vec::new();
+        for device in self.devices.values() {
+            let Some(device) = device.upgrade() else {
+                continue;
+            };
+            let addresses = device.addresses()?;
+            result.extend(addresses);
+        }
+        Ok(result)
     }
 }
 

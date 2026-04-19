@@ -1,6 +1,8 @@
 use std::{
     any::Any,
     collections::HashMap,
+    net::IpAddr,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -15,7 +17,7 @@ use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tokio::{
-    sync::mpsc,
+    sync::{Mutex, mpsc},
     time::{Interval, interval},
 };
 use tracing::{error, info, warn};
@@ -34,10 +36,13 @@ pub mod conn;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tun;
 
+pub mod tap;
+
 #[async_trait]
 pub trait DeviceManager {
     async fn connected(&mut self, node_id: NodeId, sender: ConnectionSender, receiver: ConnectionReceiver) -> Result<()>;
     async fn disconnected(&mut self, node_id: NodeId) -> Result<()>;
+    async fn ips(&self) -> Result<Vec<IpAddr>>;
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -70,12 +75,15 @@ pub struct FullMesh {
     ice_servers: Vec<IceServer>,
     candidate_filter_prefix: Option<AnyIpCidr>,
     encrypt_local_packets: bool,
-    timeout: Duration,
+    connection_timeout: Duration,
     rekey_timeout: Duration,
+    announce_timeout: Duration,
 
     packet_rx: mpsc::Receiver<Packet>,
     ticker: Interval,
+    annonce_ticker: Interval,
     connections: HashMap<NodeId, FullMeshConnection>,
+    ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +91,7 @@ enum FullMeshPayload {
     Shake { ufrag: String, pwd: String, candidates: Vec<String>, public_key: PublicKey },
     Rekey { index: bool, public_key: PublicKey },
     RekeyConfirm { index: bool, public_key: PublicKey },
+    IpAnnounce { ips: Vec<IpAddr> },
 }
 
 #[typetag::serde]
@@ -94,11 +103,36 @@ impl FullMesh {
     where
         D: DeviceManager + 'static,
     {
-        Self::new_with_parameters(id, mesh, dm, ice_servers, Duration::from_secs(30), Duration::from_secs(120), candidate_filter_prefix, encrypt_local_packets).await
+        Self::new_with_parameters(
+            id,
+            mesh,
+            dm,
+            ice_servers,
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+            Duration::from_secs(120),
+            Duration::from_secs(30),
+            Duration::from_secs(120),
+            candidate_filter_prefix,
+            encrypt_local_packets,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn new_with_parameters<D>(id: NodeId, mesh: MeshHandle, dm: D, ice_servers: Vec<IceServer>, timeout: Duration, rekey_timeout: Duration, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool) -> Result<FullMeshHandle>
+    pub async fn new_with_parameters<D>(
+        id: NodeId,
+        mesh: MeshHandle,
+        dm: D,
+        ice_servers: Vec<IceServer>,
+        connect_interval: Duration,
+        connection_timeout: Duration,
+        rekey_timeout: Duration,
+        announce_interval: Duration,
+        announce_timeout: Duration,
+        candidate_filter_prefix: Option<AnyIpCidr>,
+        encrypt_local_packets: bool,
+    ) -> Result<FullMeshHandle>
     where
         D: DeviceManager + 'static,
     {
@@ -109,13 +143,16 @@ impl FullMesh {
             mesh,
             dm: Box::new(dm),
             ice_servers,
-            timeout,
+            connection_timeout,
             rekey_timeout,
+            announce_timeout,
             candidate_filter_prefix,
             encrypt_local_packets,
             packet_rx,
-            ticker: interval(Duration::from_secs(10)),
+            ticker: interval(connect_interval),
+            annonce_ticker: interval(announce_interval),
             connections: HashMap::new(),
+            ips: Arc::new(Mutex::new(HashMap::new())),
         });
         tokio::task::spawn_local(future);
         Ok(fm)
@@ -123,7 +160,11 @@ impl FullMesh {
 
     #[select]
     fn select(&mut self) -> Vec<Selection<'_>> {
-        vec![selection!(self.packet_rx.recv().await, handle_packet, it => it), selection!(self.ticker.tick().await, tick)]
+        vec![
+            selection!(self.packet_rx.recv().await, handle_packet, it => it),
+            selection!(self.ticker.tick().await, tick),
+            selection!(self.annonce_ticker.tick().await, announce_tick),
+        ]
     }
 
     #[no_reply]
@@ -240,6 +281,12 @@ impl FullMesh {
                 conn.ecdh_key.diffie_hellman(public_key).extract::<Sha256>(None).expand(b"", &mut key)?;
                 conn.connection.set_send_key(FullMeshKey { index: *index, key: key.into() });
             }
+            FullMeshPayload::IpAnnounce { ips: announce } => {
+                let mut ips = self.ips.lock().await;
+                for ip in announce {
+                    ips.insert(*ip, (src, Instant::now()));
+                }
+            }
         }
         Ok(())
     }
@@ -258,7 +305,7 @@ impl FullMesh {
                     if received != conn.last_received.0 {
                         conn.last_received = (received, time);
                     }
-                    time.duration_since(conn.last_received.1) < self.timeout
+                    time.duration_since(conn.last_received.1) < self.connection_timeout
                 }
             };
             if !keep && conn.once_connected {
@@ -327,6 +374,29 @@ impl FullMesh {
                 if let Err(err) = result {
                     error!("Failed to connect to peer {:X}: {:?}", peer_id, err);
                 }
+            }
+        }
+        Ok(())
+    }
+
+    #[no_reply]
+    async fn announce_tick(&mut self) -> Result<()> {
+        // gc
+        let time = Instant::now();
+        {
+            let mut ips = self.ips.lock().await;
+            ips.retain(|_, ip| time.duration_since(ip.1) < self.announce_timeout);
+        }
+        // announce
+        let ips = self.dm.ips().await?;
+        if ips.is_empty() {
+            return Ok(());
+        }
+        let peers = self.mesh.get_routes().await?.keys().cloned().collect::<Vec<_>>();
+        for peer_id in peers {
+            let result = self.mesh.send_packet(peer_id, Box::new(FullMeshPayload::IpAnnounce { ips: ips.clone() })).await;
+            if let Err(err) = result {
+                error!("Failed to announce IPs to peer {:X}: {:?}", peer_id, err);
             }
         }
         Ok(())
