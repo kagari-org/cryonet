@@ -1,15 +1,24 @@
-use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    sync::Arc,
+    time::Instant,
+};
 
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
 use pnet_packet::{
-    Packet,
-    arp::ArpPacket,
+    MutablePacket, Packet,
+    arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket},
     ethernet::{EtherType, EtherTypes, EthernetPacket, MutableEthernetPacket},
-    icmpv6::{Icmpv6Packet, Icmpv6Types, ndp::NeighborSolicitPacket},
+    icmpv6::{
+        Icmpv6Packet, Icmpv6Types,
+        ndp::{MutableNeighborAdvertPacket, NdpOption, NdpOptionTypes, NeighborSolicitPacket},
+    },
     ip::IpNextHeaderProtocols,
-    ipv6::Ipv6Packet,
+    ipv6::{Ipv6Packet, MutableIpv6Packet},
+    util::ipv6_checksum,
 };
 use sactor::sactor;
 use tokio::sync::{Mutex, mpsc, watch};
@@ -181,37 +190,48 @@ async fn send_loop(enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAdd
                             warn!("Failed to parse ARP packet");
                             continue;
                         };
-                        let address = arp.get_target_proto_addr();
-                        let target = {
+                        let src_ip = arp.get_target_proto_addr();
+                        let src_mac: [u8; 6] = {
                             let ips = ips.lock().await;
-                            let Some((node_id, _)) = ips.get(&IpAddr::V4(address)) else {
-                                warn!("Received ARP packet for unknown IP address: {}", address);
+                            let Some((node_id, _)) = ips.get(&IpAddr::V4(src_ip)) else {
+                                warn!("Received ARP packet for unknown IP address: {}", src_ip);
                                 continue;
                             };
-                            *node_id
+                            let mut src_mac = vec![device_mac[0], device_mac[1]];
+                            src_mac.extend_from_slice(&node_id.to_be_bytes());
+                            src_mac.try_into().unwrap()
                         };
+                        let dst_ip = arp.get_sender_proto_addr();
+                        let dst_mac = device_mac;
                         // send ARP reply
-                        // TODO
+                        if let Err(err) = send_arp_reply(&device, src_mac, dst_mac, src_ip, dst_ip).await {
+                            error!("Failed to send ARP reply for IP {}: {}", src_ip, err);
+                        }
                     }
                     if ndp {
                         // we checked packets in is_ndp_ns
                         let ipv6 = Ipv6Packet::new(packet.payload()).unwrap();
-                        let icmpv6 = Icmpv6Packet::new(ipv6.payload()).unwrap();
-                        let Some(ns) = NeighborSolicitPacket::new(icmpv6.payload()) else {
+                        let Some(ns) = NeighborSolicitPacket::new(ipv6.payload()) else {
                             warn!("Failed to parse Neighbor Solicitation packet");
                             continue;
                         };
-                        let address = ns.get_target_addr();
-                        let target = {
+                        let src_ip = ns.get_target_addr();
+                        let src_mac: [u8; 6] = {
                             let ips = ips.lock().await;
-                            let Some((node_id, _)) = ips.get(&IpAddr::V6(address)) else {
-                                warn!("Received NDP Neighbor Solicitation packet for unknown IP address: {}", address);
+                            let Some((node_id, _)) = ips.get(&IpAddr::V6(src_ip)) else {
+                                warn!("Received NDP Neighbor Solicitation packet for unknown IP address: {}", src_ip);
                                 continue;
                             };
-                            *node_id
+                            let mut src_mac = vec![device_mac[0], device_mac[1]];
+                            src_mac.extend_from_slice(&node_id.to_be_bytes());
+                            src_mac.try_into().unwrap()
                         };
+                        let dst_ip = ipv6.get_source();
+                        let dst_mac = device_mac;
                         // send na
-                        // TODO
+                        if let Err(err) = send_ndp_na(&device, src_mac, dst_mac, src_ip, dst_ip).await {
+                            error!("Failed to send NDP Neighbor Advertisement for IP {}: {}", src_ip, err);
+                        }
                     }
                     continue;
                 }
@@ -314,4 +334,67 @@ fn is_ndp<'a>(packet: &'a EthernetPacket<'a>, n: NsNa) -> bool {
         NsNa::Ns => icmpv6.get_icmpv6_type() == Icmpv6Types::NeighborSolicit,
         NsNa::Na => icmpv6.get_icmpv6_type() == Icmpv6Types::NeighborAdvert,
     }
+}
+
+async fn send_arp_reply(device: &AsyncDevice, src_mac: [u8; 6], dst_mac: [u8; 6], src_ip: Ipv4Addr, dst_ip: Ipv4Addr) -> Result<()> {
+    const TOTAL_LEN: usize = MutableEthernetPacket::minimum_packet_size() + MutableArpPacket::minimum_packet_size();
+
+    let mut buf = [0u8; 2000];
+
+    let mut ethernet = MutableEthernetPacket::new(&mut buf).unwrap();
+    ethernet.set_destination(dst_mac.into());
+    ethernet.set_source(src_mac.into());
+    ethernet.set_ethertype(EtherTypes::Arp);
+
+    let mut arp = MutableArpPacket::new(ethernet.payload_mut()).unwrap();
+    arp.set_hardware_type(ArpHardwareTypes::Ethernet);
+    arp.set_protocol_type(EtherTypes::Ipv4);
+    arp.set_hw_addr_len(6);
+    arp.set_proto_addr_len(4);
+    arp.set_operation(ArpOperations::Reply);
+    arp.set_sender_hw_addr(src_mac.into());
+    arp.set_sender_proto_addr(src_ip);
+    arp.set_target_hw_addr(dst_mac.into());
+    arp.set_target_proto_addr(dst_ip);
+
+    device.send(&buf[..TOTAL_LEN]).await?;
+    Ok(())
+}
+
+async fn send_ndp_na(device: &AsyncDevice, src_mac: [u8; 6], dst_mac: [u8; 6], src_ip: Ipv6Addr, dst_ip: Ipv6Addr) -> Result<()> {
+    const TLL_OPTION_LEN: usize = 8; // type(1) + length(1) + MAC(6)
+    const ICMPV6_LEN: usize = MutableNeighborAdvertPacket::minimum_packet_size() + TLL_OPTION_LEN;
+    const ETHERNET_HEADER_LEN: usize = MutableEthernetPacket::minimum_packet_size();
+    const IPV6_HEADER_LEN: usize = MutableIpv6Packet::minimum_packet_size();
+    const TOTAL_LEN: usize = ETHERNET_HEADER_LEN + IPV6_HEADER_LEN + ICMPV6_LEN;
+
+    let mut buf = [0u8; 2000];
+
+    let mut ethernet = MutableEthernetPacket::new(&mut buf).unwrap();
+    ethernet.set_destination(dst_mac.into());
+    ethernet.set_source(src_mac.into());
+    ethernet.set_ethertype(EtherTypes::Ipv6);
+
+    let mut ipv6 = MutableIpv6Packet::new(ethernet.payload_mut()).unwrap();
+    ipv6.set_version(6);
+    ipv6.set_payload_length(ICMPV6_LEN as u16);
+    ipv6.set_next_header(IpNextHeaderProtocols::Icmpv6);
+    ipv6.set_hop_limit(255);
+    ipv6.set_source(src_ip);
+    ipv6.set_destination(dst_ip);
+
+    let mut na = MutableNeighborAdvertPacket::new(ipv6.payload_mut()).unwrap();
+    na.set_icmpv6_type(Icmpv6Types::NeighborAdvert);
+    na.set_icmpv6_code(pnet_packet::icmpv6::Icmpv6Code(0));
+    na.set_flags(0x60); // solicited + override
+    na.set_target_addr(src_ip);
+    na.set_options(&[NdpOption {
+        option_type: NdpOptionTypes::TargetLLAddr,
+        length: 1,
+        data: src_mac.to_vec(),
+    }]);
+    na.set_checksum(ipv6_checksum(na.packet(), 1, &[], &src_ip, &dst_ip, IpNextHeaderProtocols::Icmpv6));
+
+    device.send(&buf[..TOTAL_LEN]).await?;
+    Ok(())
 }
