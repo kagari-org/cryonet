@@ -1,6 +1,6 @@
 #![feature(try_blocks)]
 #![allow(clippy::new_ret_no_self)]
-use std::{env::var, future::pending, net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, env::var, future::pending, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
 
 use anyhow::{Result, bail};
 use cidr::AnyIpCidr;
@@ -8,11 +8,11 @@ use clap::Parser;
 use clap_num::maybe_hex;
 use cryonet_lib::{
     connection::ConnManager,
-    fullmesh::{FullMesh, IceServer, tun::TunManager},
+    fullmesh::{DeviceManager, FullMesh, IceServer, tap::TapManager, tun::TunManager},
     mesh::{Mesh, igp::Igp},
 };
 use cryonet_uapi::NodeId;
-use tokio::task::LocalSet;
+use tokio::{sync::Mutex, task::LocalSet};
 use tracing_subscriber::EnvFilter;
 
 use crate::uapi::Uapi;
@@ -80,8 +80,13 @@ async fn main() -> Result<()> {
                 let mesh = Mesh::new(args.id);
                 let igp = Igp::new(args.id, mesh.clone()).await?;
                 let _mgr = ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen).await?;
-                let tm = TunManager::new(args.interface_prefix, args.enable_packet_information);
-                let fm = FullMesh::new(args.id, mesh.clone(), tm, args.ice_servers, args.candidate_filter_prefix, args.encrypt_local_packets).await?;
+                let ips = Arc::new(Mutex::new(HashMap::new()));
+                let dm: Box<dyn DeviceManager> = if args.tap_mode {
+                    Box::new(TapManager::new(args.id, args.tap_mac_prefix, args.enable_packet_information, ips.clone())?)
+                } else {
+                    Box::new(TunManager::new(args.interface_prefix, args.enable_packet_information))
+                };
+                let fm = FullMesh::new(args.id, mesh.clone(), dm, args.ice_servers, args.candidate_filter_prefix, args.encrypt_local_packets, ips).await?;
                 let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;
 
                 pending().await

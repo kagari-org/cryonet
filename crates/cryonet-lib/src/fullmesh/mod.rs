@@ -99,10 +99,7 @@ impl Payload for FullMeshPayload {}
 
 #[sactor(pub)]
 impl FullMesh {
-    pub async fn new<D>(id: NodeId, mesh: MeshHandle, dm: D, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool) -> Result<FullMeshHandle>
-    where
-        D: DeviceManager + 'static,
-    {
+    pub async fn new(id: NodeId, mesh: MeshHandle, dm: Box<dyn DeviceManager>, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>) -> Result<FullMeshHandle> {
         Self::new_with_parameters(
             id,
             mesh,
@@ -115,15 +112,16 @@ impl FullMesh {
             Duration::from_secs(120),
             candidate_filter_prefix,
             encrypt_local_packets,
+            ips,
         )
         .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn new_with_parameters<D>(
+    pub async fn new_with_parameters(
         id: NodeId,
         mesh: MeshHandle,
-        dm: D,
+        dm: Box<dyn DeviceManager>,
         ice_servers: Vec<IceServer>,
         connect_interval: Duration,
         connection_timeout: Duration,
@@ -132,16 +130,14 @@ impl FullMesh {
         announce_timeout: Duration,
         candidate_filter_prefix: Option<AnyIpCidr>,
         encrypt_local_packets: bool,
-    ) -> Result<FullMeshHandle>
-    where
-        D: DeviceManager + 'static,
-    {
+        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+    ) -> Result<FullMeshHandle> {
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>())).await?;
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle,
             id,
             mesh,
-            dm: Box::new(dm),
+            dm,
             ice_servers,
             connection_timeout,
             rekey_timeout,
@@ -152,7 +148,7 @@ impl FullMesh {
             ticker: interval(connect_interval),
             annonce_ticker: interval(announce_interval),
             connections: HashMap::new(),
-            ips: Arc::new(Mutex::new(HashMap::new())),
+            ips,
         });
         tokio::task::spawn_local(future);
         Ok(fm)

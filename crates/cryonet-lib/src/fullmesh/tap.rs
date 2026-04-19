@@ -6,11 +6,8 @@ use bytes::{BufMut, BytesMut};
 use pnet_packet::{
     Packet,
     arp::ArpPacket,
-    ethernet::{EtherTypes, EthernetPacket},
-    icmpv6::{
-        Icmpv6Packet, Icmpv6Types,
-        ndp::{NeighborAdvertPacket, NeighborSolicitPacket},
-    },
+    ethernet::{EtherType, EtherTypes, EthernetPacket, MutableEthernetPacket},
+    icmpv6::{Icmpv6Packet, Icmpv6Types, ndp::NeighborSolicitPacket},
     ip::IpNextHeaderProtocols,
     ipv6::Ipv6Packet,
 };
@@ -20,11 +17,12 @@ use tracing::{error, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
 
 use crate::{
+    errors::CryonetError,
     fullmesh::{
         DeviceManager,
         conn::{ConnectionReceiver, ConnectionSender},
     },
-    mesh::{MeshHandle, packet::NodeId},
+    mesh::packet::NodeId,
 };
 
 pub struct TapManager {
@@ -32,9 +30,9 @@ pub struct TapManager {
 }
 
 impl TapManager {
-    pub fn new(mesh: MeshHandle, tap_mac_prefix: u16) -> Result<TapManager> {
+    pub fn new(node_id: NodeId, tap_mac_prefix: u16, enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>) -> Result<TapManager> {
         Ok(TapManager {
-            handle: TapManagerInner::new(mesh, tap_mac_prefix)?,
+            handle: TapManagerInner::new(node_id, tap_mac_prefix, enable_packet_information, ips)?,
         })
     }
 }
@@ -55,39 +53,66 @@ impl DeviceManager for TapManager {
 }
 
 struct TapManagerInner {
-    mesh: MeshHandle,
+    enable_packet_information: bool,
+
     device: Arc<AsyncDevice>,
-    tasks: HashMap<NodeId, watch::Sender<bool>>,
-    tap_mac_prefix: [u8; 2],
+    tap_mac: [u8; 6],
+    send_msg_tx: mpsc::UnboundedSender<SendLoopMessage>,
+    recv_tasks: HashMap<NodeId, watch::Sender<bool>>,
 }
 
 #[sactor]
 impl TapManagerInner {
-    fn new(mesh: MeshHandle, tap_mac_prefix: u16) -> Result<TapManagerInnerHandle> {
-        let mut tap_mac_prefix = tap_mac_prefix.to_be_bytes();
+    fn new(node_id: NodeId, tap_mac_prefix: u16, enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>) -> Result<TapManagerInnerHandle> {
+        let mut tap_mac = tap_mac_prefix.to_be_bytes().to_vec();
         // Set locally administered bit and ensure unicast
-        tap_mac_prefix[0] = (tap_mac_prefix[0] & 0xfe) | 0x02;
-        let device = Arc::new(DeviceBuilder::new().mtu(1280).layer(Layer::L2).enable(true).build_async()?);
+        tap_mac[0] = (tap_mac[0] & 0xfe) | 0x02;
+        tap_mac.extend_from_slice(&node_id.to_be_bytes());
+        let tap_mac: [u8; 6] = tap_mac.try_into().unwrap();
+
+        let device = Arc::new(DeviceBuilder::new().mtu(1280).layer(Layer::L2).mac_addr(tap_mac).enable(true).build_async()?);
+        let device2 = device.clone();
+
+        let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
         let (future, handle) = TapManagerInner::run(move |_| TapManagerInner {
-            mesh,
             device,
-            tasks: HashMap::new(),
-            tap_mac_prefix,
+            tap_mac,
+            enable_packet_information,
+            send_msg_tx,
+            recv_tasks: HashMap::new(),
         });
         tokio::task::spawn_local(future);
+        tokio::spawn(send_loop(enable_packet_information, ips, device2, tap_mac, send_msg_rx));
         Ok(handle)
     }
 
-    fn connected(&mut self, node_id: NodeId, sender: ConnectionSender, receiver: ConnectionReceiver) -> Result<()> {
+    async fn connected(&mut self, node_id: NodeId, sender: ConnectionSender, receiver: ConnectionReceiver) -> Result<()> {
+        self.send_msg_tx.send(SendLoopMessage::Connected(node_id, Box::new(sender)))?;
+        let stop_tx = watch::channel(false).0;
+        tokio::spawn(recv_loop(self.enable_packet_information, node_id, receiver, self.device.clone(), self.tap_mac, stop_tx.subscribe()));
+        self.recv_tasks.insert(node_id, stop_tx);
         Ok(())
     }
 
-    fn disconnected(&mut self, node_id: NodeId) -> Result<()> {
+    async fn disconnected(&mut self, node_id: NodeId) -> Result<()> {
+        self.send_msg_tx.send(SendLoopMessage::Disconnected(node_id))?;
+        if let Some(stop_tx) = self.recv_tasks.remove(&node_id) {
+            let _ = stop_tx.send(true);
+        }
         Ok(())
     }
 
     fn ips(&self) -> Result<Vec<IpAddr>> {
-        Ok(vec![])
+        Ok(self.device.addresses()?)
+    }
+}
+
+impl Drop for TapManagerInner {
+    fn drop(&mut self) {
+        for stop_tx in self.recv_tasks.values() {
+            let _ = stop_tx.send(true);
+        }
+        let _ = self.send_msg_tx.send(SendLoopMessage::Stop);
     }
 }
 
@@ -97,7 +122,7 @@ enum SendLoopMessage {
     Disconnected(NodeId),
 }
 
-async fn send_loop(enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>, device: Arc<AsyncDevice>, device_mac: [u8; 6], mut msg_rx: mpsc::Receiver<SendLoopMessage>) -> Result<()> {
+async fn send_loop(enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>, device: Arc<AsyncDevice>, device_mac: [u8; 6], mut msg_rx: mpsc::UnboundedReceiver<SendLoopMessage>) {
     let mut senders = HashMap::new();
     let mut buf = [0u8; 2000];
     loop {
@@ -133,7 +158,7 @@ async fn send_loop(enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAdd
                 if dst_mac.0 & 1 == 1 {
                     // multicast
                     let arp = packet.get_ethertype() == EtherTypes::Arp;
-                    let ndp = is_ndp_ns(&packet);
+                    let ndp = is_ndp(&packet, NsNa::Ns);
                     if !(arp || ndp) {
                         // broadcast to all nodes
                         for (node_id, sender) in &mut senders {
@@ -172,7 +197,10 @@ async fn send_loop(enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAdd
                         // we checked packets in is_ndp_ns
                         let ipv6 = Ipv6Packet::new(packet.payload()).unwrap();
                         let icmpv6 = Icmpv6Packet::new(ipv6.payload()).unwrap();
-                        let ns = NeighborSolicitPacket::new(icmpv6.payload()).unwrap();
+                        let Some(ns) = NeighborSolicitPacket::new(icmpv6.payload()) else {
+                            warn!("Failed to parse Neighbor Solicitation packet");
+                            continue;
+                        };
                         let address = ns.get_target_addr();
                         let target = {
                             let ips = ips.lock().await;
@@ -192,10 +220,11 @@ async fn send_loop(enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAdd
                     continue;
                 }
                 // unicast
-                if packet.get_ethertype() == EtherTypes::Arp || is_ndp_na(&packet) {
+                if packet.get_ethertype() == EtherTypes::Arp || is_ndp(&packet, NsNa::Na) {
                     // drop ARP and NDP responses
                     continue;
                 }
+                // TODO: drop packets other than IPv4, IPv6 and MPLS?
                 let node_id = u32::from_be_bytes([dst_mac.2, dst_mac.3, dst_mac.4, dst_mac.5]);
                 let Some(sender) = senders.get_mut(&node_id) else {
                     warn!("Received Ethernet packet for unknown node ID {:X}", node_id);
@@ -214,14 +243,61 @@ async fn send_loop(enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAdd
             }
         }
     }
-    Ok(())
 }
 
-async fn recv_loop(node_id: NodeId, receiver: ConnectionReceiver, device: Arc<AsyncDevice>, mut stop: watch::Receiver<bool>) -> Result<()> {
-    Ok(())
+async fn recv_loop(enable_packet_information: bool, peer_id: NodeId, mut receiver: ConnectionReceiver, device: Arc<AsyncDevice>, device_mac: [u8; 6], mut stop: watch::Receiver<bool>) {
+    let peer_mac: [u8; 6] = {
+        let mut prefix = vec![device_mac[0], device_mac[1]];
+        prefix.extend_from_slice(&peer_id.to_be_bytes());
+        prefix.try_into().unwrap()
+    };
+    let mut buf = [0u8; 2000];
+    loop {
+        tokio::select! {
+            _ = stop.changed() => break,
+            res = receiver.recv() => {
+                let (packet, _) = match res {
+                    Ok(p) => p,
+                    Err(err) => match err.downcast_ref::<CryonetError>() {
+                        Some(CryonetError::ChannelClosed) => break,
+                        _ => {
+                            error!("Failed to receive from node {:X}: {}", peer_id, err);
+                            continue;
+                        }
+                    }
+                };
+                let (payload, protocol, len) = if enable_packet_information {
+                    if packet.len() < 4 {
+                        warn!("Received packet with insufficient length for packet information from node {:X}", peer_id);
+                        continue;
+                    }
+                    let protocol = u16::from_be_bytes([packet[2], packet[3]]);
+                    (&packet[4..], protocol, packet.len() - 4)
+                } else {
+                    // assume IPv4 or IPv6
+                    let protocol = packet[0] >> 4;
+                    (&packet[..], protocol as u16, packet.len())
+                };
+                let mut ethernet = MutableEthernetPacket::new(&mut buf).unwrap();
+                ethernet.set_ethertype(EtherType::new(protocol));
+                ethernet.set_source(peer_mac.into());
+                ethernet.set_destination(device_mac.into());
+                ethernet.set_payload(payload);
+                // 14 is the size of the Ethernet header
+                if let Err(err) = device.send(&buf[..(len + 14)]).await {
+                    error!("Failed to write to TAP device for node {:X}: {}", peer_id, err);
+                }
+            }
+        }
+    }
 }
 
-fn is_ndp_ns<'a>(packet: &'a EthernetPacket<'a>) -> bool {
+enum NsNa {
+    Ns,
+    Na,
+}
+
+fn is_ndp<'a>(packet: &'a EthernetPacket<'a>, n: NsNa) -> bool {
     if packet.get_ethertype() != EtherTypes::Ipv6 {
         return false;
     }
@@ -234,27 +310,8 @@ fn is_ndp_ns<'a>(packet: &'a EthernetPacket<'a>) -> bool {
     let Some(icmpv6) = Icmpv6Packet::new(ipv6.payload()) else {
         return false;
     };
-    if NeighborSolicitPacket::new(ipv6.payload()).is_none() {
-        return false;
+    match n {
+        NsNa::Ns => icmpv6.get_icmpv6_type() == Icmpv6Types::NeighborSolicit,
+        NsNa::Na => icmpv6.get_icmpv6_type() == Icmpv6Types::NeighborAdvert,
     }
-    icmpv6.get_icmpv6_type() == Icmpv6Types::NeighborSolicit
-}
-
-fn is_ndp_na<'a>(packet: &'a EthernetPacket<'a>) -> bool {
-    if packet.get_ethertype() != EtherTypes::Ipv6 {
-        return false;
-    }
-    let Some(ipv6) = Ipv6Packet::new(packet.payload()) else {
-        return false;
-    };
-    if ipv6.get_next_header() != IpNextHeaderProtocols::Icmpv6 {
-        return false;
-    }
-    let Some(icmpv6) = Icmpv6Packet::new(ipv6.payload()) else {
-        return false;
-    };
-    if NeighborAdvertPacket::new(ipv6.payload()).is_none() {
-        return false;
-    }
-    icmpv6.get_icmpv6_type() == Icmpv6Types::NeighborAdvert
 }
