@@ -1,5 +1,9 @@
 use std::{
-    any::Any, collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}
+    any::Any,
+    collections::HashMap,
+    net::IpAddr,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use aes_gcm::{Aes128Gcm, Key};
@@ -19,7 +23,10 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    fullmesh::{conn::{Connection, ConnectionReceiver, ConnectionSender}, registry::RegistryHandle},
+    fullmesh::{
+        conn::{Connection, ConnectionReceiver, ConnectionSender},
+        registry::RegistryHandle,
+    },
     mesh::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
@@ -36,7 +43,7 @@ pub mod tun;
 pub mod tap;
 
 #[async_trait]
-pub trait DeviceManager {
+pub trait DeviceManager: Send + Sync {
     async fn connected(&mut self, node_id: NodeId, sender: ConnectionSender, receiver: ConnectionReceiver) -> Result<()>;
     async fn disconnected(&mut self, node_id: NodeId) -> Result<()>;
     async fn ips(&self) -> Result<Vec<IpAddr>>;
