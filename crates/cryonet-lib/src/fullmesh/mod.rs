@@ -1,9 +1,5 @@
 use std::{
-    any::Any,
-    collections::HashMap,
-    net::IpAddr,
-    sync::Arc,
-    time::{Duration, Instant},
+    any::Any, collections::HashMap, net::IpAddr, sync::Arc, time::{Duration, Instant}
 };
 
 use aes_gcm::{Aes128Gcm, Key};
@@ -20,10 +16,10 @@ use tokio::{
     sync::{Mutex, mpsc},
     time::{Interval, interval},
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
-    fullmesh::conn::{Connection, ConnectionReceiver, ConnectionSender},
+    fullmesh::{conn::{Connection, ConnectionReceiver, ConnectionSender}, registry::RegistryHandle},
     mesh::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
@@ -33,6 +29,7 @@ use crate::{
 #[cfg_attr(not(target_arch = "wasm32"), path = "conn_ice.rs")]
 #[cfg_attr(target_arch = "wasm32", path = "conn_wasm.rs")]
 pub mod conn;
+pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tun;
 
@@ -71,19 +68,17 @@ pub struct FullMesh {
 
     id: NodeId,
     mesh: MeshHandle,
-    dm: Box<dyn DeviceManager>,
+    registry: RegistryHandle,
+    dm: Arc<Mutex<Box<dyn DeviceManager>>>,
     ice_servers: Vec<IceServer>,
     candidate_filter_prefix: Option<AnyIpCidr>,
     encrypt_local_packets: bool,
     connection_timeout: Duration,
     rekey_timeout: Duration,
-    announce_timeout: Duration,
 
     packet_rx: mpsc::Receiver<Packet>,
-    ticker: Interval,
-    annonce_ticker: Interval,
+    connect_ticker: Interval,
     connections: HashMap<NodeId, FullMeshConnection>,
-    ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +86,6 @@ enum FullMeshPayload {
     Shake { ufrag: String, pwd: String, candidates: Vec<String>, public_key: PublicKey },
     Rekey { index: bool, public_key: PublicKey },
     RekeyConfirm { index: bool, public_key: PublicKey },
-    IpAnnounce { ips: Vec<IpAddr> },
 }
 
 #[typetag::serde]
@@ -99,56 +93,38 @@ impl Payload for FullMeshPayload {}
 
 #[sactor(pub)]
 impl FullMesh {
-    pub async fn new(id: NodeId, mesh: MeshHandle, dm: Box<dyn DeviceManager>, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>) -> Result<FullMeshHandle> {
-        Self::new_with_parameters(
-            id,
-            mesh,
-            dm,
-            ice_servers,
-            Duration::from_secs(10),
-            Duration::from_secs(30),
-            Duration::from_secs(120),
-            Duration::from_secs(30),
-            Duration::from_secs(120),
-            candidate_filter_prefix,
-            encrypt_local_packets,
-            ips,
-        )
-        .await
+    pub async fn new(id: NodeId, mesh: MeshHandle, registry: RegistryHandle, dm: Arc<Mutex<Box<dyn DeviceManager>>>, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool) -> Result<FullMeshHandle> {
+        Self::new_with_parameters(id, mesh, registry, dm, ice_servers, Duration::from_secs(10), Duration::from_secs(30), Duration::from_secs(120), candidate_filter_prefix, encrypt_local_packets).await
     }
 
     #[allow(clippy::too_many_arguments)]
     pub async fn new_with_parameters(
         id: NodeId,
         mesh: MeshHandle,
-        dm: Box<dyn DeviceManager>,
+        registry: RegistryHandle,
+        dm: Arc<Mutex<Box<dyn DeviceManager>>>,
         ice_servers: Vec<IceServer>,
         connect_interval: Duration,
         connection_timeout: Duration,
         rekey_timeout: Duration,
-        announce_interval: Duration,
-        announce_timeout: Duration,
         candidate_filter_prefix: Option<AnyIpCidr>,
         encrypt_local_packets: bool,
-        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
     ) -> Result<FullMeshHandle> {
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>())).await?;
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle,
             id,
             mesh,
+            registry,
             dm,
             ice_servers,
             connection_timeout,
             rekey_timeout,
-            announce_timeout,
             candidate_filter_prefix,
             encrypt_local_packets,
             packet_rx,
-            ticker: interval(connect_interval),
-            annonce_ticker: interval(announce_interval),
+            connect_ticker: interval(connect_interval),
             connections: HashMap::new(),
-            ips,
         });
         tokio::task::spawn_local(future);
         Ok(fm)
@@ -156,11 +132,7 @@ impl FullMesh {
 
     #[select]
     fn select(&mut self) -> Vec<Selection<'_>> {
-        vec![
-            selection!(self.packet_rx.recv().await, handle_packet, it => it),
-            selection!(self.ticker.tick().await, tick),
-            selection!(self.annonce_ticker.tick().await, announce_tick),
-        ]
+        vec![selection!(self.packet_rx.recv().await, handle_packet, it => it), selection!(self.connect_ticker.tick().await, connect_tick)]
     }
 
     #[no_reply]
@@ -277,18 +249,12 @@ impl FullMesh {
                 conn.ecdh_key.diffie_hellman(public_key).extract::<Sha256>(None).expand(b"", &mut key)?;
                 conn.connection.set_send_key(FullMeshKey { index: *index, key: key.into() });
             }
-            FullMeshPayload::IpAnnounce { ips: announce } => {
-                let mut ips = self.ips.lock().await;
-                for ip in announce {
-                    ips.insert(*ip, (src, Instant::now()));
-                }
-            }
         }
         Ok(())
     }
 
     #[no_reply]
-    async fn tick(&mut self) -> Result<()> {
+    async fn connect_tick(&mut self) -> Result<()> {
         let time = Instant::now();
         // gc
         let mut disconnected = Vec::new();
@@ -309,19 +275,22 @@ impl FullMesh {
             }
             keep
         });
-        for node_id in disconnected {
-            self.dm.disconnected(node_id).await?;
-        }
-        // mark connected
-        for (node_id, conn) in &mut self.connections {
-            if !conn.once_connected && conn.connection.status() == IceTransportState::Connected {
-                conn.once_connected = true;
-                self.dm.connected(*node_id, conn.connection.sender(), conn.connection.receiver().await).await?;
+        {
+            let mut dm = self.dm.lock().await;
+            for node_id in disconnected {
+                debug!("Connection to peer {:X} timed out, disconnecting", node_id);
+                dm.disconnected(node_id).await?;
+            }
+            // mark connected
+            for (node_id, conn) in &mut self.connections {
+                if !conn.once_connected && conn.connection.status() == IceTransportState::Connected {
+                    conn.once_connected = true;
+                    dm.connected(*node_id, conn.connection.sender(), conn.connection.receiver().await).await?;
+                }
             }
         }
         // connect
-        let peers = self.mesh.get_routes().await?.keys().cloned().collect::<Vec<_>>();
-        for peer_id in peers {
+        for (peer_id, _) in self.registry.get_nodes().await? {
             if self.id > peer_id {
                 continue;
             }
@@ -370,29 +339,6 @@ impl FullMesh {
                 if let Err(err) = result {
                     error!("Failed to connect to peer {:X}: {:?}", peer_id, err);
                 }
-            }
-        }
-        Ok(())
-    }
-
-    #[no_reply]
-    async fn announce_tick(&mut self) -> Result<()> {
-        // gc
-        let time = Instant::now();
-        {
-            let mut ips = self.ips.lock().await;
-            ips.retain(|_, ip| time.duration_since(ip.1) < self.announce_timeout);
-        }
-        // announce
-        let ips = self.dm.ips().await?;
-        if ips.is_empty() {
-            return Ok(());
-        }
-        let peers = self.mesh.get_routes().await?.keys().cloned().collect::<Vec<_>>();
-        for peer_id in peers {
-            let result = self.mesh.send_packet(peer_id, Box::new(FullMeshPayload::IpAnnounce { ips: ips.clone() })).await;
-            if let Err(err) = result {
-                error!("Failed to announce IPs to peer {:X}: {:?}", peer_id, err);
             }
         }
         Ok(())

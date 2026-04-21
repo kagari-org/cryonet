@@ -69,7 +69,7 @@ impl Connection {
                 use IceTransportState::*;
                 match *state.borrow_and_update() {
                     Failed | Closed => {
-                        let _ = fm.tick().await;
+                        let _ = fm.connect_tick().await;
                         break;
                     }
                     _ => {}
