@@ -36,7 +36,12 @@ pub struct TapManager {
 }
 
 impl TapManager {
-    pub fn new(node_id: NodeId, tap_mac_prefix: u16, enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>) -> Result<TapManager> {
+    pub fn new(
+        node_id: NodeId,
+        tap_mac_prefix: u16,
+        enable_packet_information: bool,
+        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+    ) -> Result<TapManager> {
         Ok(TapManager {
             handle: TapManagerInner::new(node_id, tap_mac_prefix, enable_packet_information, ips)?,
         })
@@ -45,7 +50,12 @@ impl TapManager {
 
 #[async_trait]
 impl DeviceManager for TapManager {
-    async fn connected(&mut self, node_id: NodeId, sender: Box<dyn ConnectionSender>, receiver: Box<dyn ConnectionReceiver>) -> Result<()> {
+    async fn connected(
+        &mut self,
+        node_id: NodeId,
+        sender: Box<dyn ConnectionSender>,
+        receiver: Box<dyn ConnectionReceiver>,
+    ) -> Result<()> {
         self.handle.connected(node_id, sender, receiver).await?
     }
 
@@ -69,14 +79,26 @@ struct TapManagerInner {
 
 #[sactor]
 impl TapManagerInner {
-    fn new(node_id: NodeId, tap_mac_prefix: u16, enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>) -> Result<TapManagerInnerHandle> {
+    fn new(
+        node_id: NodeId,
+        tap_mac_prefix: u16,
+        enable_packet_information: bool,
+        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+    ) -> Result<TapManagerInnerHandle> {
         let mut tap_mac = tap_mac_prefix.to_be_bytes().to_vec();
         // Set locally administered bit and ensure unicast
         tap_mac[0] = (tap_mac[0] & 0xfe) | 0x02;
         tap_mac.extend_from_slice(&node_id.to_be_bytes());
         let tap_mac: [u8; 6] = tap_mac.try_into().unwrap();
 
-        let device = Arc::new(DeviceBuilder::new().mtu(1280).layer(Layer::L2).mac_addr(tap_mac).enable(true).build_async()?);
+        let device = Arc::new(
+            DeviceBuilder::new()
+                .mtu(1280)
+                .layer(Layer::L2)
+                .mac_addr(tap_mac)
+                .enable(true)
+                .build_async()?,
+        );
         let device2 = device.clone();
 
         let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
@@ -88,20 +110,40 @@ impl TapManagerInner {
             recv_tasks: HashMap::new(),
         });
         tokio::task::spawn_local(future);
-        tokio::spawn(send_loop(enable_packet_information, ips, device2, tap_mac, send_msg_rx));
+        tokio::spawn(send_loop(
+            enable_packet_information,
+            ips,
+            device2,
+            tap_mac,
+            send_msg_rx,
+        ));
         Ok(handle)
     }
 
-    async fn connected(&mut self, node_id: NodeId, sender: Box<dyn ConnectionSender>, receiver: Box<dyn ConnectionReceiver>) -> Result<()> {
-        self.send_msg_tx.send(SendLoopMessage::Connected(node_id, sender))?;
+    async fn connected(
+        &mut self,
+        node_id: NodeId,
+        sender: Box<dyn ConnectionSender>,
+        receiver: Box<dyn ConnectionReceiver>,
+    ) -> Result<()> {
+        self.send_msg_tx
+            .send(SendLoopMessage::Connected(node_id, sender))?;
         let stop_tx = watch::channel(false).0;
-        tokio::spawn(recv_loop(self.enable_packet_information, node_id, receiver, self.device.clone(), self.tap_mac, stop_tx.subscribe()));
+        tokio::spawn(recv_loop(
+            self.enable_packet_information,
+            node_id,
+            receiver,
+            self.device.clone(),
+            self.tap_mac,
+            stop_tx.subscribe(),
+        ));
         self.recv_tasks.insert(node_id, stop_tx);
         Ok(())
     }
 
     async fn disconnected(&mut self, node_id: NodeId) -> Result<()> {
-        self.send_msg_tx.send(SendLoopMessage::Disconnected(node_id))?;
+        self.send_msg_tx
+            .send(SendLoopMessage::Disconnected(node_id))?;
         if let Some(stop_tx) = self.recv_tasks.remove(&node_id) {
             let _ = stop_tx.send(true);
         }
@@ -128,7 +170,13 @@ enum SendLoopMessage {
     Disconnected(NodeId),
 }
 
-async fn send_loop(enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>, device: Arc<AsyncDevice>, device_mac: [u8; 6], mut msg_rx: mpsc::UnboundedReceiver<SendLoopMessage>) {
+async fn send_loop(
+    enable_packet_information: bool,
+    ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+    device: Arc<AsyncDevice>,
+    device_mac: [u8; 6],
+    mut msg_rx: mpsc::UnboundedReceiver<SendLoopMessage>,
+) {
     let mut senders = HashMap::new();
     let mut buf = [0u8; 2000];
     loop {
@@ -262,7 +310,14 @@ async fn send_loop(enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAdd
     }
 }
 
-async fn recv_loop(enable_packet_information: bool, peer_id: NodeId, mut receiver: Box<dyn ConnectionReceiver>, device: Arc<AsyncDevice>, device_mac: [u8; 6], mut stop: watch::Receiver<bool>) {
+async fn recv_loop(
+    enable_packet_information: bool,
+    peer_id: NodeId,
+    mut receiver: Box<dyn ConnectionReceiver>,
+    device: Arc<AsyncDevice>,
+    device_mac: [u8; 6],
+    mut stop: watch::Receiver<bool>,
+) {
     let peer_mac: [u8; 6] = {
         let mut prefix = vec![device_mac[0], device_mac[1]];
         prefix.extend_from_slice(&peer_id.to_be_bytes());
@@ -333,8 +388,15 @@ fn is_ndp<'a>(packet: &'a EthernetPacket<'a>, n: NsNa) -> bool {
     }
 }
 
-async fn send_arp_reply(device: &AsyncDevice, src_mac: [u8; 6], dst_mac: [u8; 6], src_ip: Ipv4Addr, dst_ip: Ipv4Addr) -> Result<()> {
-    const TOTAL_LEN: usize = MutableEthernetPacket::minimum_packet_size() + MutableArpPacket::minimum_packet_size();
+async fn send_arp_reply(
+    device: &AsyncDevice,
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+) -> Result<()> {
+    const TOTAL_LEN: usize =
+        MutableEthernetPacket::minimum_packet_size() + MutableArpPacket::minimum_packet_size();
 
     let mut buf = [0u8; 2000];
 
@@ -358,7 +420,13 @@ async fn send_arp_reply(device: &AsyncDevice, src_mac: [u8; 6], dst_mac: [u8; 6]
     Ok(())
 }
 
-async fn send_ndp_na(device: &AsyncDevice, src_mac: [u8; 6], dst_mac: [u8; 6], src_ip: Ipv6Addr, dst_ip: Ipv6Addr) -> Result<()> {
+async fn send_ndp_na(
+    device: &AsyncDevice,
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    src_ip: Ipv6Addr,
+    dst_ip: Ipv6Addr,
+) -> Result<()> {
     const TLL_OPTION_LEN: usize = 8; // type(1) + length(1) + MAC(6)
     const ICMPV6_LEN: usize = MutableNeighborAdvertPacket::minimum_packet_size() + TLL_OPTION_LEN;
     const ETHERNET_HEADER_LEN: usize = MutableEthernetPacket::minimum_packet_size();
@@ -390,7 +458,14 @@ async fn send_ndp_na(device: &AsyncDevice, src_mac: [u8; 6], dst_mac: [u8; 6], s
         length: 1,
         data: src_mac.to_vec(),
     }]);
-    na.set_checksum(ipv6_checksum(na.packet(), 1, &[], &src_ip, &dst_ip, IpNextHeaderProtocols::Icmpv6));
+    na.set_checksum(ipv6_checksum(
+        na.packet(),
+        1,
+        &[],
+        &src_ip,
+        &dst_ip,
+        IpNextHeaderProtocols::Icmpv6,
+    ));
 
     device.send(&buf[..TOTAL_LEN]).await?;
     Ok(())

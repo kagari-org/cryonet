@@ -18,12 +18,22 @@ type ReqwestWebSocket = reqwest_websocket::WebSocket;
 type ReqwestMessage = reqwest_websocket::Message;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn new_tungstenite_ws_link(ws: TungsteniteWebSocket) -> (WebSocketLinkSend<TungsteniteWebSocket, TungsteniteMessage>, WebSocketLinkRecv<TungsteniteWebSocket>) {
+pub fn new_tungstenite_ws_link(
+    ws: TungsteniteWebSocket,
+) -> (
+    WebSocketLinkSend<TungsteniteWebSocket, TungsteniteMessage>,
+    WebSocketLinkRecv<TungsteniteWebSocket>,
+) {
     let (sink, stream) = ws.split();
     (WebSocketLinkSend(sink), WebSocketLinkRecv(stream))
 }
 
-pub fn new_reqwest_ws_link(ws: ReqwestWebSocket) -> (WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage>, WebSocketLinkRecv<ReqwestWebSocket>) {
+pub fn new_reqwest_ws_link(
+    ws: ReqwestWebSocket,
+) -> (
+    WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage>,
+    WebSocketLinkRecv<ReqwestWebSocket>,
+) {
     let (sink, stream) = ws.split();
     (WebSocketLinkSend(sink), WebSocketLinkRecv(stream))
 }
@@ -33,7 +43,10 @@ pub fn new_reqwest_ws_link(ws: ReqwestWebSocket) -> (WebSocketLinkSend<ReqwestWe
 impl LinkSend for WebSocketLinkSend<TungsteniteWebSocket, TungsteniteMessage> {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
         let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(e.into()))?;
-        self.0.send(TungsteniteMessage::binary(data)).await.map_err(|e| LinkError::Unknown(e.into()))?;
+        self.0
+            .send(TungsteniteMessage::binary(data))
+            .await
+            .map_err(|e| LinkError::Unknown(e.into()))?;
         Ok(())
     }
 }
@@ -59,7 +72,10 @@ impl LinkRecv for WebSocketLinkRecv<TungsteniteWebSocket> {
 impl LinkSend for WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage> {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
         let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(e.into()))?;
-        self.0.send(ReqwestMessage::Binary(data.into())).await.map_err(|e| LinkError::Unknown(e.into()))?;
+        self.0
+            .send(ReqwestMessage::Binary(data.into()))
+            .await
+            .map_err(|e| LinkError::Unknown(e.into()))?;
         Ok(())
     }
 }

@@ -60,12 +60,36 @@ pub struct Registry {
 
 #[sactor(pub)]
 impl Registry {
-    pub async fn new(mesh: MeshHandle, dm: Arc<Mutex<Box<dyn DeviceManager>>>, connection_types: Vec<ConnectionType>, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>) -> Result<RegistryHandle> {
-        Self::new_with_parameters(mesh, dm, connection_types, Duration::from_secs(30), Duration::from_secs(120), ips).await
+    pub async fn new(
+        mesh: MeshHandle,
+        dm: Arc<Mutex<Box<dyn DeviceManager>>>,
+        connection_types: Vec<ConnectionType>,
+        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+    ) -> Result<RegistryHandle> {
+        Self::new_with_parameters(
+            mesh,
+            dm,
+            connection_types,
+            Duration::from_secs(30),
+            Duration::from_secs(120),
+            ips,
+        )
+        .await
     }
 
-    pub async fn new_with_parameters(mesh: MeshHandle, dm: Arc<Mutex<Box<dyn DeviceManager>>>, connection_types: Vec<ConnectionType>, announce_interval: Duration, node_timeout: Duration, ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>) -> Result<RegistryHandle> {
-        let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<RegistryPayload>())).await?;
+    pub async fn new_with_parameters(
+        mesh: MeshHandle,
+        dm: Arc<Mutex<Box<dyn DeviceManager>>>,
+        connection_types: Vec<ConnectionType>,
+        announce_interval: Duration,
+        node_timeout: Duration,
+        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+    ) -> Result<RegistryHandle> {
+        let packet_rx = mesh
+            .add_dispatchee(Box::new(|packet| {
+                (packet.payload.as_ref() as &dyn Any).is::<RegistryPayload>()
+            }))
+            .await?;
         let (future, registry) = Registry::run(move |handle| Registry {
             handle,
             mesh,
@@ -83,7 +107,10 @@ impl Registry {
 
     #[select]
     fn select(&mut self) -> Vec<Selection<'_>> {
-        vec![selection!(self.packet_rx.recv().await, handle_packet, it => it), selection!(self.announce_ticker.tick().await, announce_tick)]
+        vec![
+            selection!(self.packet_rx.recv().await, handle_packet, it => it),
+            selection!(self.announce_ticker.tick().await, announce_tick),
+        ]
     }
 
     #[no_reply]
@@ -93,7 +120,9 @@ impl Registry {
             return Ok(());
         };
         let src = packet.src;
-        let payload = (packet.payload.as_ref() as &dyn Any).downcast_ref::<RegistryPayload>().unwrap();
+        let payload = (packet.payload.as_ref() as &dyn Any)
+            .downcast_ref::<RegistryPayload>()
+            .unwrap();
         match payload {
             RegistryPayload::Node(node) => {
                 let now = Instant::now();
@@ -111,16 +140,29 @@ impl Registry {
     async fn announce_tick(&mut self) -> Result<()> {
         // gc
         let now = Instant::now();
-        self.nodes.retain(|_, (_, last_seen)| now.duration_since(*last_seen) < self.node_timeout);
-        self.ips.lock().await.retain(|_, (_, last_seen)| now.duration_since(*last_seen) < self.node_timeout);
+        self.nodes
+            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) < self.node_timeout);
+        self.ips
+            .lock()
+            .await
+            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) < self.node_timeout);
         // annonce
         let node = Node {
             connection_types: self.connection_types.clone(),
             ips: self.dm.lock().await.ips().await?,
         };
-        let peers = self.mesh.get_routes().await?.keys().cloned().collect::<Vec<_>>();
+        let peers = self
+            .mesh
+            .get_routes()
+            .await?
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
         for peer in peers {
-            let result = self.mesh.send_packet(peer, Box::new(RegistryPayload::Node(node.clone()))).await;
+            let result = self
+                .mesh
+                .send_packet(peer, Box::new(RegistryPayload::Node(node.clone())))
+                .await;
             if let Err(e) = result {
                 error!("Failed to send registry packet to {}: {:?}", peer, e);
             }

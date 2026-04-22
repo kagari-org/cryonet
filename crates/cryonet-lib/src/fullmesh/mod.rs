@@ -25,7 +25,12 @@ pub struct IceServer {
 
 #[async_trait]
 pub trait DeviceManager: Send + Sync {
-    async fn connected(&mut self, node_id: NodeId, sender: Box<dyn ConnectionSender>, receiver: Box<dyn ConnectionReceiver>) -> Result<()>;
+    async fn connected(
+        &mut self,
+        node_id: NodeId,
+        sender: Box<dyn ConnectionSender>,
+        receiver: Box<dyn ConnectionReceiver>,
+    ) -> Result<()>;
     async fn disconnected(&mut self, node_id: NodeId) -> Result<()>;
     async fn ips(&self) -> Result<Vec<IpAddr>>;
 }

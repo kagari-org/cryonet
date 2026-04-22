@@ -26,7 +26,10 @@ pub struct Mesh {
     link_recv_stop: HashMap<NodeId, watch::Sender<bool>>,
     routes: HashMap<NodeId, NodeId>,
     #[allow(clippy::type_complexity)]
-    dispatchees: Vec<(Box<dyn Fn(&Packet) -> bool + Send + Sync>, mpsc::Sender<Packet>)>,
+    dispatchees: Vec<(
+        Box<dyn Fn(&Packet) -> bool + Send + Sync>,
+        mpsc::Sender<Packet>,
+    )>,
 
     mesh_event_tx: broadcast::Sender<MeshEvent>,
 }
@@ -75,7 +78,11 @@ impl Mesh {
     }
 
     #[no_reply]
-    async fn handle_packet(&mut self, from: NodeId, packet: Result<Packet, LinkError>) -> Result<()> {
+    async fn handle_packet(
+        &mut self,
+        from: NodeId,
+        packet: Result<Packet, LinkError>,
+    ) -> Result<()> {
         let mut packet = match packet {
             Ok(packet) => packet,
             Err(LinkError::Closed) => {
@@ -113,7 +120,10 @@ impl Mesh {
         let Some(link) = self.link_send.get_mut(next_hop) else {
             return Err(CryonetError::Unreachable(packet.dst).into());
         };
-        debug!("Sending packet {:?} to {:X} via link {:X}", &packet, packet.dst, next_hop);
+        debug!(
+            "Sending packet {:?} to {:X} via link {:X}",
+            &packet, packet.dst, next_hop
+        );
         let res = link.send(packet).await;
         if let Err(LinkError::Closed) = res {
             self.remove_link(*next_hop);
@@ -124,7 +134,13 @@ impl Mesh {
 
     #[no_reply]
     pub async fn send_packet(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> Result<()> {
-        self.send_packet_internal(Packet { src: self.id, dst, ttl: 16, payload }).await
+        self.send_packet_internal(Packet {
+            src: self.id,
+            dst,
+            ttl: 16,
+            payload,
+        })
+        .await
     }
 
     #[no_reply]
@@ -132,7 +148,12 @@ impl Mesh {
         let Some(link) = self.link_send.get_mut(&dst) else {
             return Err(CryonetError::NoSuchLink(dst).into());
         };
-        let packet = Packet { src: self.id, dst, ttl: 16, payload };
+        let packet = Packet {
+            src: self.id,
+            dst,
+            ttl: 16,
+            payload,
+        };
         debug!("Sending packet {:?} to {:X} via direct link", &packet, dst);
         let res = link.send(packet).await;
         if let Err(LinkError::Closed) = res {
@@ -167,11 +188,18 @@ impl Mesh {
                 self.remove_link(*dst);
             }
         }
-        results.into_iter().map(|(res, _)| res).collect::<Result<Vec<_>, _>>().map(|_| ())?;
+        results
+            .into_iter()
+            .map(|(res, _)| res)
+            .collect::<Result<Vec<_>, _>>()
+            .map(|_| ())?;
         Ok(())
     }
 
-    pub fn add_dispatchee(&mut self, filter: Box<dyn Fn(&Packet) -> bool + Send + Sync>) -> mpsc::Receiver<Packet> {
+    pub fn add_dispatchee(
+        &mut self,
+        filter: Box<dyn Fn(&Packet) -> bool + Send + Sync>,
+    ) -> mpsc::Receiver<Packet> {
         let (tx, rx) = mpsc::channel(512);
         self.dispatchees.push((filter, tx));
         rx
@@ -183,15 +211,27 @@ impl Mesh {
         self.dispatchees.retain(|(_, tx)| !tx.is_closed());
     }
 
-    pub fn add_link(&mut self, dst: NodeId, send: Box<dyn LinkSend>, mut recv: Box<dyn LinkRecv>, is_initiator: bool) -> bool {
+    pub fn add_link(
+        &mut self,
+        dst: NodeId,
+        send: Box<dyn LinkSend>,
+        mut recv: Box<dyn LinkRecv>,
+        is_initiator: bool,
+    ) -> bool {
         if self.link_send.contains_key(&dst) {
             // ensure keeping the same link for both sides to avoid duplicate links
             let keep_new = is_initiator == (self.id < dst);
             if !keep_new {
-                debug!("Link to node {:X} already exists, keeping existing (is_initiator={}, our id {:X}, dst {:X})", dst, is_initiator, self.id, dst);
+                debug!(
+                    "Link to node {:X} already exists, keeping existing (is_initiator={}, our id {:X}, dst {:X})",
+                    dst, is_initiator, self.id, dst
+                );
                 return false;
             }
-            debug!("Link to node {:X} already exists, replacing (is_initiator={}, our id {:X}, dst {:X})", dst, is_initiator, self.id, dst);
+            debug!(
+                "Link to node {:X} already exists, replacing (is_initiator={}, our id {:X}, dst {:X})",
+                dst, is_initiator, self.id, dst
+            );
             self.remove_link(dst);
         }
 
@@ -240,7 +280,10 @@ impl Mesh {
             return;
         }
         if !self.link_send.contains_key(&next_hop) {
-            warn!("Cannot set route to node {:X}: next hop {:X} does not exist", dst, next_hop);
+            warn!(
+                "Cannot set route to node {:X}: next hop {:X} does not exist",
+                dst, next_hop
+            );
             return;
         }
         debug!("Setting route: {:X} via {:X}", dst, next_hop);
@@ -252,7 +295,9 @@ impl Mesh {
         debug!("Removing route to node {:X}", dst);
         let route = self.routes.remove(&dst);
         if let Some(next_hop) = route {
-            let _ = self.mesh_event_tx.send(MeshEvent::RouteRemoved(dst, next_hop));
+            let _ = self
+                .mesh_event_tx
+                .send(MeshEvent::RouteRemoved(dst, next_hop));
         }
     }
 

@@ -1,6 +1,9 @@
 #![feature(try_blocks)]
 #![allow(clippy::new_ret_no_self)]
-use std::{collections::HashMap, env::var, future::pending, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
+use std::{
+    collections::HashMap, env::var, future::pending, net::SocketAddr, path::PathBuf, str::FromStr,
+    sync::Arc,
+};
 
 use anyhow::{Result, bail};
 use cidr::AnyIpCidr;
@@ -57,7 +60,10 @@ struct Args {
 fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
     let parts: Vec<_> = input.split('|').collect();
     if parts.len() == 1 {
-        Ok(IceServer { url: parts[0].to_string(), ..Default::default() })
+        Ok(IceServer {
+            url: parts[0].to_string(),
+            ..Default::default()
+        })
     } else if parts.len() == 3 {
         Ok(IceServer {
             url: parts[0].to_string(),
@@ -71,7 +77,12 @@ fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,rustrtc=off"))).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,rustrtc=off")),
+        )
+        .init();
     let args = Args::parse();
     let runtime_directory = var("RUNTIME_DIRECTORY");
     let ctl_path = match (args.ctl_path, runtime_directory) {
@@ -85,15 +96,40 @@ async fn main() -> Result<()> {
             let result: Result<()> = try {
                 let mesh = Mesh::new(args.id);
                 let igp = Igp::new(args.id, mesh.clone()).await?;
-                let _mgr = ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen).await?;
+                let _mgr =
+                    ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen)
+                        .await?;
                 let ips = Arc::new(Mutex::new(HashMap::new()));
                 let dm: Arc<Mutex<Box<dyn DeviceManager>>> = if args.tap_mode {
-                    Arc::new(Mutex::new(Box::new(TapManager::new(args.id, args.tap_mac_prefix, args.enable_packet_information, ips.clone())?)))
+                    Arc::new(Mutex::new(Box::new(TapManager::new(
+                        args.id,
+                        args.tap_mac_prefix,
+                        args.enable_packet_information,
+                        ips.clone(),
+                    )?)))
                 } else {
-                    Arc::new(Mutex::new(Box::new(TunManager::new(args.interface_prefix, args.enable_packet_information))))
+                    Arc::new(Mutex::new(Box::new(TunManager::new(
+                        args.interface_prefix,
+                        args.enable_packet_information,
+                    ))))
                 };
-                let registry = Registry::new(mesh.clone(), dm.clone(), vec![ConnectionType::Ice, ConnectionType::DataChannel], ips).await?;
-                let fm = FullMeshIce::new(args.id, mesh.clone(), registry, dm.clone(), args.ice_servers, args.candidate_filter_prefix, args.encrypt_local_packets).await?;
+                let registry = Registry::new(
+                    mesh.clone(),
+                    dm.clone(),
+                    vec![ConnectionType::Ice, ConnectionType::DataChannel],
+                    ips,
+                )
+                .await?;
+                let fm = FullMeshIce::new(
+                    args.id,
+                    mesh.clone(),
+                    registry,
+                    dm.clone(),
+                    args.ice_servers,
+                    args.candidate_filter_prefix,
+                    args.encrypt_local_packets,
+                )
+                .await?;
                 let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;
 
                 pending().await

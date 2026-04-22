@@ -102,7 +102,12 @@ async fn main() -> Result<()> {
             println!("Full Mesh Peers:");
             for (node_id, conn) in peers {
                 let candidate = conn.selected_candidate.as_deref().unwrap_or("none");
-                println!("  Node {node_id:X}: state: {:?}, sent: {}, received: {}, candidate: {candidate}", conn.state, format_bytes(conn.sent), format_bytes(conn.received),);
+                println!(
+                    "  Node {node_id:X}: state: {:?}, sent: {}, received: {}, candidate: {candidate}",
+                    conn.state,
+                    format_bytes(conn.sent),
+                    format_bytes(conn.received),
+                );
             }
         }
         CryonetUapi::Pong => {

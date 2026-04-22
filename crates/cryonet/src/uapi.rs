@@ -47,14 +47,38 @@ enum UapiPayload {
 
 #[sactor(pub)]
 impl Uapi {
-    pub async fn new(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshIceHandle, path: PathBuf) -> Result<UapiHandle> {
-        Self::new_with_parameters(mesh, igp, fm, path, Duration::from_secs(30), Duration::from_secs(60)).await
+    pub async fn new(
+        mesh: MeshHandle,
+        igp: IgpHandle,
+        fm: FullMeshIceHandle,
+        path: PathBuf,
+    ) -> Result<UapiHandle> {
+        Self::new_with_parameters(
+            mesh,
+            igp,
+            fm,
+            path,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+        )
+        .await
     }
 
-    pub async fn new_with_parameters(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshIceHandle, path: PathBuf, gc_interval: Duration, ping_timeout: Duration) -> Result<UapiHandle> {
+    pub async fn new_with_parameters(
+        mesh: MeshHandle,
+        igp: IgpHandle,
+        fm: FullMeshIceHandle,
+        path: PathBuf,
+        gc_interval: Duration,
+        ping_timeout: Duration,
+    ) -> Result<UapiHandle> {
         let _ = remove_file(&path).await;
         let socket = UnixDatagram::bind(path).unwrap();
-        let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<UapiPayload>())).await?;
+        let packet_rx = mesh
+            .add_dispatchee(Box::new(|packet| {
+                (packet.payload.as_ref() as &dyn Any).is::<UapiPayload>()
+            }))
+            .await?;
         let (future, uapi) = Uapi::run(move |handle| Uapi {
             handle,
             mesh,
@@ -87,7 +111,9 @@ impl Uapi {
             return Ok(());
         };
         let src = packet.src;
-        let uapi_payload = (packet.payload.as_ref() as &dyn Any).downcast_ref::<UapiPayload>().unwrap();
+        let uapi_payload = (packet.payload.as_ref() as &dyn Any)
+            .downcast_ref::<UapiPayload>()
+            .unwrap();
         use UapiPayload::*;
         match uapi_payload {
             Ping(uuid) => {
@@ -107,7 +133,10 @@ impl Uapi {
     }
 
     #[no_reply]
-    async fn handle_message(&mut self, result: io::Result<(usize, tokio::net::unix::SocketAddr)>) -> Result<()> {
+    async fn handle_message(
+        &mut self,
+        result: io::Result<(usize, tokio::net::unix::SocketAddr)>,
+    ) -> Result<()> {
         let (len, addr) = result?;
         let Some(path) = addr.as_pathname() else {
             error!("Received uapi message from non-path address, dropping");
@@ -169,7 +198,9 @@ impl Uapi {
             Ping(dst) => {
                 let uuid = Uuid::new_v4();
                 let instant = Instant::now();
-                self.mesh.send_packet(dst, Box::new(UapiPayload::Ping(uuid))).await?;
+                self.mesh
+                    .send_packet(dst, Box::new(UapiPayload::Ping(uuid)))
+                    .await?;
                 self.ping.insert(uuid, (path, instant));
             }
             _ => error!("Unexpected uapi command: {:?}, dropping", cmd),
@@ -183,7 +214,10 @@ impl Uapi {
         let ping_timeout = self.ping_timeout;
         self.ping.retain(|uuid, (_, instant)| {
             if now.duration_since(*instant) > ping_timeout {
-                debug!("Removing expired ping with uuid {}, sent at {:?}", uuid, instant);
+                debug!(
+                    "Removing expired ping with uuid {}, sent at {:?}",
+                    uuid, instant
+                );
                 false
             } else {
                 true

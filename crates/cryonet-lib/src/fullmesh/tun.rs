@@ -37,7 +37,10 @@ impl TunManager {
 
     fn create_device(&mut self, node_id: NodeId) -> Result<Arc<AsyncDevice>> {
         let create_device = || -> Result<AsyncDevice> {
-            let mut builder = DeviceBuilder::new().mtu(1280).name(format!("{}{:X}", self.interface_prefix, node_id)).enable(true);
+            let mut builder = DeviceBuilder::new()
+                .mtu(1280)
+                .name(format!("{}{:X}", self.interface_prefix, node_id))
+                .enable(true);
             if self.enable_packet_information {
                 builder = builder.packet_information(true);
             }
@@ -63,7 +66,12 @@ impl TunManager {
 
 #[async_trait]
 impl DeviceManager for TunManager {
-    async fn connected(&mut self, node_id: NodeId, sender: Box<dyn ConnectionSender>, receiver: Box<dyn ConnectionReceiver>) -> Result<()> {
+    async fn connected(
+        &mut self,
+        node_id: NodeId,
+        sender: Box<dyn ConnectionSender>,
+        receiver: Box<dyn ConnectionReceiver>,
+    ) -> Result<()> {
         if let Some(stop) = self.tasks.remove(&node_id) {
             let _ = stop.send(true);
         }
@@ -96,7 +104,12 @@ impl DeviceManager for TunManager {
     }
 }
 
-async fn send_loop(node_id: NodeId, mut sender: Box<dyn ConnectionSender>, device: Arc<AsyncDevice>, mut stop: watch::Receiver<bool>) {
+async fn send_loop(
+    node_id: NodeId,
+    mut sender: Box<dyn ConnectionSender>,
+    device: Arc<AsyncDevice>,
+    mut stop: watch::Receiver<bool>,
+) {
     let mut buf = [0u8; 2000];
     loop {
         select! {
@@ -118,7 +131,12 @@ async fn send_loop(node_id: NodeId, mut sender: Box<dyn ConnectionSender>, devic
     }
 }
 
-async fn recv_loop(node_id: NodeId, mut receiver: Box<dyn ConnectionReceiver>, device: Arc<AsyncDevice>, mut stop: watch::Receiver<bool>) {
+async fn recv_loop(
+    node_id: NodeId,
+    mut receiver: Box<dyn ConnectionReceiver>,
+    device: Arc<AsyncDevice>,
+    mut stop: watch::Receiver<bool>,
+) {
     loop {
         select! {
             _ = stop.changed() => break,

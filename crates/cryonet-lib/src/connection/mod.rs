@@ -58,12 +58,25 @@ struct AuthPacket {
 
 #[sactor(pub)]
 impl ConnManager {
-    pub async fn new(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr) -> Result<ConnManagerHandle> {
+    pub async fn new(
+        id: NodeId,
+        mesh: MeshHandle,
+        token: Option<String>,
+        servers: Vec<String>,
+        listen: SocketAddr,
+    ) -> Result<ConnManagerHandle> {
         Self::new_with_parameters(id, mesh, token, servers, listen, Duration::from_secs(8)).await
     }
 
     #[allow(unused_variables)]
-    pub async fn new_with_parameters(id: NodeId, mesh: MeshHandle, token: Option<String>, servers: Vec<String>, listen: SocketAddr, connect_interval: Duration) -> Result<ConnManagerHandle> {
+    pub async fn new_with_parameters(
+        id: NodeId,
+        mesh: MeshHandle,
+        token: Option<String>,
+        servers: Vec<String>,
+        listen: SocketAddr,
+        connect_interval: Duration,
+    ) -> Result<ConnManagerHandle> {
         #[cfg(not(target_arch = "wasm32"))]
         let listener = {
             let listener = TcpListener::bind(listen).await?;
@@ -114,7 +127,9 @@ impl ConnManager {
             let connecting = self.connecting.clone();
             let server = server.clone();
             tokio::task::spawn_local(async move {
-                if let Err(err) = Self::connect_task(id, mesh, token, servers_map, server.clone()).await {
+                if let Err(err) =
+                    Self::connect_task(id, mesh, token, servers_map, server.clone()).await
+                {
                     warn!("Failed to connect to server {}: {}", server, err);
                 }
                 connecting.lock().await.remove(&server);
@@ -123,7 +138,13 @@ impl ConnManager {
         Ok(())
     }
 
-    async fn connect_task(id: NodeId, mesh: MeshHandle, token: Option<String>, servers_map: Arc<Mutex<HashMap<String, NodeId>>>, server: String) -> Result<()> {
+    async fn connect_task(
+        id: NodeId,
+        mesh: MeshHandle,
+        token: Option<String>,
+        servers_map: Arc<Mutex<HashMap<String, NodeId>>>,
+        server: String,
+    ) -> Result<()> {
         let links = mesh.get_links().await?;
         {
             let servers_map = servers_map.lock().await;
@@ -136,20 +157,42 @@ impl ConnManager {
 
         info!("Connecting to server {} ...", server);
         let client = reqwest::Client::new();
-        let mut ws = client.get(&server).upgrade().send().await?.into_websocket().await?;
-        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&AuthPacket { token: token.clone(), node_id: id })?))).await?;
-        let AuthPacket { node_id: neigh_id, .. } = match ws.next().await {
+        let mut ws = client
+            .get(&server)
+            .upgrade()
+            .send()
+            .await?
+            .into_websocket()
+            .await?;
+        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(
+            &AuthPacket {
+                token: token.clone(),
+                node_id: id,
+            },
+        )?)))
+        .await?;
+        let AuthPacket {
+            node_id: neigh_id, ..
+        } = match ws.next().await {
             Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
-            _ => bail!("Failed to receive authentication response from server {}", server),
+            _ => bail!(
+                "Failed to receive authentication response from server {}",
+                server
+            ),
         };
         servers_map.lock().await.insert(server.clone(), neigh_id);
 
         let (sink, stream) = new_reqwest_ws_link(ws);
-        let added = mesh.add_link(neigh_id, Box::new(sink), Box::new(stream), true).await?;
+        let added = mesh
+            .add_link(neigh_id, Box::new(sink), Box::new(stream), true)
+            .await?;
         if added {
             info!("Connected to server {} (node {:X})", server, neigh_id);
         } else {
-            info!("Rejected duplicate connection to {} (node {:X}), keeping existing link", server, neigh_id);
+            info!(
+                "Rejected duplicate connection to {} (node {:X}), keeping existing link",
+                server, neigh_id
+            );
         }
         Ok(())
     }
@@ -171,26 +214,50 @@ impl ConnManager {
         let (stream, addr) = param?;
         info!("Accepted connection from {}", addr);
         let mut ws = accept_async(stream).await?;
-        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&AuthPacket { token: None, node_id: self.id })?))).await?;
-        let AuthPacket { token: neigh_token, node_id: neigh_id } = match ws.next().await {
+        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(
+            &AuthPacket {
+                token: None,
+                node_id: self.id,
+            },
+        )?)))
+        .await?;
+        let AuthPacket {
+            token: neigh_token,
+            node_id: neigh_id,
+        } = match ws.next().await {
             Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
-            _ => bail!("Failed to receive authentication response from connection at {}", addr),
+            _ => bail!(
+                "Failed to receive authentication response from connection at {}",
+                addr
+            ),
         };
         if let Some(token) = &self.token {
             match neigh_token {
                 Some(neigh_token) if neigh_token == *token => {}
                 _ => {
                     let _ = ws.close(None).await;
-                    bail!("Connection from {} provided invalid authentication token", addr);
+                    bail!(
+                        "Connection from {} provided invalid authentication token",
+                        addr
+                    );
                 }
             }
         }
         let (sink, stream) = new_tungstenite_ws_link(ws);
-        let added = self.mesh.add_link(neigh_id, Box::new(sink), Box::new(stream), false).await?;
+        let added = self
+            .mesh
+            .add_link(neigh_id, Box::new(sink), Box::new(stream), false)
+            .await?;
         if added {
-            info!("Accepted new connection from node {:X} at {}", neigh_id, addr);
+            info!(
+                "Accepted new connection from node {:X} at {}",
+                neigh_id, addr
+            );
         } else {
-            info!("Rejected duplicate connection from node {:X} at {}, keeping existing link", neigh_id, addr);
+            info!(
+                "Rejected duplicate connection from node {:X} at {}, keeping existing link",
+                neigh_id, addr
+            );
         }
         Ok(())
     }

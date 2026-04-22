@@ -15,7 +15,8 @@ use cidr::AnyIpCidr;
 use memoize::memoize;
 use p256::ecdh::EphemeralSecret;
 use rustrtc::{
-    IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, IceTransportState, RtcConfiguration,
+    IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, IceTransportState,
+    RtcConfiguration,
     transports::{
         PacketReceiver,
         ice::{IceParameters, IceSocketWrapper},
@@ -26,7 +27,9 @@ use tracing::debug;
 
 use crate::{
     errors::CryonetError,
-    fullmesh::{ConnectionReceiver, ConnectionSender, IceServer, fm_rustrtc_ice::FullMeshIceHandle},
+    fullmesh::{
+        ConnectionReceiver, ConnectionSender, IceServer, fm_rustrtc_ice::FullMeshIceHandle,
+    },
     mesh::packet::NodeId,
 };
 
@@ -56,7 +59,16 @@ pub struct ConnectionRustrtcIce {
 }
 
 impl ConnectionRustrtcIce {
-    pub async fn new(id: NodeId, peer_id: NodeId, fm: FullMeshIceHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool, controlling: bool, ecdh_key: EphemeralSecret) -> Result<(Self, IceParameters, Vec<String>)> {
+    pub async fn new(
+        id: NodeId,
+        peer_id: NodeId,
+        fm: FullMeshIceHandle,
+        ice_servers: Vec<IceServer>,
+        candidate_filter_prefix: Option<AnyIpCidr>,
+        encrypt_local_packets: bool,
+        controlling: bool,
+        ecdh_key: EphemeralSecret,
+    ) -> Result<(Self, IceParameters, Vec<String>)> {
         let (ice, future) = IceTransport::new(RtcConfiguration {
             ice_servers: ice_servers
                 .into_iter()
@@ -167,7 +179,10 @@ impl ConnectionRustrtcIce {
     }
 
     pub async fn selected_candidate(&self) -> Option<String> {
-        self.ice.get_selected_pair().await.map(|pair| pair.remote.to_sdp())
+        self.ice
+            .get_selected_pair()
+            .await
+            .map(|pair| pair.remote.to_sdp())
     }
 
     pub fn sent(&self) -> u64 {
@@ -200,7 +215,10 @@ impl ConnectionRustrtcIce {
             encrypt_local_packets: self.encrypt_local_packets,
             rx,
             key: self.recv_key.subscribe(),
-            aes: [Aes128Gcm::new(&[0u8; 16].into()), Aes128Gcm::new(&[0u8; 16].into())],
+            aes: [
+                Aes128Gcm::new(&[0u8; 16].into()),
+                Aes128Gcm::new(&[0u8; 16].into()),
+            ],
             received: self.received.clone(),
         }
     }
@@ -317,8 +335,10 @@ impl ConnectionReceiver for ConnectionRustrtcIceReceiver {
         if data.len() < 4 {
             anyhow::bail!("Received packet is too short");
         }
-        self.received.fetch_add(data.len() as u64, Ordering::Relaxed);
-        let counter = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) & 0b00011111_11111111_11111111_11111111;
+        self.received
+            .fetch_add(data.len() as u64, Ordering::Relaxed);
+        let counter = u32::from_be_bytes([data[0], data[1], data[2], data[3]])
+            & 0b00011111_11111111_11111111_11111111;
         if counter == 0 {
             // unencrypted packet
             if self.encrypt_local_packets || !is_private(addr) {
