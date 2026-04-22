@@ -27,10 +27,7 @@ use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
 
 use crate::{
     errors::CryonetError,
-    fullmesh::{
-        DeviceManager,
-        conn::{ConnectionReceiver, ConnectionSender},
-    },
+    fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
     mesh::packet::NodeId,
 };
 
@@ -48,7 +45,7 @@ impl TapManager {
 
 #[async_trait]
 impl DeviceManager for TapManager {
-    async fn connected(&mut self, node_id: NodeId, sender: ConnectionSender, receiver: ConnectionReceiver) -> Result<()> {
+    async fn connected(&mut self, node_id: NodeId, sender: Box<dyn ConnectionSender>, receiver: Box<dyn ConnectionReceiver>) -> Result<()> {
         self.handle.connected(node_id, sender, receiver).await?
     }
 
@@ -95,8 +92,8 @@ impl TapManagerInner {
         Ok(handle)
     }
 
-    async fn connected(&mut self, node_id: NodeId, sender: ConnectionSender, receiver: ConnectionReceiver) -> Result<()> {
-        self.send_msg_tx.send(SendLoopMessage::Connected(node_id, Box::new(sender)))?;
+    async fn connected(&mut self, node_id: NodeId, sender: Box<dyn ConnectionSender>, receiver: Box<dyn ConnectionReceiver>) -> Result<()> {
+        self.send_msg_tx.send(SendLoopMessage::Connected(node_id, sender))?;
         let stop_tx = watch::channel(false).0;
         tokio::spawn(recv_loop(self.enable_packet_information, node_id, receiver, self.device.clone(), self.tap_mac, stop_tx.subscribe()));
         self.recv_tasks.insert(node_id, stop_tx);
@@ -127,7 +124,7 @@ impl Drop for TapManagerInner {
 
 enum SendLoopMessage {
     Stop,
-    Connected(NodeId, Box<ConnectionSender>),
+    Connected(NodeId, Box<dyn ConnectionSender>),
     Disconnected(NodeId),
 }
 
@@ -265,7 +262,7 @@ async fn send_loop(enable_packet_information: bool, ips: Arc<Mutex<HashMap<IpAdd
     }
 }
 
-async fn recv_loop(enable_packet_information: bool, peer_id: NodeId, mut receiver: ConnectionReceiver, device: Arc<AsyncDevice>, device_mac: [u8; 6], mut stop: watch::Receiver<bool>) {
+async fn recv_loop(enable_packet_information: bool, peer_id: NodeId, mut receiver: Box<dyn ConnectionReceiver>, device: Arc<AsyncDevice>, device_mac: [u8; 6], mut stop: watch::Receiver<bool>) {
     let peer_mac: [u8; 6] = {
         let mut prefix = vec![device_mac[0], device_mac[1]];
         prefix.extend_from_slice(&peer_id.to_be_bytes());

@@ -9,7 +9,8 @@ use clap_num::maybe_hex;
 use cryonet_lib::{
     connection::ConnManager,
     fullmesh::{
-        DeviceManager, FullMesh, IceServer,
+        DeviceManager, IceServer,
+        fm_rustrtc_ice::FullMeshIce,
         registry::{ConnectionType, Registry},
         tap::TapManager,
         tun::TunManager,
@@ -92,7 +93,7 @@ async fn main() -> Result<()> {
                     Arc::new(Mutex::new(Box::new(TunManager::new(args.interface_prefix, args.enable_packet_information))))
                 };
                 let registry = Registry::new(mesh.clone(), dm.clone(), vec![ConnectionType::Ice, ConnectionType::DataChannel], ips).await?;
-                let fm = FullMesh::new(args.id, mesh.clone(), registry, dm.clone(), args.ice_servers, args.candidate_filter_prefix, args.encrypt_local_packets).await?;
+                let fm = FullMeshIce::new(args.id, mesh.clone(), registry, dm.clone(), args.ice_servers, args.candidate_filter_prefix, args.encrypt_local_packets).await?;
                 let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;
 
                 pending().await

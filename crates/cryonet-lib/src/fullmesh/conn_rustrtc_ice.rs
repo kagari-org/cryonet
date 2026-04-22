@@ -4,14 +4,16 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
-use aes_gcm::{Aes128Gcm, KeyInit, Nonce, aead::Aead};
+use aes_gcm::{Aes128Gcm, Key, KeyInit, Nonce, aead::Aead};
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use cidr::AnyIpCidr;
 use memoize::memoize;
+use p256::ecdh::EphemeralSecret;
 use rustrtc::{
     IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, IceTransportState, RtcConfiguration,
     transports::{
@@ -24,25 +26,37 @@ use tracing::debug;
 
 use crate::{
     errors::CryonetError,
-    fullmesh::{FullMeshHandle, FullMeshKey, IceServer},
+    fullmesh::{ConnectionReceiver, ConnectionSender, IceServer, fm_rustrtc_ice::FullMeshIceHandle},
     mesh::packet::NodeId,
 };
 
-pub struct Connection {
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectionRustrtcIceKey {
+    pub index: bool,
+    pub key: Key<Aes128Gcm>,
+}
+
+pub struct ConnectionRustrtcIce {
     id: NodeId,
     peer_id: NodeId,
     ice: IceTransport,
     candidate_filter_prefix: Option<AnyIpCidr>,
     encrypt_local_packets: bool,
-    send_key: watch::Sender<Option<FullMeshKey>>,
-    recv_key: watch::Sender<Option<FullMeshKey>>,
+    send_key: watch::Sender<Option<ConnectionRustrtcIceKey>>,
+    recv_key: watch::Sender<Option<ConnectionRustrtcIceKey>>,
 
     sent: Arc<AtomicU64>,
     received: Arc<AtomicU64>,
+
+    // for fm
+    pub last_rekey: Instant,
+    pub last_received: (u64, Instant),
+    pub once_connected: bool,
+    pub ecdh_key: EphemeralSecret,
 }
 
-impl Connection {
-    pub async fn new(id: NodeId, peer_id: NodeId, fm: FullMeshHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool, controlling: bool) -> Result<(Self, IceParameters, Vec<String>)> {
+impl ConnectionRustrtcIce {
+    pub async fn new(id: NodeId, peer_id: NodeId, fm: FullMeshIceHandle, ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>, encrypt_local_packets: bool, controlling: bool, ecdh_key: EphemeralSecret) -> Result<(Self, IceParameters, Vec<String>)> {
         let (ice, future) = IceTransport::new(RtcConfiguration {
             ice_servers: ice_servers
                 .into_iter()
@@ -98,7 +112,7 @@ impl Connection {
         let candidates = candidates.into_iter().map(|c| c.to_sdp()).collect();
 
         Ok((
-            Connection {
+            ConnectionRustrtcIce {
                 id,
                 peer_id,
                 ice,
@@ -108,6 +122,11 @@ impl Connection {
                 recv_key: watch::channel(None).0,
                 sent: Arc::new(AtomicU64::new(0)),
                 received: Arc::new(AtomicU64::new(0)),
+
+                last_rekey: Instant::now(),
+                last_received: (0, Instant::now()),
+                ecdh_key,
+                once_connected: false,
             },
             local_parameters,
             candidates,
@@ -131,15 +150,15 @@ impl Connection {
         }
     }
 
-    pub fn set_recv_key(&self, key: FullMeshKey) {
+    pub fn set_recv_key(&self, key: ConnectionRustrtcIceKey) {
         self.recv_key.send_replace(Some(key));
     }
 
-    pub fn set_send_key(&self, key: FullMeshKey) {
+    pub fn set_send_key(&self, key: ConnectionRustrtcIceKey) {
         self.send_key.send_replace(Some(key));
     }
 
-    pub fn key(&self) -> Option<FullMeshKey> {
+    pub fn key(&self) -> Option<ConnectionRustrtcIceKey> {
         *self.send_key.borrow()
     }
 
@@ -159,8 +178,8 @@ impl Connection {
         self.received.load(Ordering::Relaxed)
     }
 
-    pub fn sender(&self) -> ConnectionSender {
-        ConnectionSender {
+    pub fn sender(&self) -> ConnectionRustrtcIceSender {
+        ConnectionRustrtcIceSender {
             id: self.id,
             peer_id: self.peer_id,
             encrypt_local_packets: self.encrypt_local_packets,
@@ -174,10 +193,10 @@ impl Connection {
         }
     }
 
-    pub async fn receiver(&self) -> ConnectionReceiver {
+    pub async fn receiver(&self) -> ConnectionRustrtcIceReceiver {
         let (tx, rx) = mpsc::channel(16384);
         self.ice.set_data_receiver(Arc::new(MpscSender(tx))).await;
-        ConnectionReceiver {
+        ConnectionRustrtcIceReceiver {
             encrypt_local_packets: self.encrypt_local_packets,
             rx,
             key: self.recv_key.subscribe(),
@@ -187,27 +206,28 @@ impl Connection {
     }
 }
 
-impl Drop for Connection {
+impl Drop for ConnectionRustrtcIce {
     fn drop(&mut self) {
         self.ice.stop();
     }
 }
 
-pub struct ConnectionSender {
+pub struct ConnectionRustrtcIceSender {
     id: NodeId,
     peer_id: NodeId,
     encrypt_local_packets: bool,
     socket: watch::Receiver<Option<IceSocketWrapper>>,
     pair: watch::Receiver<Option<IceCandidatePair>>,
-    key: watch::Receiver<Option<FullMeshKey>>,
+    key: watch::Receiver<Option<ConnectionRustrtcIceKey>>,
     aes: Aes128Gcm,
     counter: u32,
 
     sent: Arc<AtomicU64>,
 }
 
-impl ConnectionSender {
-    pub async fn send(&mut self, data: Bytes) -> Result<usize> {
+#[async_trait]
+impl ConnectionSender for ConnectionRustrtcIceSender {
+    async fn send(&mut self, data: Bytes) -> Result<usize> {
         let socket = self.socket.borrow().clone();
         let pair = self.pair.borrow().clone();
         if let Some(socket) = socket
@@ -263,11 +283,11 @@ impl ConnectionSender {
 
 pub struct MpscSender(mpsc::Sender<(Bytes, SocketAddr)>);
 
-pub struct ConnectionReceiver {
+pub struct ConnectionRustrtcIceReceiver {
     encrypt_local_packets: bool,
 
     rx: mpsc::Receiver<(Bytes, SocketAddr)>,
-    key: watch::Receiver<Option<FullMeshKey>>,
+    key: watch::Receiver<Option<ConnectionRustrtcIceKey>>,
     aes: [Aes128Gcm; 2],
 
     received: Arc<AtomicU64>,
@@ -282,8 +302,9 @@ impl PacketReceiver for MpscSender {
     }
 }
 
-impl ConnectionReceiver {
-    pub async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
+#[async_trait]
+impl ConnectionReceiver for ConnectionRustrtcIceReceiver {
+    async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
         if self.key.has_changed()? {
             let key = self.key.borrow_and_update().unwrap();
             if key.index {

@@ -13,10 +13,7 @@ use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::{
     errors::CryonetError,
-    fullmesh::{
-        DeviceManager,
-        conn::{ConnectionReceiver, ConnectionSender},
-    },
+    fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
     mesh::packet::NodeId,
 };
 
@@ -66,7 +63,7 @@ impl TunManager {
 
 #[async_trait]
 impl DeviceManager for TunManager {
-    async fn connected(&mut self, node_id: NodeId, sender: ConnectionSender, receiver: ConnectionReceiver) -> Result<()> {
+    async fn connected(&mut self, node_id: NodeId, sender: Box<dyn ConnectionSender>, receiver: Box<dyn ConnectionReceiver>) -> Result<()> {
         if let Some(stop) = self.tasks.remove(&node_id) {
             let _ = stop.send(true);
         }
@@ -99,7 +96,7 @@ impl DeviceManager for TunManager {
     }
 }
 
-async fn send_loop(node_id: NodeId, mut sender: ConnectionSender, device: Arc<AsyncDevice>, mut stop: watch::Receiver<bool>) {
+async fn send_loop(node_id: NodeId, mut sender: Box<dyn ConnectionSender>, device: Arc<AsyncDevice>, mut stop: watch::Receiver<bool>) {
     let mut buf = [0u8; 2000];
     loop {
         select! {
@@ -121,7 +118,7 @@ async fn send_loop(node_id: NodeId, mut sender: ConnectionSender, device: Arc<As
     }
 }
 
-async fn recv_loop(node_id: NodeId, mut receiver: ConnectionReceiver, device: Arc<AsyncDevice>, mut stop: watch::Receiver<bool>) {
+async fn recv_loop(node_id: NodeId, mut receiver: Box<dyn ConnectionReceiver>, device: Arc<AsyncDevice>, mut stop: watch::Receiver<bool>) {
     loop {
         select! {
             _ = stop.changed() => break,

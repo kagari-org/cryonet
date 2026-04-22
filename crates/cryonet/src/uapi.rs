@@ -2,7 +2,7 @@ use std::{any::Any, collections::HashMap, io, path::PathBuf, time::Duration};
 
 use anyhow::{Error, Result};
 use cryonet_lib::{
-    fullmesh::FullMeshHandle,
+    fullmesh::fm_rustrtc_ice::FullMeshIceHandle,
     mesh::{
         MeshHandle,
         igp::IgpHandle,
@@ -26,7 +26,7 @@ pub struct Uapi {
 
     mesh: MeshHandle,
     igp: IgpHandle,
-    fm: FullMeshHandle,
+    fm: FullMeshIceHandle,
 
     socket: UnixDatagram,
     buf: [u8; 1024],
@@ -47,11 +47,11 @@ enum UapiPayload {
 
 #[sactor(pub)]
 impl Uapi {
-    pub async fn new(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshHandle, path: PathBuf) -> Result<UapiHandle> {
+    pub async fn new(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshIceHandle, path: PathBuf) -> Result<UapiHandle> {
         Self::new_with_parameters(mesh, igp, fm, path, Duration::from_secs(30), Duration::from_secs(60)).await
     }
 
-    pub async fn new_with_parameters(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshHandle, path: PathBuf, gc_interval: Duration, ping_timeout: Duration) -> Result<UapiHandle> {
+    pub async fn new_with_parameters(mesh: MeshHandle, igp: IgpHandle, fm: FullMeshIceHandle, path: PathBuf, gc_interval: Duration, ping_timeout: Duration) -> Result<UapiHandle> {
         let _ = remove_file(&path).await;
         let socket = UnixDatagram::bind(path).unwrap();
         let packet_rx = mesh.add_dispatchee(Box::new(|packet| (packet.payload.as_ref() as &dyn Any).is::<UapiPayload>())).await?;
