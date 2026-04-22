@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::mesh::packet::NodeId;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod conn_rustrtc_dc;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod conn_rustrtc_ice;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fm_rustrtc_ice;
