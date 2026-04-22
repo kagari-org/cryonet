@@ -59,6 +59,7 @@ pub struct ConnectionRustrtcIce {
 }
 
 impl ConnectionRustrtcIce {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         id: NodeId,
         peer_id: NodeId,

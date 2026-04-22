@@ -338,20 +338,20 @@ async fn recv_loop(
                         }
                     }
                 };
-                let (payload, protocol, len) = if enable_packet_information {
+                let (payload, ethertype, len) = if enable_packet_information {
                     if packet.len() < 4 {
                         warn!("Received packet with insufficient length for packet information from node {:X}", peer_id);
                         continue;
                     }
-                    let protocol = u16::from_be_bytes([packet[2], packet[3]]);
-                    (&packet[4..], protocol, packet.len() - 4)
+                    let ethertype = EtherType::new(u16::from_be_bytes([packet[2], packet[3]]));
+                    (&packet[4..], ethertype, packet.len() - 4)
                 } else {
                     // assume IPv4 or IPv6
-                    let protocol = packet[0] >> 4;
-                    (&packet[..], protocol as u16, packet.len())
+                    let ethertype = if packet[0] >> 4 == 4 { EtherTypes::Ipv4 } else { EtherTypes::Ipv6 };
+                    (&packet[..], ethertype, packet.len())
                 };
                 let mut ethernet = MutableEthernetPacket::new(&mut buf).unwrap();
-                ethernet.set_ethertype(EtherType::new(protocol));
+                ethernet.set_ethertype(ethertype);
                 ethernet.set_source(peer_mac.into());
                 ethernet.set_destination(device_mac.into());
                 ethernet.set_payload(payload);
