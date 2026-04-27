@@ -39,7 +39,7 @@ impl TunManager {
         let create_device = || -> Result<AsyncDevice> {
             let mut builder = DeviceBuilder::new()
                 .mtu(1280)
-                .name(format!("{}{:X}", self.interface_prefix, node_id))
+                .name(format!("{}{node_id:X}", self.interface_prefix))
                 .enable(true);
             if self.enable_packet_information {
                 builder = builder.packet_information(true);
@@ -118,13 +118,13 @@ async fn send_loop(
                 let size = match res {
                     Ok(s) => s,
                     Err(err) => {
-                        error!("Failed to read from TUN device for node {:X}: {}", node_id, err);
+                        error!("Failed to read from TUN device for node {node_id:X}: {err}");
                         continue;
                     }
                 };
                 let bytes = Bytes::copy_from_slice(&buf[..size]);
                 if let Err(err) = sender.send(bytes).await {
-                    error!("Failed to send to node {:X}: {}", node_id, err);
+                    error!("Failed to send to node {node_id:X}: {err}");
                 }
             }
         }
@@ -146,13 +146,13 @@ async fn recv_loop(
                     Err(err) => match err.downcast_ref::<CryonetError>() {
                         Some(CryonetError::ChannelClosed) => break,
                         _ => {
-                            error!("Failed to receive from node {:X}: {}", node_id, err);
+                            error!("Failed to receive from node {node_id:X}: {err}");
                             continue;
                         }
                     }
                 };
                 if let Err(err) = device.send(&packet).await {
-                    error!("Failed to write to TUN device for node {:X}: {}", node_id, err);
+                    error!("Failed to write to TUN device for node {node_id:X}: {err}");
                 }
             }
         }

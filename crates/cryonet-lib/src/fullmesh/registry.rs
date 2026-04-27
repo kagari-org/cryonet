@@ -163,8 +163,8 @@ impl Registry {
                 .mesh
                 .send_packet(peer, Box::new(RegistryPayload::Node(node.clone())))
                 .await;
-            if let Err(e) = result {
-                error!("Failed to send registry packet to {}: {:?}", peer, e);
+            if let Err(err) = result {
+                error!("Failed to send registry packet to {peer}: {err:?}");
             }
         }
         Ok(())

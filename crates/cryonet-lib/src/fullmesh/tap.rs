@@ -200,7 +200,7 @@ async fn send_loop(
                         }
                     },
                     Err(err) => {
-                        error!("Failed to read from TAP device: {}", err);
+                        error!("Failed to read from TAP device: {err}");
                         continue;
                     }
                 };
@@ -224,7 +224,7 @@ async fn send_loop(
                             }
                             bytes.extend_from_slice(payload);
                             if let Err(err) = sender.send(bytes.freeze()).await {
-                                error!("Failed to send packet to node {:X}: {}", node_id, err);
+                                error!("Failed to send packet to node {node_id:X}: {err}");
                             }
                         }
                         continue;
@@ -239,7 +239,7 @@ async fn send_loop(
                         let src_mac: [u8; 6] = {
                             let ips = ips.lock().await;
                             let Some((node_id, _)) = ips.get(&IpAddr::V4(src_ip)) else {
-                                warn!("Received ARP packet for unknown IP address: {}", src_ip);
+                                warn!("Received ARP packet for unknown IP address: {src_ip}");
                                 continue;
                             };
                             let mut src_mac = vec![device_mac[0], device_mac[1]];
@@ -250,7 +250,7 @@ async fn send_loop(
                         let dst_mac = device_mac;
                         // send ARP reply
                         if let Err(err) = send_arp_reply(&device, src_mac, dst_mac, src_ip, dst_ip).await {
-                            error!("Failed to send ARP reply for IP {}: {}", src_ip, err);
+                            error!("Failed to send ARP reply for IP {src_ip}: {err}");
                         }
                     }
                     if ndp {
@@ -264,7 +264,7 @@ async fn send_loop(
                         let src_mac: [u8; 6] = {
                             let ips = ips.lock().await;
                             let Some((node_id, _)) = ips.get(&IpAddr::V6(src_ip)) else {
-                                warn!("Received NDP Neighbor Solicitation packet for unknown IP address: {}", src_ip);
+                                warn!("Received NDP Neighbor Solicitation packet for unknown IP address: {src_ip}");
                                 continue;
                             };
                             let mut src_mac = vec![device_mac[0], device_mac[1]];
@@ -275,13 +275,13 @@ async fn send_loop(
                         let dst_mac = device_mac;
                         // send na
                         if let Err(err) = send_ndp_na(&device, src_mac, dst_mac, src_ip, dst_ip).await {
-                            error!("Failed to send NDP Neighbor Advertisement for IP {}: {}", src_ip, err);
+                            error!("Failed to send NDP Neighbor Advertisement for IP {src_ip}: {err}");
                         }
                     }
                     continue;
                 }
                 if !(dst_mac.0 == device_mac[0] && dst_mac.1 == device_mac[1]) {
-                    warn!("Received Ethernet packet with unexpected destination MAC: {}", dst_mac);
+                    warn!("Received Ethernet packet with unexpected destination MAC: {dst_mac}");
                     continue;
                 }
                 // unicast
@@ -292,7 +292,7 @@ async fn send_loop(
                 // TODO: drop packets other than IPv4, IPv6 and MPLS?
                 let node_id = u32::from_be_bytes([dst_mac.2, dst_mac.3, dst_mac.4, dst_mac.5]);
                 let Some(sender) = senders.get_mut(&node_id) else {
-                    warn!("Received Ethernet packet for unknown node ID {:X}", node_id);
+                    warn!("Received Ethernet packet for unknown node ID {node_id:X}");
                     continue;
                 };
                 let payload = packet.payload();
@@ -303,7 +303,7 @@ async fn send_loop(
                 }
                 bytes.extend_from_slice(payload);
                 if let Err(err) = sender.send(bytes.freeze()).await {
-                    error!("Failed to send packet to node {:X}: {}", node_id, err);
+                    error!("Failed to send packet to node {node_id:X}: {err}");
                 }
             }
         }
@@ -333,14 +333,14 @@ async fn recv_loop(
                     Err(err) => match err.downcast_ref::<CryonetError>() {
                         Some(CryonetError::ChannelClosed) => break,
                         _ => {
-                            error!("Failed to receive from node {:X}: {}", peer_id, err);
+                            error!("Failed to receive from node {peer_id:X}: {err}");
                             continue;
                         }
                     }
                 };
                 let (payload, ethertype, len) = if enable_packet_information {
                     if packet.len() < 4 {
-                        warn!("Received packet with insufficient length for packet information from node {:X}", peer_id);
+                        warn!("Received packet with insufficient length for packet information from node {peer_id:X}");
                         continue;
                     }
                     let ethertype = EtherType::new(u16::from_be_bytes([packet[2], packet[3]]));
@@ -357,7 +357,7 @@ async fn recv_loop(
                 ethernet.set_payload(payload);
                 // 14 is the size of the Ethernet header
                 if let Err(err) = device.send(&buf[..(len + 14)]).await {
-                    error!("Failed to write to TAP device for node {:X}: {}", peer_id, err);
+                    error!("Failed to write to TAP device for node {peer_id:X}: {err}");
                 }
             }
         }

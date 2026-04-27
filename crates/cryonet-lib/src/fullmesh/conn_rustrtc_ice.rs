@@ -95,7 +95,7 @@ impl ConnectionRustrtcIce {
                     _ => {}
                 }
                 if let Err(err) = state.changed().await {
-                    debug!("ICE state change error: {}", err);
+                    debug!("ICE state change error: {err}");
                     break;
                 }
             }
@@ -320,7 +320,7 @@ pub struct ConnectionRustrtcIceReceiver {
 impl PacketReceiver for MpscSender {
     async fn receive(&self, packet: Bytes, addr: SocketAddr) {
         if let Err(err) = self.0.send((packet, addr)).await {
-            debug!("Failed to send received packet to channel: {}", err);
+            debug!("Failed to send received packet to channel: {err}");
         }
     }
 }
@@ -347,7 +347,7 @@ impl ConnectionReceiver for ConnectionRustrtcIceReceiver {
         if counter == 0 {
             // unencrypted packet
             if self.encrypt_local_packets || !is_private(addr) {
-                anyhow::bail!("Received unexpected unencrypted packet from {}", addr);
+                anyhow::bail!("Received unexpected unencrypted packet from {addr}");
             }
             return Ok((data.slice(4..), addr));
         }

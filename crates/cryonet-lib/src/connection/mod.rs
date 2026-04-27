@@ -80,7 +80,7 @@ impl ConnManager {
         #[cfg(not(target_arch = "wasm32"))]
         let listener = {
             let listener = TcpListener::bind(listen).await?;
-            info!("Listening on {}", listen);
+            info!("Listening on {listen}");
             listener
         };
         let (future, mgr) = ConnManager::run(move |_| ConnManager {
@@ -130,7 +130,7 @@ impl ConnManager {
                 if let Err(err) =
                     Self::connect_task(id, mesh, token, servers_map, server.clone()).await
                 {
-                    warn!("Failed to connect to server {}: {}", server, err);
+                    warn!("Failed to connect to server {server}: {err}");
                 }
                 connecting.lock().await.remove(&server);
             });
@@ -155,7 +155,7 @@ impl ConnManager {
             }
         }
 
-        info!("Connecting to server {} ...", server);
+        info!("Connecting to server {server} ...");
         let client = reqwest::Client::new();
         let mut ws = client
             .get(&server)
@@ -175,10 +175,7 @@ impl ConnManager {
             node_id: neigh_id, ..
         } = match ws.next().await {
             Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
-            _ => bail!(
-                "Failed to receive authentication response from server {}",
-                server
-            ),
+            _ => bail!("Failed to receive authentication response from server {server}",),
         };
         servers_map.lock().await.insert(server.clone(), neigh_id);
 
@@ -187,11 +184,10 @@ impl ConnManager {
             .add_link(neigh_id, Box::new(sink), Box::new(stream), true)
             .await?;
         if added {
-            info!("Connected to server {} (node {:X})", server, neigh_id);
+            info!("Connected to server {server} (node {neigh_id:X})");
         } else {
             info!(
-                "Rejected duplicate connection to {} (node {:X}), keeping existing link",
-                server, neigh_id
+                "Rejected duplicate connection to {server} (node {neigh_id:X}), keeping existing link"
             );
         }
         Ok(())
@@ -212,7 +208,7 @@ impl ConnManager {
     async fn accept_internal(&mut self, param: AcceptParam) -> Result<()> {
         use tokio_tungstenite::tungstenite::Message;
         let (stream, addr) = param?;
-        info!("Accepted connection from {}", addr);
+        info!("Accepted connection from {addr}");
         let mut ws = accept_async(stream).await?;
         ws.send(Message::Binary(Bytes::from(serde_json::to_vec(
             &AuthPacket {
@@ -226,20 +222,14 @@ impl ConnManager {
             node_id: neigh_id,
         } = match ws.next().await {
             Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
-            _ => bail!(
-                "Failed to receive authentication response from connection at {}",
-                addr
-            ),
+            _ => bail!("Failed to receive authentication response from connection at {addr}",),
         };
         if let Some(token) = &self.token {
             match neigh_token {
                 Some(neigh_token) if neigh_token == *token => {}
                 _ => {
                     let _ = ws.close(None).await;
-                    bail!(
-                        "Connection from {} provided invalid authentication token",
-                        addr
-                    );
+                    bail!("Connection from {addr} provided invalid authentication token",);
                 }
             }
         }
@@ -249,14 +239,10 @@ impl ConnManager {
             .add_link(neigh_id, Box::new(sink), Box::new(stream), false)
             .await?;
         if added {
-            info!(
-                "Accepted new connection from node {:X} at {}",
-                neigh_id, addr
-            );
+            info!("Accepted new connection from node {neigh_id:X} at {addr}");
         } else {
             info!(
-                "Rejected duplicate connection from node {:X} at {}, keeping existing link",
-                neigh_id, addr
+                "Rejected duplicate connection from node {neigh_id:X} at {addr}, keeping existing link",
             );
         }
         Ok(())
@@ -269,6 +255,6 @@ impl ConnManager {
 
     #[handle_error]
     async fn handle_error(&mut self, err: &Error) {
-        error!("Error: {:?}", err);
+        error!("Error: {err:?}");
     }
 }

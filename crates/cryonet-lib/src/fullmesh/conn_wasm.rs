@@ -157,7 +157,7 @@ impl PeerConn {
     }
 
     pub async fn add_ice_candidate(&self, candidate: String) -> Result<()> {
-        let candidate = format!("candidate:{}", candidate);
+        let candidate = format!("candidate:{candidate}");
         let candidate = RtcIceCandidateInit::new(&candidate);
         candidate.set_sdp_m_line_index(Some(0));
         JsFuture::from(self.peer.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&candidate))).await.map_err(map_err)?;
@@ -187,5 +187,5 @@ pub type PeerConnSender = RtcDataChannel;
 pub type PeerConnReceiver = RtcDataChannel;
 
 fn map_err(error: JsValue) -> Error {
-    anyhow!("{:?}", error)
+    anyhow!("{error:?}")
 }

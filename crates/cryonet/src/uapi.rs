@@ -203,7 +203,7 @@ impl Uapi {
                     .await?;
                 self.ping.insert(uuid, (path, instant));
             }
-            _ => error!("Unexpected uapi command: {:?}, dropping", cmd),
+            _ => error!("Unexpected uapi command: {cmd:?}, dropping"),
         };
         Ok(())
     }
@@ -214,10 +214,7 @@ impl Uapi {
         let ping_timeout = self.ping_timeout;
         self.ping.retain(|uuid, (_, instant)| {
             if now.duration_since(*instant) > ping_timeout {
-                debug!(
-                    "Removing expired ping with uuid {}, sent at {:?}",
-                    uuid, instant
-                );
+                debug!("Removing expired ping with uuid {uuid}, sent at {instant:?}",);
                 false
             } else {
                 true
@@ -228,6 +225,6 @@ impl Uapi {
 
     #[handle_error]
     fn handle_error(&mut self, err: &Error) {
-        error!("Error: {:?}", err);
+        error!("Error: {err:?}");
     }
 }

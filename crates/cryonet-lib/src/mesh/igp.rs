@@ -216,10 +216,7 @@ impl Igp {
                 }
                 Entry::Vacant(vacant_entry) => {
                     vacant_entry.insert((route.metric, Instant::now() + self.source_timeout));
-                    warn!(
-                        "Missing source for node {:X} during RouteDump, inserting",
-                        dst
-                    );
+                    warn!("Missing source for node {dst:X} during RouteDump, inserting");
                 }
             }
             let update = generate_update(route);
@@ -279,15 +276,12 @@ impl Igp {
             IgpPayload::HelloReply { seq } => {
                 let time = Instant::now();
                 let Entry::Occupied(mut cost) = self.costs.entry(src) else {
-                    warn!("Received unexpected HelloReply from node {:X}", src);
+                    warn!("Received unexpected HelloReply from node {src:X}");
                     return Ok(());
                 };
                 let cost = cost.get_mut();
                 if cost.seq != *seq {
-                    debug!(
-                        "Ignoring HelloReply with mismatched seq {:?} from node {:X}",
-                        seq, src
-                    );
+                    debug!("Ignoring HelloReply with mismatched seq {seq:?} from node {src:X}");
                     return Ok(());
                 }
                 let rtt = time.duration_since(cost.start).as_millis() + 100;
@@ -337,15 +331,14 @@ impl Igp {
                     Some((_, route)) => {
                         if route.metric.metric == u32::MAX {
                             debug!(
-                                "Route to node {:X} is unreachable, dropping SequenceRequest",
-                                dst
+                                "Route to node {dst:X} is unreachable, dropping SequenceRequest"
                             );
                             return Ok(());
                         }
                         route
                     }
                     None => {
-                        debug!("No route to node {:X}, dropping SequenceRequest", dst);
+                        debug!("No route to node {dst:X}, dropping SequenceRequest");
                         return Ok(());
                     }
                 };
@@ -365,16 +358,13 @@ impl Igp {
                 }
                 // forward the request
                 if *ttl == 0 {
-                    debug!("SequenceRequest to node {:X} expired: TTL=0", dst);
+                    debug!("SequenceRequest to node {dst:X} expired: TTL=0");
                     return Ok(());
                 }
                 let source = match self.sources.get(dst) {
                     Some(source) => source,
                     None => {
-                        warn!(
-                            "Missing source for node {:X}, dropping SequenceRequest",
-                            dst
-                        );
+                        warn!("Missing source for node {dst:X}, dropping SequenceRequest",);
                         return Ok(());
                     }
                 };
@@ -384,8 +374,7 @@ impl Igp {
                     && Instant::now() < existing_request.expiry
                 {
                     debug!(
-                        "Suppressing duplicate SequenceRequest for node {:X} with seq {:?}",
-                        dst, seq
+                        "Suppressing duplicate SequenceRequest for node {dst:X} with seq {seq:?}"
                     );
                     return Ok(());
                 }
@@ -436,10 +425,7 @@ impl Igp {
                     self.mesh.send_packet_link(route.from, payload).await?;
                     return Ok(());
                 }
-                debug!(
-                    "No alternative route to node {:X}, dropping SequenceRequest",
-                    dst
-                );
+                debug!("No alternative route to node {dst:X}, dropping SequenceRequest");
             }
 
             IgpPayload::Update { metric, dst } => {
@@ -481,7 +467,7 @@ impl Igp {
                         let source = match source {
                             Some(source) => source,
                             None => {
-                                warn!("Missing source for node {:X}, dropping Update", dst);
+                                warn!("Missing source for node {dst:X}, dropping Update");
                                 return Ok(());
                             }
                         };
@@ -599,8 +585,7 @@ impl Igp {
                             && Instant::now() < existing_request.expiry
                         {
                             debug!(
-                                "Suppressing duplicate SequenceRequest for node {:X} with seq {:?}",
-                                dst, seq
+                                "Suppressing duplicate SequenceRequest for node {dst:X} with seq {seq:?}"
                             );
                             continue;
                         }
@@ -665,7 +650,7 @@ impl Igp {
 
     #[handle_error]
     fn handle_error(&mut self, err: &Error) {
-        error!("Error: {:?}", err);
+        error!("Error: {err:?}");
     }
 }
 

@@ -91,12 +91,12 @@ impl Mesh {
             }
             res => res?,
         };
-        debug!("Received packet: {:?}", packet);
+        debug!("Received packet: {packet:?}");
         if packet.dst == self.id {
             for (filter, dispatch) in self.dispatchees.iter() {
                 if filter(&packet) {
                     if let Err(err) = dispatch.try_send(packet) {
-                        warn!("Failed to dispatch packet to handler: {}", err);
+                        warn!("Failed to dispatch packet to handler: {err}");
                     }
                     break;
                 }
@@ -121,8 +121,8 @@ impl Mesh {
             return Err(CryonetError::Unreachable(packet.dst).into());
         };
         debug!(
-            "Sending packet {:?} to {:X} via link {:X}",
-            &packet, packet.dst, next_hop
+            "Sending packet {packet:?} to {:X} via link {next_hop:X}",
+            packet.dst,
         );
         let res = link.send(packet).await;
         if let Err(LinkError::Closed) = res {
@@ -154,7 +154,7 @@ impl Mesh {
             ttl: 16,
             payload,
         };
-        debug!("Sending packet {:?} to {:X} via direct link", &packet, dst);
+        debug!("Sending packet {packet:?} to {dst:X} via direct link");
         let res = link.send(packet).await;
         if let Err(LinkError::Closed) = res {
             self.remove_link(dst);
@@ -165,7 +165,7 @@ impl Mesh {
 
     #[no_reply]
     pub async fn broadcast_packet_local(&mut self, payload: Box<dyn Payload>) -> Result<()> {
-        debug!("Broadcasting packet {:?} to all links", &payload);
+        debug!("Broadcasting packet {payload:?} to all links");
         let futures = self
             .link_send
             .iter_mut()
@@ -223,14 +223,14 @@ impl Mesh {
             let keep_new = is_initiator == (self.id < dst);
             if !keep_new {
                 debug!(
-                    "Link to node {:X} already exists, keeping existing (is_initiator={}, our id {:X}, dst {:X})",
-                    dst, is_initiator, self.id, dst
+                    "Link to node {dst:X} already exists, keeping existing (is_initiator={is_initiator}, our id {:X}, dst {dst:X})",
+                    self.id,
                 );
                 return false;
             }
             debug!(
-                "Link to node {:X} already exists, replacing (is_initiator={}, our id {:X}, dst {:X})",
-                dst, is_initiator, self.id, dst
+                "Link to node {dst:X} already exists, replacing (is_initiator={is_initiator}, our id {:X}, dst {dst:X})",
+                self.id,
             );
             self.remove_link(dst);
         }
@@ -260,7 +260,7 @@ impl Mesh {
     }
 
     pub fn remove_link(&mut self, dst: NodeId) {
-        debug!("Removing link to node {:X}", dst);
+        debug!("Removing link to node {dst:X}");
         self.routes.retain(|_, &mut v| v != dst);
         self.link_send.remove(&dst);
         let ctrl = self.link_recv_stop.remove(&dst);
@@ -280,19 +280,16 @@ impl Mesh {
             return;
         }
         if !self.link_send.contains_key(&next_hop) {
-            warn!(
-                "Cannot set route to node {:X}: next hop {:X} does not exist",
-                dst, next_hop
-            );
+            warn!("Cannot set route to node {dst:X}: next hop {next_hop:X} does not exist");
             return;
         }
-        debug!("Setting route: {:X} via {:X}", dst, next_hop);
+        debug!("Setting route: {dst:X} via {next_hop:X}");
         self.routes.insert(dst, next_hop);
         let _ = self.mesh_event_tx.send(MeshEvent::RouteSet(dst, next_hop));
     }
 
     pub fn remove_route(&mut self, dst: NodeId) {
-        debug!("Removing route to node {:X}", dst);
+        debug!("Removing route to node {dst:X}");
         let route = self.routes.remove(&dst);
         if let Some(next_hop) = route {
             let _ = self
@@ -311,7 +308,7 @@ impl Mesh {
 
     #[handle_error]
     fn handle_error(&mut self, err: &Error) {
-        error!("Error: {:?}", err);
+        error!("Error: {err:?}");
     }
 }
 

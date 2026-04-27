@@ -234,8 +234,7 @@ impl FullMeshIce {
                 } else {
                     let Some(conn) = self.connections.get_mut(&src) else {
                         warn!(
-                            "Received shake from peer {:X} but no connection exists, ignoring",
-                            src
+                            "Received shake from peer {src:X} but no connection exists, ignoring"
                         );
                         return Ok(());
                     };
@@ -255,8 +254,7 @@ impl FullMeshIce {
                         .downcast_mut::<ConnectionRustrtcIce>()
                     else {
                         warn!(
-                            "Received shake from peer {:X} but connection is not ConnectionRustrtcIce, ignoring",
-                            src
+                            "Received shake from peer {src:X} but connection is not ConnectionRustrtcIce, ignoring",
                         );
                         return Ok(());
                     };
@@ -268,10 +266,7 @@ impl FullMeshIce {
             }
             FullMeshPayload::Rekey { index, public_key } => {
                 let Some(conn) = self.connections.get_mut(&src) else {
-                    warn!(
-                        "Received rekey from peer {:X} but no connection exists, ignoring",
-                        src
-                    );
+                    warn!("Received rekey from peer {src:X} but no connection exists, ignoring");
                     return Ok(());
                 };
                 let Some(connection) = conn
@@ -280,8 +275,7 @@ impl FullMeshIce {
                     .downcast_mut::<ConnectionRustrtcIce>()
                 else {
                     warn!(
-                        "Received rekey from peer {:X} but connection is not ConnectionRustrtcIce, ignoring",
-                        src
+                        "Received rekey from peer {src:X} but connection is not ConnectionRustrtcIce, ignoring",
                     );
                     return Ok(());
                 };
@@ -337,8 +331,7 @@ impl FullMeshIce {
             FullMeshPayload::RekeyConfirm { index, public_key } => {
                 let Some(conn) = self.connections.get_mut(&src) else {
                     warn!(
-                        "Received rekey ack from peer {:X} but no connection exists, ignoring",
-                        src
+                        "Received rekey ack from peer {src:X} but no connection exists, ignoring",
                     );
                     return Ok(());
                 };
@@ -348,8 +341,7 @@ impl FullMeshIce {
                     .downcast_mut::<ConnectionRustrtcIce>()
                 else {
                     warn!(
-                        "Received rekey ack from peer {:X} but connection is not ConnectionRustrtcIce, ignoring",
-                        src
+                        "Received rekey ack from peer {src:X} but connection is not ConnectionRustrtcIce, ignoring",
                     );
                     return Ok(());
                 };
@@ -394,10 +386,7 @@ impl FullMeshIce {
             }
             FullMeshPayload::Answer { sdp, candidates } => {
                 let Some(connection) = self.connections.get_mut(&src) else {
-                    warn!(
-                        "Received answer from peer {:X} but no connection exists, ignoring",
-                        src
-                    );
+                    warn!("Received answer from peer {src:X} but no connection exists, ignoring");
                     return Ok(());
                 };
                 let Some(connection) = connection
@@ -406,8 +395,7 @@ impl FullMeshIce {
                     .downcast_mut::<ConnectionRustrtcDataChannel>()
                 else {
                     warn!(
-                        "Received answer from peer {:X} but connection is not ConnectionRustrtcDataChannel, ignoring",
-                        src
+                        "Received answer from peer {src:X} but connection is not ConnectionRustrtcDataChannel, ignoring",
                     );
                     return Ok(());
                 };
@@ -440,7 +428,7 @@ impl FullMeshIce {
         {
             let mut dm = self.dm.lock().await;
             for node_id in disconnected {
-                debug!("Connection to peer {:X} timed out, disconnecting", node_id);
+                debug!("Connection to peer {node_id:X} timed out, disconnecting");
                 dm.disconnected(node_id).await?;
             }
             // mark connected
@@ -480,7 +468,7 @@ impl FullMeshIce {
             let Some(key) = connection.key() else {
                 continue;
             };
-            info!("Rekeying connection to peer {:X}", peer_id);
+            info!("Rekeying connection to peer {peer_id:X}");
             let new_ecdh_key = EphemeralSecret::generate();
             let new_public_key = new_ecdh_key.public_key();
             conn.ecdh_key = new_ecdh_key;
@@ -539,7 +527,7 @@ impl FullMeshIce {
                         .await?;
                 };
                 if let Err(err) = result {
-                    error!("Failed to connect to peer {:X}: {:?}", peer_id, err);
+                    error!("Failed to connect to peer {peer_id:X}: {err:?}");
                 }
             } else {
                 let result: Result<()> = try {
@@ -570,7 +558,7 @@ impl FullMeshIce {
                         .await?;
                 };
                 if let Err(err) = result {
-                    error!("Failed to connect to peer {:X}: {:?}", peer_id, err);
+                    error!("Failed to connect to peer {peer_id:X}: {err:?}");
                 }
             }
         }
@@ -603,6 +591,6 @@ impl FullMeshIce {
 
     #[handle_error]
     fn handle_error(&mut self, err: &Error) {
-        error!("Error: {:?}", err);
+        error!("Error: {err:?}");
     }
 }
