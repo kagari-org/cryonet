@@ -1,8 +1,14 @@
-use std::{future::pending, net::SocketAddr, rc::Rc, str::FromStr};
+use std::{
+    collections::HashMap, future::pending, net::SocketAddr, rc::Rc, str::FromStr, sync::Arc,
+};
 
 use crate::{
     connection::{ConnManager, ConnManagerHandle},
-    fullmesh::{FullMesh, FullMeshHandle, IceServer},
+    fullmesh::{
+        IceServer,
+        fullmesh::{FullMesh, FullMeshHandle},
+        registry::{ConnectionType, Registry},
+    },
     mesh::{
         Mesh, MeshHandle,
         igp::{Igp, IgpHandle},
@@ -11,7 +17,7 @@ use crate::{
 use anyhow::Result;
 use cryonet_uapi::NodeId;
 use serde::{Deserialize, Serialize};
-use tokio::task::LocalSet;
+use tokio::{sync::Mutex, task::LocalSet};
 use tracing_subscriber::EnvFilter;
 use tracing_web::MakeWebConsoleWriter;
 use wasm_bindgen::prelude::*;
@@ -37,9 +43,8 @@ pub struct Cryonet {
     mesh: *mut MeshHandle,
     igp: *mut IgpHandle,
     mgr: *mut ConnManagerHandle,
+    registry: *mut Registry,
     fm: *mut FullMeshHandle,
-
-    on_refresh: EventTarget,
 }
 
 #[wasm_bindgen]
@@ -66,63 +71,35 @@ impl Cryonet {
         )
         .await
         .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
-        let fm = FullMesh::new(id, mesh.clone(), ice_servers, None)
-            .await
-            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
-        let mut refresh = fm
-            .subscribe_refresh()
-            .await
-            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
-        let refresh_et = EventTarget::new()?;
-        let refresh2_et = refresh_et.clone();
-        tokio::task::spawn_local(async move {
-            while refresh.recv().await.is_ok() {
-                let _ = refresh2_et.dispatch_event(&Event::new("refresh").unwrap());
-            }
-        });
+        let ips = Arc::new(Mutex::new(HashMap::new()));
+        let dm = todo!();
+        let registry = Registry::new(
+            mesh.clone(),
+            dm.clone(),
+            vec![ConnectionType::DataChannel],
+            ips.clone(),
+        )
+        .await
+        .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
+        let fm = FullMesh::new(
+            id,
+            mesh.clone(),
+            registry.clone(),
+            dm.clone(),
+            ice_servers,
+            None,
+            false,
+        )
+        .await
+        .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
 
         Ok(Cryonet {
             mesh: Box::into_raw(Box::new(mesh)),
             igp: Box::into_raw(Box::new(igp)),
             mgr: Box::into_raw(Box::new(mgr)),
+            registry: Box::into_raw(Box::new(registry)),
             fm: Box::into_raw(Box::new(fm)),
-            on_refresh: refresh_et,
         })
-    }
-
-    pub fn on_refresh(&self, callback: &Function) -> Result<(), JsValue> {
-        self.on_refresh
-            .add_event_listener_with_callback("refresh", callback)
-    }
-
-    pub async fn get_receivers(&self) -> Result<Map, JsValue> {
-        let fm = unsafe { &*self.fm };
-        let receivers = fm
-            .get_receivers()
-            .await
-            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
-        let result = Map::new();
-        for (node_id, receivers) in receivers {
-            let recv = Array::new();
-            for receiver in receivers {
-                recv.push(&JsValue::from(receiver));
-            }
-            result.set(&JsValue::from(node_id), &recv);
-        }
-        Ok(result)
-    }
-
-    pub async fn get_senders(&self) -> Result<Map, JsValue> {
-        let fm = unsafe { &*self.fm };
-        let senders = fm
-            .get_senders()
-            .await
-            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
-        let result = Map::new();
-        for (node_id, sender) in senders {
-            result.set(&JsValue::from(node_id), &JsValue::from(sender));
-        }
-        Ok(result)
     }
 }
 

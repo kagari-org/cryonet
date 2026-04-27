@@ -9,10 +9,7 @@ use std::{
 use anyhow::Result;
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
-use tokio::{
-    sync::{Mutex, mpsc},
-    time::{Interval, interval},
-};
+use tokio::sync::{Mutex, mpsc};
 use tracing::error;
 
 use crate::{
@@ -21,6 +18,7 @@ use crate::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
+    time::{Interval, interval},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

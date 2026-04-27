@@ -28,7 +28,7 @@ use crate::{
     errors::CryonetError,
     fullmesh::{
         Connection, ConnectionReceiver, ConnectionSender, ConnectionState, IceServer,
-        fm_rustrtc_ice::FullMeshIceHandle,
+        fullmesh::FullMeshHandle,
     },
     mesh::packet::NodeId,
 };
@@ -57,7 +57,7 @@ impl ConnectionRustrtcIce {
     pub async fn new(
         id: NodeId,
         peer_id: NodeId,
-        fm: FullMeshIceHandle,
+        fm: FullMeshHandle,
         ice_servers: Vec<IceServer>,
         candidate_filter_prefix: Option<AnyIpCidr>,
         encrypt_local_packets: bool,
@@ -170,7 +170,7 @@ impl Drop for ConnectionRustrtcIce {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Connection for ConnectionRustrtcIce {
     async fn sender(&self) -> Result<Box<dyn ConnectionSender>> {
         Ok(Box::new(ConnectionRustrtcIceSender {

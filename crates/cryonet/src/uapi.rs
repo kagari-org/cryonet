@@ -2,7 +2,7 @@ use std::{any::Any, collections::HashMap, io, path::PathBuf, time::Duration};
 
 use anyhow::{Error, Result};
 use cryonet_lib::{
-    fullmesh::fm_rustrtc_ice::FullMeshIceHandle,
+    fullmesh::fullmesh::FullMeshHandle,
     mesh::{
         MeshHandle,
         igp::IgpHandle,
@@ -26,7 +26,7 @@ pub struct Uapi {
 
     mesh: MeshHandle,
     igp: IgpHandle,
-    fm: FullMeshIceHandle,
+    fm: FullMeshHandle,
 
     socket: UnixDatagram,
     buf: [u8; 1024],
@@ -50,7 +50,7 @@ impl Uapi {
     pub async fn new(
         mesh: MeshHandle,
         igp: IgpHandle,
-        fm: FullMeshIceHandle,
+        fm: FullMeshHandle,
         path: PathBuf,
     ) -> Result<UapiHandle> {
         Self::new_with_parameters(
@@ -67,7 +67,7 @@ impl Uapi {
     pub async fn new_with_parameters(
         mesh: MeshHandle,
         igp: IgpHandle,
-        fm: FullMeshIceHandle,
+        fm: FullMeshHandle,
         path: PathBuf,
         gc_interval: Duration,
         ping_timeout: Duration,

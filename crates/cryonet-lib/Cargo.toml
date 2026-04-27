@@ -24,10 +24,6 @@ reqwest = "0.13.2"
 reqwest-websocket = "0.6.0"
 tokio = { version = "1.49.0", features = ["rt"] }
 wasmtimer = "0.4.3"
-aes-gcm = "0.10.3"
-p256 = { version = "0.14.0-rc.8", features = ["serde", "ecdh", "getrandom", "std"] }
-sha2 = "0.11.0"
-memoize = "0.6.0"
 pnet_packet = "0.35.0"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -43,6 +39,7 @@ web-sys = { version = "=0.3.85", features = [
   "RtcDataChannelEvent",
   "RtcIceCandidate",
   "RtcIceCandidateInit",
+  "RtcIceGatheringState",
   "RtcIceServer",
   "RtcPeerConnection",
   "RtcPeerConnectionIceEvent",
@@ -57,3 +54,7 @@ uuid = { version = "1.19.0", features = ["serde", "v4"] }
 tun-rs = { version = "2.7.8", features = ["async"] }
 rustrtc = "0.3.51"
 tokio-tungstenite = "0.28.0"
+p256 = { version = "0.14.0-rc.8", features = ["serde", "ecdh", "getrandom", "std"] }
+aes-gcm = "0.10.3"
+sha2 = "0.11.0"
+memoize = "0.6.0"

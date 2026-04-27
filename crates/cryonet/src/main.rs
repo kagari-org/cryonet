@@ -13,7 +13,7 @@ use cryonet_lib::{
     connection::ConnManager,
     fullmesh::{
         DeviceManager, IceServer,
-        fm_rustrtc_ice::FullMeshIce,
+        fullmesh::FullMesh,
         registry::{ConnectionType, Registry},
         tap::TapManager,
         tun::TunManager,
@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
                     ips,
                 )
                 .await?;
-                let fm = FullMeshIce::new(
+                let fm = FullMesh::new(
                     args.id,
                     mesh.clone(),
                     registry,

@@ -45,10 +45,10 @@
         nativeBuildInputs = with pkgs; [
           clippy rustfmt
         ];
-        shellHook = ''
-          rm -rf web/packages/cryonet-lib
-          ln -sf ${self'.packages.wasm} web/packages/cryonet-lib
-        '';
+        # shellHook = ''
+        #   rm -rf web/packages/cryonet-lib
+        #   ln -sf ${self'.packages.wasm} web/packages/cryonet-lib
+        # '';
       };
     };
   };

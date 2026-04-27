@@ -64,7 +64,7 @@ impl TunManager {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl DeviceManager for TunManager {
     async fn connected(
         &mut self,

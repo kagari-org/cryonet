@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
 use pnet_packet::{
@@ -48,7 +48,7 @@ impl TapManager {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl DeviceManager for TapManager {
     async fn connected(
         &mut self,
@@ -127,7 +127,8 @@ impl TapManagerInner {
         receiver: Box<dyn ConnectionReceiver>,
     ) -> Result<()> {
         self.send_msg_tx
-            .send(SendLoopMessage::Connected(node_id, sender))?;
+            .send(SendLoopMessage::Connected(node_id, sender))
+            .map_err(|_| anyhow!("Failed to send Connected"))?;
         let stop_tx = watch::channel(false).0;
         tokio::spawn(recv_loop(
             self.enable_packet_information,
@@ -143,7 +144,8 @@ impl TapManagerInner {
 
     async fn disconnected(&mut self, node_id: NodeId) -> Result<()> {
         self.send_msg_tx
-            .send(SendLoopMessage::Disconnected(node_id))?;
+            .send(SendLoopMessage::Disconnected(node_id))
+            .map_err(|_| anyhow!("Failed to send Disconnected"))?;
         if let Some(stop_tx) = self.recv_tasks.remove(&node_id) {
             let _ = stop_tx.send(true);
         }

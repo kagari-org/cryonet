@@ -143,7 +143,7 @@ impl Drop for ConnectionRustrtcDataChannel {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Connection for ConnectionRustrtcDataChannel {
     async fn sender(&self) -> Result<Box<dyn ConnectionSender>> {
         Ok(Box::new(ConnectionRustrtcDataChannelSender {

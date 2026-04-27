@@ -14,8 +14,10 @@ use crate::mesh::packet::NodeId;
 pub mod conn_rustrtc_dc;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod conn_rustrtc_ice;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod fm_rustrtc_ice;
+#[cfg(target_arch = "wasm32")]
+pub mod conn_wasm;
+
+pub mod fullmesh;
 pub mod registry;
 pub mod tap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -28,8 +30,8 @@ pub struct IceServer {
     pub credential: Option<String>,
 }
 
-#[async_trait]
-pub trait DeviceManager: Send + Sync {
+#[async_trait(?Send)]
+pub trait DeviceManager {
     async fn connected(
         &mut self,
         node_id: NodeId,
@@ -47,8 +49,8 @@ pub enum ConnectionState {
     Closed,
 }
 
-#[async_trait]
-pub trait Connection: Send + Sync + Any {
+#[async_trait(?Send)]
+pub trait Connection: Any {
     async fn sender(&self) -> Result<Box<dyn ConnectionSender>>;
     async fn receiver(&self) -> Result<Box<dyn ConnectionReceiver>>;
     fn sent(&self) -> u64;
@@ -60,12 +62,23 @@ pub trait Connection: Send + Sync + Any {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-#[async_trait]
-pub trait ConnectionSender: Send + Sync {
-    async fn send(&mut self, data: Bytes) -> Result<usize>;
+macro_rules! define_sender_receiver {
+    ($($supertrait:path),*) => {
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        pub trait ConnectionSender: $($supertrait +)* {
+            async fn send(&mut self, data: Bytes) -> Result<usize>;
+        }
+
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        pub trait ConnectionReceiver: $($supertrait +)* {
+            async fn recv(&mut self) -> Result<(Bytes, SocketAddr)>;
+        }
+    };
 }
 
-#[async_trait]
-pub trait ConnectionReceiver: Send + Sync {
-    async fn recv(&mut self) -> Result<(Bytes, SocketAddr)>;
-}
+#[cfg(not(target_arch = "wasm32"))]
+define_sender_receiver!(Send, Sync);
+#[cfg(target_arch = "wasm32")]
+define_sender_receiver!();

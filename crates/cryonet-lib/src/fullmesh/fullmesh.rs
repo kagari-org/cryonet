@@ -8,28 +8,38 @@ use std::{
 use anyhow::{Error, Result};
 use cidr::AnyIpCidr;
 use cryonet_uapi::{Conn, ConnState};
-use p256::{PublicKey, ecdh::EphemeralSecret, elliptic_curve::Generate};
-use rustrtc::transports::ice::IceParameters;
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
-use tokio::{
-    sync::{Mutex, mpsc},
-    time::{Interval, interval},
+use tokio::sync::{Mutex, mpsc};
+use tracing::{debug, error, warn};
+
+#[cfg(not(target_arch = "wasm32"))]
+use tracing::info;
+
+#[cfg(target_arch = "wasm32")]
+use crate::fullmesh::conn_wasm::ConnectionWasmDataChannel;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::fullmesh::{
+    conn_rustrtc_dc::ConnectionRustrtcDataChannel,
+    conn_rustrtc_ice::{ConnectionRustrtcIce, ConnectionRustrtcIceKey},
 };
-use tracing::{debug, error, info, warn};
+#[cfg(not(target_arch = "wasm32"))]
+use p256::{PublicKey, ecdh::EphemeralSecret, elliptic_curve::Generate};
+#[cfg(not(target_arch = "wasm32"))]
+use rustrtc::transports::ice::IceParameters;
+#[cfg(not(target_arch = "wasm32"))]
+use sha2::Sha256;
 
 use crate::{
     fullmesh::{
         Connection, ConnectionState, DeviceManager, IceServer,
-        conn_rustrtc_dc::ConnectionRustrtcDataChannel,
-        conn_rustrtc_ice::{ConnectionRustrtcIce, ConnectionRustrtcIceKey},
         registry::{ConnectionType, RegistryHandle},
     },
     mesh::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
+    time::{Interval, interval},
 };
 
 struct FullMeshConnection {
@@ -39,6 +49,7 @@ struct FullMeshConnection {
 
     // for ice connection
     last_rekey: Instant,
+    #[cfg(not(target_arch = "wasm32"))]
     ecdh_key: EphemeralSecret,
 }
 
@@ -49,15 +60,15 @@ enum FullMeshPayload {
         ufrag: String,
         pwd: String,
         candidates: Vec<String>,
-        public_key: PublicKey,
+        public_key: String,
     },
     Rekey {
         index: bool,
-        public_key: PublicKey,
+        public_key: String,
     },
     RekeyConfirm {
         index: bool,
-        public_key: PublicKey,
+        public_key: String,
     },
     // data channel
     Offer {
@@ -73,8 +84,8 @@ enum FullMeshPayload {
 #[typetag::serde]
 impl Payload for FullMeshPayload {}
 
-pub struct FullMeshIce {
-    handle: FullMeshIceHandle,
+pub struct FullMesh {
+    handle: FullMeshHandle,
 
     id: NodeId,
     mesh: MeshHandle,
@@ -92,7 +103,7 @@ pub struct FullMeshIce {
 }
 
 #[sactor(pub)]
-impl FullMeshIce {
+impl FullMesh {
     pub async fn new(
         id: NodeId,
         mesh: MeshHandle,
@@ -101,7 +112,7 @@ impl FullMeshIce {
         ice_servers: Vec<IceServer>,
         candidate_filter_prefix: Option<AnyIpCidr>,
         encrypt_local_packets: bool,
-    ) -> Result<FullMeshIceHandle> {
+    ) -> Result<FullMeshHandle> {
         Self::new_with_parameters(
             id,
             mesh,
@@ -129,13 +140,13 @@ impl FullMeshIce {
         rekey_timeout: Duration,
         candidate_filter_prefix: Option<AnyIpCidr>,
         encrypt_local_packets: bool,
-    ) -> Result<FullMeshIceHandle> {
+    ) -> Result<FullMeshHandle> {
         let packet_rx = mesh
             .add_dispatchee(Box::new(|packet| {
                 (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>()
             }))
             .await?;
-        let (future, fm) = FullMeshIce::run(move |handle| FullMeshIce {
+        let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle,
             id,
             mesh,
@@ -177,18 +188,20 @@ impl FullMeshIce {
             return Ok(());
         }
         match payload {
+            #[cfg(not(target_arch = "wasm32"))]
             FullMeshPayload::Shake {
                 ufrag,
                 pwd,
                 candidates,
                 public_key,
             } => {
+                let public_key = serde_json::from_str::<PublicKey>(public_key)?;
                 if self.id > src {
                     let ecdh_key = EphemeralSecret::generate();
                     let local_public_key = ecdh_key.public_key();
                     let mut key = [0; 16];
                     ecdh_key
-                        .diffie_hellman(public_key)
+                        .diffie_hellman(&public_key)
                         .extract::<Sha256>(None)
                         .expand(b"", &mut key)?;
                     let key = ConnectionRustrtcIceKey {
@@ -227,7 +240,7 @@ impl FullMeshIce {
                                 ufrag: parameters.username_fragment,
                                 pwd: parameters.password,
                                 candidates: local_candidates,
-                                public_key: local_public_key,
+                                public_key: serde_json::to_string(&local_public_key)?,
                             }),
                         )
                         .await?;
@@ -241,7 +254,7 @@ impl FullMeshIce {
                     conn.last_rekey = Instant::now();
                     let mut key = [0; 16];
                     conn.ecdh_key
-                        .diffie_hellman(public_key)
+                        .diffie_hellman(&public_key)
                         .extract::<Sha256>(None)
                         .expand(b"", &mut key)?;
                     let key = ConnectionRustrtcIceKey {
@@ -264,7 +277,9 @@ impl FullMeshIce {
                     connection.set_send_key(key);
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
             FullMeshPayload::Rekey { index, public_key } => {
+                let public_key = serde_json::from_str::<PublicKey>(public_key)?;
                 let Some(conn) = self.connections.get_mut(&src) else {
                     warn!("Received rekey from peer {src:X} but no connection exists, ignoring");
                     return Ok(());
@@ -285,7 +300,7 @@ impl FullMeshIce {
                     let new_public_key = new_ecdh_key.public_key();
                     let mut key = [0; 16];
                     new_ecdh_key
-                        .diffie_hellman(public_key)
+                        .diffie_hellman(&public_key)
                         .extract::<Sha256>(None)
                         .expand(b"", &mut key)?;
                     connection.set_recv_key(ConnectionRustrtcIceKey {
@@ -299,7 +314,7 @@ impl FullMeshIce {
                             src,
                             Box::new(FullMeshPayload::Rekey {
                                 index: *index,
-                                public_key: new_public_key,
+                                public_key: serde_json::to_string(&new_public_key)?,
                             }),
                         )
                         .await?;
@@ -307,7 +322,7 @@ impl FullMeshIce {
                     // we received the rekey response
                     let mut key = [0; 16];
                     conn.ecdh_key
-                        .diffie_hellman(public_key)
+                        .diffie_hellman(&public_key)
                         .extract::<Sha256>(None)
                         .expand(b"", &mut key)?;
                     let new_key = ConnectionRustrtcIceKey {
@@ -322,13 +337,15 @@ impl FullMeshIce {
                             src,
                             Box::new(FullMeshPayload::RekeyConfirm {
                                 index: *index,
-                                public_key: conn.ecdh_key.public_key(),
+                                public_key: serde_json::to_string(&conn.ecdh_key.public_key())?,
                             }),
                         )
                         .await?;
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
             FullMeshPayload::RekeyConfirm { index, public_key } => {
+                let public_key = serde_json::from_str::<PublicKey>(public_key)?;
                 let Some(conn) = self.connections.get_mut(&src) else {
                     warn!(
                         "Received rekey ack from peer {src:X} but no connection exists, ignoring",
@@ -348,7 +365,7 @@ impl FullMeshIce {
                 // we confirmed the rekey
                 let mut key = [0; 16];
                 conn.ecdh_key
-                    .diffie_hellman(public_key)
+                    .diffie_hellman(&public_key)
                     .extract::<Sha256>(None)
                     .expand(b"", &mut key)?;
                 connection.set_send_key(ConnectionRustrtcIceKey {
@@ -356,6 +373,7 @@ impl FullMeshIce {
                     key: key.into(),
                 });
             }
+            #[cfg(not(target_arch = "wasm32"))]
             FullMeshPayload::Offer { sdp, candidates } => {
                 let connection = ConnectionRustrtcDataChannel::new(
                     self.ice_servers.clone(),
@@ -384,6 +402,7 @@ impl FullMeshIce {
                     },
                 );
             }
+            #[cfg(not(target_arch = "wasm32"))]
             FullMeshPayload::Answer { sdp, candidates } => {
                 let Some(connection) = self.connections.get_mut(&src) else {
                     warn!("Received answer from peer {src:X} but no connection exists, ignoring");
@@ -396,6 +415,59 @@ impl FullMeshIce {
                 else {
                     warn!(
                         "Received answer from peer {src:X} but connection is not ConnectionRustrtcDataChannel, ignoring",
+                    );
+                    return Ok(());
+                };
+                connection.apply_answer(sdp.clone()).await?;
+                connection.add_candidates(candidates).await?;
+            }
+            #[cfg(target_arch = "wasm32")]
+            FullMeshPayload::Shake { .. }
+            | FullMeshPayload::Rekey { .. }
+            | FullMeshPayload::RekeyConfirm { .. } => {
+                warn!("Received unsupported payload from peer {src:X}, ignoring");
+            }
+            #[cfg(target_arch = "wasm32")]
+            FullMeshPayload::Offer { sdp, candidates } => {
+                let mut connection = ConnectionWasmDataChannel::new(
+                    self.ice_servers.clone(),
+                    self.candidate_filter_prefix,
+                )
+                .await?;
+                let (answer, local_candidates) = connection.create_answer(sdp.clone()).await?;
+                connection.add_candidates(candidates).await?;
+                self.connections.insert(
+                    src,
+                    FullMeshConnection {
+                        connection: Box::new(connection),
+                        last_received: (0, Instant::now()),
+                        once_connected: false,
+                        last_rekey: Instant::now(),
+                    },
+                );
+                self.mesh
+                    .send_packet(
+                        src,
+                        Box::new(FullMeshPayload::Answer {
+                            sdp: answer,
+                            candidates: local_candidates,
+                        }),
+                    )
+                    .await?;
+            }
+            #[cfg(target_arch = "wasm32")]
+            FullMeshPayload::Answer { sdp, candidates } => {
+                let Some(conn) = self.connections.get_mut(&src) else {
+                    warn!("Received answer from peer {src:X} but no connection exists, ignoring");
+                    return Ok(());
+                };
+                let Some(connection) = conn
+                    .connection
+                    .as_any_mut()
+                    .downcast_mut::<ConnectionWasmDataChannel>()
+                else {
+                    warn!(
+                        "Received answer from peer {src:X} but connection is not ConnectionWasmDataChannel, ignoring",
                     );
                     return Ok(());
                 };
@@ -445,6 +517,7 @@ impl FullMeshIce {
             }
         }
         // rekey
+        #[cfg(not(target_arch = "wasm32"))]
         for peer_id in self.registry.get_nodes().await?.keys() {
             if self.id > *peer_id {
                 continue;
@@ -477,7 +550,7 @@ impl FullMeshIce {
                     *peer_id,
                     Box::new(FullMeshPayload::Rekey {
                         index: !key.index,
-                        public_key: new_public_key,
+                        public_key: serde_json::to_string(&new_public_key)?,
                     }),
                 )
                 .await?;
@@ -490,6 +563,7 @@ impl FullMeshIce {
             if self.connections.get_mut(&peer_id).is_some() {
                 continue;
             }
+            #[cfg(not(target_arch = "wasm32"))]
             if node.0.connection_types.contains(&ConnectionType::Ice) {
                 let result: Result<()> = try {
                     let ecdh_key = EphemeralSecret::generate();
@@ -521,7 +595,8 @@ impl FullMeshIce {
                                 ufrag: parameters.username_fragment,
                                 pwd: parameters.password,
                                 candidates,
-                                public_key,
+                                // TODO: https://github.com/rust-lang/rust/issues/149488
+                                public_key: serde_json::to_string(&public_key).unwrap(),
                             }),
                         )
                         .await?;
@@ -529,7 +604,11 @@ impl FullMeshIce {
                 if let Err(err) = result {
                     error!("Failed to connect to peer {peer_id:X}: {err:?}");
                 }
-            } else {
+            } else if node
+                .0
+                .connection_types
+                .contains(&ConnectionType::DataChannel)
+            {
                 let result: Result<()> = try {
                     let connection = ConnectionRustrtcDataChannel::new(
                         self.ice_servers.clone(),
@@ -545,6 +624,42 @@ impl FullMeshIce {
                             once_connected: false,
                             last_rekey: Instant::now(),
                             ecdh_key: EphemeralSecret::generate(),
+                        },
+                    );
+                    self.mesh
+                        .send_packet(
+                            peer_id,
+                            Box::new(FullMeshPayload::Offer {
+                                sdp: offer,
+                                candidates,
+                            }),
+                        )
+                        .await?;
+                };
+                if let Err(err) = result {
+                    error!("Failed to connect to peer {peer_id:X}: {err:?}");
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            if node
+                .0
+                .connection_types
+                .contains(&ConnectionType::DataChannel)
+            {
+                let result: Result<()> = try {
+                    let mut connection = ConnectionWasmDataChannel::new(
+                        self.ice_servers.clone(),
+                        self.candidate_filter_prefix,
+                    )
+                    .await?;
+                    let (offer, candidates) = connection.create_offer().await?;
+                    self.connections.insert(
+                        peer_id,
+                        FullMeshConnection {
+                            connection: Box::new(connection),
+                            last_received: (0, Instant::now()),
+                            once_connected: false,
+                            last_rekey: Instant::now(),
                         },
                     );
                     self.mesh
