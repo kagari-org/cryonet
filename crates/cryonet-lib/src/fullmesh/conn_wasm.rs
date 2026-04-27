@@ -209,14 +209,14 @@ impl Connection for ConnectionWasmDataChannel {
         let Some(dc) = self.dc.borrow().clone() else {
             return Err(anyhow!("Data channel not established"));
         };
-        Ok(Box::new(ConnectionWasmDataChannelSender { dc }))
+        Ok(Box::new(ConnectionWasmDataChannelSender { dc, sent: self.sent.clone() }))
     }
 
     async fn receiver(&self) -> Result<Box<dyn ConnectionReceiver>> {
         let Some(dc) = self.dc.borrow().clone() else {
             return Err(anyhow!("Data channel not established"));
         };
-        Ok(Box::new(ConnectionWasmDataChannelReceiver::new(dc)))
+        Ok(Box::new(ConnectionWasmDataChannelReceiver::new(dc, self.received.clone())))
     }
 
     fn sent(&self) -> u64 {
@@ -252,24 +252,28 @@ impl Connection for ConnectionWasmDataChannel {
 
 pub struct ConnectionWasmDataChannelSender {
     dc: RtcDataChannel,
+    sent: Arc<AtomicU64>,
 }
 
 #[async_trait(?Send)]
 impl ConnectionSender for ConnectionWasmDataChannelSender {
     async fn send(&mut self, data: Bytes) -> Result<usize> {
         self.dc.send_with_u8_array(&data).map_err(map_err)?;
-        Ok(data.len())
+        let len = data.len();
+        self.sent.fetch_add(len as u64, Ordering::Relaxed);
+        Ok(len)
     }
 }
 
 pub struct ConnectionWasmDataChannelReceiver {
     rx: mpsc::Receiver<Bytes>,
+    received: Arc<AtomicU64>,
 
     _on_message: Closure<dyn Fn(MessageEvent)>,
 }
 
 impl ConnectionWasmDataChannelReceiver {
-    pub fn new(dc: RtcDataChannel) -> Self {
+    pub fn new(dc: RtcDataChannel, received: Arc<AtomicU64>) -> Self {
         let (tx, rx) = mpsc::channel(16384);
         let on_message = Closure::new(move |event: MessageEvent| {
             let data = event.data();
@@ -285,6 +289,7 @@ impl ConnectionWasmDataChannelReceiver {
         dc.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
         Self {
             rx,
+            received,
             _on_message: on_message,
         }
     }
@@ -295,6 +300,7 @@ impl ConnectionReceiver for ConnectionWasmDataChannelReceiver {
     async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
         const ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
         let data = self.rx.recv().await.ok_or(CryonetError::ChannelClosed)?;
+        self.received.fetch_add(data.len() as u64, Ordering::Relaxed);
         Ok((data, ADDR))
     }
 }

@@ -13,14 +13,14 @@ use crate::{
         DeviceManager, IceServer,
         fullmesh::{FullMesh, FullMeshHandle},
         registry::{ConnectionType, Registry, RegistryHandle},
-        tap::TapManager,
+        tap::{TapManager, generate_tap_mac},
     },
     mesh::{
         Mesh, MeshHandle,
         igp::{Igp, IgpHandle},
     },
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use cryonet_uapi::NodeId;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::Mutex, task::LocalSet};
@@ -42,16 +42,18 @@ pub struct Args {
     pub ice_servers: Vec<IceServer>,
     pub enable_packet_information: bool,
     pub tap_mac_prefix: u16,
+    pub addresses: Vec<IpAddr>,
 }
 
 pub struct AsyncDevice {
     send: Function,
     recv: Function,
+    addresses: Vec<IpAddr>,
 }
 
 impl AsyncDevice {
     pub fn addresses(&self) -> Result<Vec<IpAddr>> {
-        Ok(vec![])
+        Ok(self.addresses.clone())
     }
 
     pub async fn send(&self, buf: &[u8]) -> Result<()> {
@@ -77,8 +79,12 @@ impl AsyncDevice {
             let data = result
                 .dyn_into::<Uint8Array>()
                 .map_err(|e| anyhow!("{e:?}"))?;
-            data.copy_to(buf);
-            return Ok(data.length() as usize);
+            let len = data.length() as usize;
+            if len > buf.len() {
+                bail!("buffer too small: {} > {}", len, buf.len());
+            }
+            data.copy_to(&mut buf[..len]);
+            return Ok(len);
         }
         let promise = result.dyn_into::<Promise>().map_err(|e| anyhow!("{e:?}"))?;
         let data = JsFuture::from(promise)
@@ -86,8 +92,12 @@ impl AsyncDevice {
             .map_err(|e| anyhow!("{e:?}"))?
             .dyn_into::<Uint8Array>()
             .map_err(|e| anyhow!("{e:?}"))?;
-        data.copy_to(buf);
-        Ok(data.length() as usize)
+        let len = data.length() as usize;
+        if len > buf.len() {
+            bail!("buffer too small: {} > {}", len, buf.len());
+        }
+        data.copy_to(&mut buf[..len]);
+        Ok(len)
     }
 }
 
@@ -98,6 +108,8 @@ pub struct Cryonet {
     mgr: *mut ConnManagerHandle,
     registry: *mut RegistryHandle,
     fm: *mut FullMeshHandle,
+
+    tap_mac: [u8; 6],
 }
 
 #[wasm_bindgen]
@@ -110,6 +122,7 @@ impl Cryonet {
             ice_servers,
             enable_packet_information,
             tap_mac_prefix,
+            addresses,
         } = serde_wasm_bindgen::from_value(args)?;
 
         let _guard = LOCAL_SET.with(|local_set| local_set.enter());
@@ -132,7 +145,7 @@ impl Cryonet {
             tap_mac_prefix,
             enable_packet_information,
             ips.clone(),
-            Arc::new(AsyncDevice { send, recv }),
+            Arc::new(AsyncDevice { send, recv, addresses }),
         )
         .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
         let dm = Arc::new(Mutex::new(Box::new(dm) as Box<dyn DeviceManager>));
@@ -162,7 +175,12 @@ impl Cryonet {
             mgr: Box::into_raw(Box::new(mgr)),
             registry: Box::into_raw(Box::new(registry)),
             fm: Box::into_raw(Box::new(fm)),
+            tap_mac: generate_tap_mac(id, tap_mac_prefix),
         })
+    }
+
+    pub fn tap_mac(&self) -> Vec<u8> {
+        self.tap_mac.to_vec()
     }
 }
 

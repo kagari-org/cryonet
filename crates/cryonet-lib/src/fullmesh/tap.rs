@@ -46,12 +46,7 @@ impl TapManager {
         enable_packet_information: bool,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
     ) -> Result<TapManager> {
-        let mut tap_mac = tap_mac_prefix.to_be_bytes().to_vec();
-        // Set locally administered bit and ensure unicast
-        tap_mac[0] = (tap_mac[0] & 0xfe) | 0x02;
-        tap_mac.extend_from_slice(&node_id.to_be_bytes());
-        let tap_mac: [u8; 6] = tap_mac.try_into().unwrap();
-
+        let tap_mac = generate_tap_mac(node_id, tap_mac_prefix);
         let device = Arc::new(
             DeviceBuilder::new()
                 .mtu(1280)
@@ -126,12 +121,7 @@ impl TapManagerInner {
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
         device: Arc<AsyncDevice>,
     ) -> Result<TapManagerInnerHandle> {
-        let mut tap_mac = tap_mac_prefix.to_be_bytes().to_vec();
-        // Set locally administered bit and ensure unicast
-        tap_mac[0] = (tap_mac[0] & 0xfe) | 0x02;
-        tap_mac.extend_from_slice(&node_id.to_be_bytes());
-        let tap_mac: [u8; 6] = tap_mac.try_into().unwrap();
-
+        let tap_mac = generate_tap_mac(node_id, tap_mac_prefix);
         let device2 = device.clone();
 
         let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
@@ -512,4 +502,12 @@ async fn send_ndp_na(
 
     device.send(&buf[..TOTAL_LEN]).await?;
     Ok(())
+}
+
+pub fn generate_tap_mac(node_id: NodeId, tap_mac_prefix: u16) -> [u8; 6] {
+    let mut tap_mac = tap_mac_prefix.to_be_bytes().to_vec();
+    // Set locally administered bit and ensure unicast
+    tap_mac[0] = (tap_mac[0] & 0xfe) | 0x02;
+    tap_mac.extend_from_slice(&node_id.to_be_bytes());
+    tap_mac.try_into().unwrap()
 }
