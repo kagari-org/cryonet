@@ -6,6 +6,7 @@
     <div class="run">
       <el-button type="info" @click="run" size="large">run</el-button>
     </div>
+    <h3>Set MAC address to: {{ mac }}</h3>
     <div ref="v86div" class="v86"></div>
     <input type="file" ref="file" style="display: none;"/>
   </div>
@@ -54,30 +55,34 @@ const Config = Schema.object({
   }),
 }).description('cryonet')
 
+const id = Math.floor(Math.random() * 254) + 1
+const address = `10.114.0.${id}`
+
 const config = ref<Config>({
   cryonet: {
-    id: Math.round(Math.random() * 1000),
+    id,
     servers: ['ws://127.0.0.1:2333'],
     ice_servers: [],
     enable_packet_information: false,
     tap_mac_prefix: 0x0200,
-    addresses: ['10.114.0.2'],
+    addresses: [address],
   },
 })
 
 const initial = ref<Config>({
   cryonet: {
-    id: Math.round(Math.random() * 1000),
+    id,
     servers: ['ws://127.0.0.1:2333'],
     ice_servers: [],
     enable_packet_information: false,
     tap_mac_prefix: 0x0200,
-    addresses: ['10.114.0.2'],
+    addresses: [address],
   },
 })
 
 const v86div = ref<HTMLDivElement>()
 const file = ref<HTMLInputElement>()
+const mac = ref('')
 
 let ran = false
 async function run() {
@@ -125,6 +130,7 @@ async function run() {
   }
 
   const cryonet = await Cryonet.init(config.value.cryonet, send, recv)
+  mac.value = [...cryonet.tap_mac()].map(x => x.toString(16).padStart(2, '0')).join(':')
 
   // @ts-ignore
   globalThis.cryonet = cryonet
@@ -142,6 +148,8 @@ async function run() {
 }
 
 .v86 {
+  box-sizing: border-box;
+  padding: 10px;
   height: 1000px;
   width: 60%;
   background: black;
