@@ -1,4 +1,7 @@
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    any::Any,
+    net::{IpAddr, SocketAddr},
+};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -35,6 +38,26 @@ pub trait DeviceManager: Send + Sync {
     ) -> Result<()>;
     async fn disconnected(&mut self, node_id: NodeId) -> Result<()>;
     async fn ips(&self) -> Result<Vec<IpAddr>>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionState {
+    Connecting,
+    Connected,
+    Closed,
+}
+
+#[async_trait]
+pub trait Connection: Send + Sync + Any {
+    async fn sender(&self) -> Result<Box<dyn ConnectionSender>>;
+    async fn receiver(&self) -> Result<Box<dyn ConnectionReceiver>>;
+    fn sent(&self) -> u64;
+    fn received(&self) -> u64;
+    fn status(&self) -> ConnectionState;
+    async fn selected_candidate(&self) -> Option<String>;
+
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 #[async_trait]

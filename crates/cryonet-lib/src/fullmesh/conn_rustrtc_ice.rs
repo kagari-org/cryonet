@@ -1,10 +1,10 @@
 use std::{
+    any::Any,
     net::{IpAddr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
 };
 
 use aes_gcm::{Aes128Gcm, Key, KeyInit, Nonce, aead::Aead};
@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use cidr::AnyIpCidr;
 use memoize::memoize;
-use p256::ecdh::EphemeralSecret;
 use rustrtc::{
     IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, IceTransportState,
     RtcConfiguration,
@@ -28,7 +27,8 @@ use tracing::debug;
 use crate::{
     errors::CryonetError,
     fullmesh::{
-        ConnectionReceiver, ConnectionSender, IceServer, fm_rustrtc_ice::FullMeshIceHandle,
+        Connection, ConnectionReceiver, ConnectionSender, ConnectionState, IceServer,
+        fm_rustrtc_ice::FullMeshIceHandle,
     },
     mesh::packet::NodeId,
 };
@@ -50,12 +50,6 @@ pub struct ConnectionRustrtcIce {
 
     sent: Arc<AtomicU64>,
     received: Arc<AtomicU64>,
-
-    // for fm
-    pub last_rekey: Instant,
-    pub last_received: (u64, Instant),
-    pub once_connected: bool,
-    pub ecdh_key: EphemeralSecret,
 }
 
 impl ConnectionRustrtcIce {
@@ -68,7 +62,6 @@ impl ConnectionRustrtcIce {
         candidate_filter_prefix: Option<AnyIpCidr>,
         encrypt_local_packets: bool,
         controlling: bool,
-        ecdh_key: EphemeralSecret,
     ) -> Result<(Self, IceParameters, Vec<String>)> {
         let (ice, future) = IceTransport::new(RtcConfiguration {
             ice_servers: ice_servers
@@ -135,11 +128,6 @@ impl ConnectionRustrtcIce {
                 recv_key: watch::channel(None).0,
                 sent: Arc::new(AtomicU64::new(0)),
                 received: Arc::new(AtomicU64::new(0)),
-
-                last_rekey: Instant::now(),
-                last_received: (0, Instant::now()),
-                ecdh_key,
-                once_connected: false,
             },
             local_parameters,
             candidates,
@@ -174,28 +162,18 @@ impl ConnectionRustrtcIce {
     pub fn key(&self) -> Option<ConnectionRustrtcIceKey> {
         *self.send_key.borrow()
     }
+}
 
-    pub fn status(&self) -> IceTransportState {
-        self.ice.state()
+impl Drop for ConnectionRustrtcIce {
+    fn drop(&mut self) {
+        self.ice.stop();
     }
+}
 
-    pub async fn selected_candidate(&self) -> Option<String> {
-        self.ice
-            .get_selected_pair()
-            .await
-            .map(|pair| pair.remote.to_sdp())
-    }
-
-    pub fn sent(&self) -> u64 {
-        self.sent.load(Ordering::Relaxed)
-    }
-
-    pub fn received(&self) -> u64 {
-        self.received.load(Ordering::Relaxed)
-    }
-
-    pub fn sender(&self) -> ConnectionRustrtcIceSender {
-        ConnectionRustrtcIceSender {
+#[async_trait]
+impl Connection for ConnectionRustrtcIce {
+    async fn sender(&self) -> Result<Box<dyn ConnectionSender>> {
+        Ok(Box::new(ConnectionRustrtcIceSender {
             id: self.id,
             peer_id: self.peer_id,
             encrypt_local_packets: self.encrypt_local_packets,
@@ -206,13 +184,13 @@ impl ConnectionRustrtcIce {
             // We use counter=0 to indicate unencrypted packets.
             counter: 1,
             sent: self.sent.clone(),
-        }
+        }))
     }
 
-    pub async fn receiver(&self) -> ConnectionRustrtcIceReceiver {
+    async fn receiver(&self) -> Result<Box<dyn ConnectionReceiver>> {
         let (tx, rx) = mpsc::channel(16384);
         self.ice.set_data_receiver(Arc::new(MpscSender(tx))).await;
-        ConnectionRustrtcIceReceiver {
+        Ok(Box::new(ConnectionRustrtcIceReceiver {
             encrypt_local_packets: self.encrypt_local_packets,
             rx,
             key: self.recv_key.subscribe(),
@@ -221,13 +199,39 @@ impl ConnectionRustrtcIce {
                 Aes128Gcm::new(&[0u8; 16].into()),
             ],
             received: self.received.clone(),
+        }))
+    }
+
+    fn sent(&self) -> u64 {
+        self.sent.load(Ordering::Relaxed)
+    }
+
+    fn received(&self) -> u64 {
+        self.received.load(Ordering::Relaxed)
+    }
+
+    fn status(&self) -> ConnectionState {
+        use IceTransportState::*;
+        match self.ice.state() {
+            New | Checking => ConnectionState::Connecting,
+            Connected | Completed | Disconnected => ConnectionState::Connected,
+            Failed | Closed => ConnectionState::Closed,
         }
     }
-}
 
-impl Drop for ConnectionRustrtcIce {
-    fn drop(&mut self) {
-        self.ice.stop();
+    async fn selected_candidate(&self) -> Option<String> {
+        self.ice
+            .get_selected_pair()
+            .await
+            .map(|pair| pair.remote.to_sdp())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

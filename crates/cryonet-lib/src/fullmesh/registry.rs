@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionType {
     Ice,
     DataChannel,

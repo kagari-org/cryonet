@@ -17,13 +17,9 @@ pub struct IgpRoute {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnState {
-    New,
     Connecting,
     Connected,
-    Disconnected,
-    Failed,
     Closed,
-    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

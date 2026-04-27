@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{
         Arc,
@@ -18,7 +19,7 @@ use tokio::sync::{Mutex, watch};
 
 use crate::{
     errors::CryonetError,
-    fullmesh::{ConnectionReceiver, ConnectionSender, IceServer},
+    fullmesh::{Connection, ConnectionReceiver, ConnectionSender, ConnectionState, IceServer},
 };
 
 pub struct ConnectionRustrtcDataChannel {
@@ -34,7 +35,10 @@ pub struct ConnectionRustrtcDataChannel {
 }
 
 impl ConnectionRustrtcDataChannel {
-    pub async fn new(ice_servers: Vec<IceServer>, candidate_filter_prefix: Option<AnyIpCidr>) {
+    pub async fn new(
+        ice_servers: Vec<IceServer>,
+        candidate_filter_prefix: Option<AnyIpCidr>,
+    ) -> ConnectionRustrtcDataChannel {
         let pc = PeerConnection::new(RtcConfiguration {
             ice_servers: ice_servers
                 .into_iter()
@@ -78,7 +82,7 @@ impl ConnectionRustrtcDataChannel {
             stop,
             sent: Arc::new(AtomicU64::new(0)),
             received: Arc::new(AtomicU64::new(0)),
-        };
+        }
     }
 
     pub async fn create_offer(&self) -> Result<(String, Vec<String>)> {
@@ -130,41 +134,65 @@ impl ConnectionRustrtcDataChannel {
         }
         Ok(())
     }
-
-    pub fn status(&self) -> PeerConnectionState {
-        *self.status.borrow()
-    }
-
-    pub fn sent(&self) -> u64 {
-        self.sent.load(Ordering::Relaxed)
-    }
-
-    pub fn received(&self) -> u64 {
-        self.received.load(Ordering::Relaxed)
-    }
-
-    pub fn sender(&self) -> ConnectionRustrtcDataChannelSender {
-        ConnectionRustrtcDataChannelSender {
-            pc: self.pc.clone(),
-            sent: self.sent.clone(),
-        }
-    }
-
-    pub async fn receiver(&self) -> Result<ConnectionRustrtcDataChannelReceiver> {
-        let Some(dc) = self.dc.lock().await.clone() else {
-            bail!("Data channel not established yet");
-        };
-        Ok(ConnectionRustrtcDataChannelReceiver {
-            dc,
-            received: self.received.clone(),
-        })
-    }
 }
 
 impl Drop for ConnectionRustrtcDataChannel {
     fn drop(&mut self) {
         self.pc.close();
         self.stop.send_replace(true);
+    }
+}
+
+#[async_trait]
+impl Connection for ConnectionRustrtcDataChannel {
+    async fn sender(&self) -> Result<Box<dyn ConnectionSender>> {
+        Ok(Box::new(ConnectionRustrtcDataChannelSender {
+            pc: self.pc.clone(),
+            sent: self.sent.clone(),
+        }))
+    }
+
+    async fn receiver(&self) -> Result<Box<dyn ConnectionReceiver>> {
+        let Some(dc) = self.dc.lock().await.clone() else {
+            bail!("Data channel not established yet");
+        };
+        Ok(Box::new(ConnectionRustrtcDataChannelReceiver {
+            dc,
+            received: self.received.clone(),
+        }))
+    }
+
+    fn sent(&self) -> u64 {
+        self.sent.load(Ordering::Relaxed)
+    }
+
+    fn received(&self) -> u64 {
+        self.received.load(Ordering::Relaxed)
+    }
+
+    fn status(&self) -> ConnectionState {
+        use PeerConnectionState::*;
+        match *self.status.borrow() {
+            New | Connecting => ConnectionState::Connecting,
+            Connected | Disconnected => ConnectionState::Connected,
+            Failed | Closed => ConnectionState::Closed,
+        }
+    }
+
+    async fn selected_candidate(&self) -> Option<String> {
+        self.pc
+            .ice_transport()
+            .get_selected_pair()
+            .await
+            .map(|pair| pair.remote.to_sdp())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 
