@@ -113,7 +113,7 @@ impl ConnectionWasmDataChannel {
                 Closure::new(move |state: RtcIceGatheringState| {
                     if state == RtcIceGatheringState::Complete {
                         pc2.set_onicegatheringstatechange(None);
-                        resolve.call0(&JsValue::NULL);
+                        let _ = resolve.call0(&JsValue::NULL);
                     }
                 });
             let on_ice_gather_state_change = on_ice_gather_state_change.into_js_value();
@@ -264,7 +264,6 @@ impl ConnectionSender for ConnectionWasmDataChannelSender {
 }
 
 pub struct ConnectionWasmDataChannelReceiver {
-    dc: RtcDataChannel,
     rx: mpsc::Receiver<Bytes>,
 
     _on_message: Closure<dyn Fn(MessageEvent)>,
@@ -283,7 +282,6 @@ impl ConnectionWasmDataChannelReceiver {
         });
         dc.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
         Self {
-            dc,
             rx,
             _on_message: on_message,
         }

@@ -23,7 +23,10 @@ use pnet_packet::{
 use sactor::sactor;
 use tokio::sync::{Mutex, mpsc, watch};
 use tracing::{error, warn};
+#[cfg(not(target_arch = "wasm32"))]
 use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
+#[cfg(target_arch = "wasm32")]
+use crate::wasm::AsyncDevice;
 
 use crate::{
     errors::CryonetError,
@@ -36,14 +39,39 @@ pub struct TapManager {
 }
 
 impl TapManager {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         node_id: NodeId,
         tap_mac_prefix: u16,
         enable_packet_information: bool,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
     ) -> Result<TapManager> {
+        let mut tap_mac = tap_mac_prefix.to_be_bytes().to_vec();
+        // Set locally administered bit and ensure unicast
+        tap_mac[0] = (tap_mac[0] & 0xfe) | 0x02;
+        tap_mac.extend_from_slice(&node_id.to_be_bytes());
+        let tap_mac: [u8; 6] = tap_mac.try_into().unwrap();
+
+        let device = Arc::new(
+            DeviceBuilder::new()
+                .mtu(1280)
+                .layer(Layer::L2)
+                .mac_addr(tap_mac)
+                .enable(true)
+                .build_async()?,
+        );
+        Self::new_with_device(node_id, tap_mac_prefix, enable_packet_information, ips, device)
+    }
+
+    pub fn new_with_device(
+        node_id: NodeId,
+        tap_mac_prefix: u16,
+        enable_packet_information: bool,
+        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        device: Arc<AsyncDevice>,
+    ) -> Result<TapManager> {
         Ok(TapManager {
-            handle: TapManagerInner::new(node_id, tap_mac_prefix, enable_packet_information, ips)?,
+            handle: TapManagerInner::new_with_device(node_id, tap_mac_prefix, enable_packet_information, ips, device)?,
         })
     }
 }
@@ -79,11 +107,12 @@ struct TapManagerInner {
 
 #[sactor]
 impl TapManagerInner {
-    fn new(
+    fn new_with_device(
         node_id: NodeId,
         tap_mac_prefix: u16,
         enable_packet_information: bool,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        device: Arc<AsyncDevice>,
     ) -> Result<TapManagerInnerHandle> {
         let mut tap_mac = tap_mac_prefix.to_be_bytes().to_vec();
         // Set locally administered bit and ensure unicast
@@ -91,14 +120,6 @@ impl TapManagerInner {
         tap_mac.extend_from_slice(&node_id.to_be_bytes());
         let tap_mac: [u8; 6] = tap_mac.try_into().unwrap();
 
-        let device = Arc::new(
-            DeviceBuilder::new()
-                .mtu(1280)
-                .layer(Layer::L2)
-                .mac_addr(tap_mac)
-                .enable(true)
-                .build_async()?,
-        );
         let device2 = device.clone();
 
         let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
@@ -110,13 +131,17 @@ impl TapManagerInner {
             recv_tasks: HashMap::new(),
         });
         tokio::task::spawn_local(future);
-        tokio::spawn(send_loop(
+        let future = send_loop(
             enable_packet_information,
             ips,
             device2,
             tap_mac,
             send_msg_rx,
-        ));
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        tokio::spawn(future);
+        #[cfg(target_arch = "wasm32")]
+        tokio::task::spawn_local(future);
         Ok(handle)
     }
 
@@ -130,14 +155,18 @@ impl TapManagerInner {
             .send(SendLoopMessage::Connected(node_id, sender))
             .map_err(|_| anyhow!("Failed to send Connected"))?;
         let stop_tx = watch::channel(false).0;
-        tokio::spawn(recv_loop(
+        let future = recv_loop(
             self.enable_packet_information,
             node_id,
             receiver,
             self.device.clone(),
             self.tap_mac,
             stop_tx.subscribe(),
-        ));
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        tokio::spawn(future);
+        #[cfg(target_arch = "wasm32")]
+        tokio::task::spawn_local(future);
         self.recv_tasks.insert(node_id, stop_tx);
         Ok(())
     }

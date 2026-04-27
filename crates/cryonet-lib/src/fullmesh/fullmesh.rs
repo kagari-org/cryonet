@@ -48,6 +48,7 @@ struct FullMeshConnection {
     once_connected: bool,
 
     // for ice connection
+    #[cfg(not(target_arch = "wasm32"))]
     last_rekey: Instant,
     #[cfg(not(target_arch = "wasm32"))]
     ecdh_key: EphemeralSecret,
@@ -84,6 +85,7 @@ enum FullMeshPayload {
 #[typetag::serde]
 impl Payload for FullMeshPayload {}
 
+#[allow(unused)]
 pub struct FullMesh {
     handle: FullMeshHandle,
 
@@ -442,7 +444,6 @@ impl FullMesh {
                         connection: Box::new(connection),
                         last_received: (0, Instant::now()),
                         once_connected: false,
-                        last_rekey: Instant::now(),
                     },
                 );
                 self.mesh
@@ -659,7 +660,6 @@ impl FullMesh {
                             connection: Box::new(connection),
                             last_received: (0, Instant::now()),
                             once_connected: false,
-                            last_rekey: Instant::now(),
                         },
                     );
                     self.mesh
