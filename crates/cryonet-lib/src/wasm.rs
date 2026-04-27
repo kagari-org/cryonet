@@ -1,11 +1,19 @@
 use std::{
-    collections::HashMap, future::pending, net::{IpAddr, SocketAddr}, rc::Rc, str::FromStr, sync::Arc,
+    collections::HashMap,
+    future::pending,
+    net::{IpAddr, SocketAddr},
+    rc::Rc,
+    str::FromStr,
+    sync::Arc,
 };
 
 use crate::{
     connection::{ConnManager, ConnManagerHandle},
     fullmesh::{
-        DeviceManager, IceServer, fullmesh::{FullMesh, FullMeshHandle}, registry::{ConnectionType, Registry, RegistryHandle}, tap::TapManager
+        DeviceManager, IceServer,
+        fullmesh::{FullMesh, FullMeshHandle},
+        registry::{ConnectionType, Registry, RegistryHandle},
+        tap::TapManager,
     },
     mesh::{
         Mesh, MeshHandle,
@@ -47,14 +55,37 @@ impl AsyncDevice {
     }
 
     pub async fn send(&self, buf: &[u8]) -> Result<()> {
-        let promise = self.send.call1(&JsValue::NULL, &Uint8Array::from(buf)).map_err(|e| anyhow!("{e:?}"))?.dyn_into::<Promise>().map_err(|e| anyhow!("{e:?}"))?;
-        JsFuture::from(promise).await.map_err(|e| anyhow!("{e:?}"))?;
+        let result = self
+            .send
+            .call1(&JsValue::NULL, &Uint8Array::from(buf))
+            .map_err(|e| anyhow!("{e:?}"))?;
+        if !result.is_instance_of::<Promise>() {
+            return Ok(());
+        }
+        JsFuture::from(result.dyn_into::<Promise>().map_err(|e| anyhow!("{e:?}"))?)
+            .await
+            .map_err(|e| anyhow!("{e:?}"))?;
         Ok(())
     }
 
     pub async fn recv(&self, buf: &mut [u8]) -> Result<usize> {
-        let promise = self.recv.call0(&JsValue::NULL).map_err(|e| anyhow!("{e:?}"))?.dyn_into::<Promise>().map_err(|e| anyhow!("{e:?}"))?;
-        let data = JsFuture::from(promise).await.map_err(|e| anyhow!("{e:?}"))?.dyn_into::<Uint8Array>().map_err(|e| anyhow!("{e:?}"))?;
+        let result = self
+            .recv
+            .call0(&JsValue::NULL)
+            .map_err(|e| anyhow!("{e:?}"))?;
+        if !result.is_instance_of::<Promise>() {
+            let data = result
+                .dyn_into::<Uint8Array>()
+                .map_err(|e| anyhow!("{e:?}"))?;
+            data.copy_to(buf);
+            return Ok(data.length() as usize);
+        }
+        let promise = result.dyn_into::<Promise>().map_err(|e| anyhow!("{e:?}"))?;
+        let data = JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow!("{e:?}"))?
+            .dyn_into::<Uint8Array>()
+            .map_err(|e| anyhow!("{e:?}"))?;
         data.copy_to(buf);
         Ok(data.length() as usize)
     }
@@ -96,8 +127,14 @@ impl Cryonet {
         .await
         .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
         let ips = Arc::new(Mutex::new(HashMap::new()));
-        let dm = TapManager::new_with_device(id, tap_mac_prefix, enable_packet_information, ips.clone(), Arc::new(AsyncDevice { send, recv }))
-            .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
+        let dm = TapManager::new_with_device(
+            id,
+            tap_mac_prefix,
+            enable_packet_information,
+            ips.clone(),
+            Arc::new(AsyncDevice { send, recv }),
+        )
+        .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
         let dm = Arc::new(Mutex::new(Box::new(dm) as Box<dyn DeviceManager>));
         let registry = Registry::new(
             mesh.clone(),

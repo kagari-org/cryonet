@@ -2,9 +2,10 @@ use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::Arc,
-    time::Instant,
 };
 
+#[cfg(target_arch = "wasm32")]
+use crate::wasm::AsyncDevice;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
@@ -25,13 +26,12 @@ use tokio::sync::{Mutex, mpsc, watch};
 use tracing::{error, warn};
 #[cfg(not(target_arch = "wasm32"))]
 use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
-#[cfg(target_arch = "wasm32")]
-use crate::wasm::AsyncDevice;
 
 use crate::{
     errors::CryonetError,
     fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
     mesh::packet::NodeId,
+    time::Instant,
 };
 
 pub struct TapManager {
@@ -60,7 +60,13 @@ impl TapManager {
                 .enable(true)
                 .build_async()?,
         );
-        Self::new_with_device(node_id, tap_mac_prefix, enable_packet_information, ips, device)
+        Self::new_with_device(
+            node_id,
+            tap_mac_prefix,
+            enable_packet_information,
+            ips,
+            device,
+        )
     }
 
     pub fn new_with_device(
@@ -71,7 +77,13 @@ impl TapManager {
         device: Arc<AsyncDevice>,
     ) -> Result<TapManager> {
         Ok(TapManager {
-            handle: TapManagerInner::new_with_device(node_id, tap_mac_prefix, enable_packet_information, ips, device)?,
+            handle: TapManagerInner::new_with_device(
+                node_id,
+                tap_mac_prefix,
+                enable_packet_information,
+                ips,
+                device,
+            )?,
         })
     }
 }

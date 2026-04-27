@@ -1,10 +1,4 @@
-use std::{
-    any::Any,
-    collections::HashMap,
-    net::IpAddr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{any::Any, collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use sactor::sactor;
@@ -18,7 +12,7 @@ use crate::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
-    time::{Interval, interval},
+    time::{Instant, Interval, interval},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

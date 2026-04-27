@@ -1,3 +1,4 @@
 [workspace]
 members = ["crates/*"]
+# members = ["crates/cryonet-lib"]
 resolver = "3"

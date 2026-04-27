@@ -17,10 +17,10 @@ use tokio::sync::mpsc;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    MessageEvent, RtcConfiguration, RtcDataChannel, RtcDataChannelEvent, RtcIceCandidateInit,
-    RtcIceGatheringState, RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent,
-    RtcPeerConnectionState, RtcSdpType, RtcSessionDescriptionInit,
-    js_sys::{Array, Function, Promise, Reflect, Uint8Array},
+    Event, MessageEvent, RtcConfiguration, RtcDataChannel, RtcDataChannelEvent,
+    RtcIceCandidateInit, RtcIceGatheringState, RtcIceServer, RtcPeerConnection,
+    RtcPeerConnectionIceEvent, RtcPeerConnectionState, RtcSdpType, RtcSessionDescriptionInit,
+    js_sys::{Array, ArrayBuffer, Function, Promise, Reflect, Uint8Array},
     wasm_bindgen::{JsCast, prelude::Closure},
 };
 
@@ -109,13 +109,12 @@ impl ConnectionWasmDataChannel {
         let pc = self.peer.clone();
         let mut cb = move |resolve: Function, _| {
             let pc2 = pc.clone();
-            let on_ice_gather_state_change: Closure<dyn FnMut(RtcIceGatheringState)> =
-                Closure::new(move |state: RtcIceGatheringState| {
-                    if state == RtcIceGatheringState::Complete {
-                        pc2.set_onicegatheringstatechange(None);
-                        let _ = resolve.call0(&JsValue::NULL);
-                    }
-                });
+            let on_ice_gather_state_change: Closure<dyn FnMut(Event)> = Closure::new(move |_| {
+                if pc2.ice_gathering_state() == RtcIceGatheringState::Complete {
+                    pc2.set_onicegatheringstatechange(None);
+                    let _ = resolve.call0(&JsValue::NULL);
+                }
+            });
             let on_ice_gather_state_change = on_ice_gather_state_change.into_js_value();
 
             pc.set_onicegatheringstatechange(Some(on_ice_gather_state_change.unchecked_ref()));
@@ -274,11 +273,14 @@ impl ConnectionWasmDataChannelReceiver {
         let (tx, rx) = mpsc::channel(16384);
         let on_message = Closure::new(move |event: MessageEvent| {
             let data = event.data();
-            let Some(data) = data.dyn_ref::<Uint8Array>() else {
-                return;
+            if let Some(data) = data.dyn_ref::<ArrayBuffer>() {
+                let data = Uint8Array::new(data).to_vec();
+                let _ = tx.try_send(Bytes::from(data));
+            }
+            if let Some(data) = data.dyn_ref::<Uint8Array>() {
+                let data = data.to_vec();
+                let _ = tx.try_send(Bytes::from(data));
             };
-            let data = data.to_vec();
-            let _ = tx.try_send(Bytes::from(data));
         });
         dc.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
         Self {

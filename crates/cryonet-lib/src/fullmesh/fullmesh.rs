@@ -1,9 +1,4 @@
-use std::{
-    any::Any,
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Error, Result};
 use cidr::AnyIpCidr;
@@ -39,7 +34,7 @@ use crate::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
-    time::{Interval, interval},
+    time::{Instant, Interval, interval},
 };
 
 struct FullMeshConnection {

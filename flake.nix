@@ -44,7 +44,7 @@
         inputsFrom = [ self'.packages.default self'.packages.wasm ];
         buildInputs = with pkgs; [];
         nativeBuildInputs = with pkgs; [
-          clippy rustfmt
+          clippy rustfmt yarn
         ];
         shellHook = ''
           rm -rf web/packages/cryonet-lib
