@@ -995,6 +995,11 @@ extend@^3.0.0:
   resolved "https://registry.yarnpkg.com/extend/-/extend-3.0.2.tgz#f8b1136b4071fbd8eb140aff858b1019ec2915fa"
   integrity sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g==
 
+fatfs-wasm@^3.0.7:
+  version "3.0.7"
+  resolved "https://registry.yarnpkg.com/fatfs-wasm/-/fatfs-wasm-3.0.7.tgz#2795da493568079f75a8c524579c72c6e2123f61"
+  integrity sha512-5xHV7zYfOeKZ20PrKhrcrRQyudChSRB6nfSyl9YVpkpe9KWUk3aYRFj+FZOELCL1QPPrMJwRS/s7CGD3ljumVg==
+
 fdir@^6.5.0:
   version "6.5.0"
   resolved "https://registry.yarnpkg.com/fdir/-/fdir-6.5.0.tgz#ed2ab967a331ade62f18d077dae192684d50d350"

@@ -1,12 +1,11 @@
 <template>
   <div class="main">
-    <div class="config">
+    <div class="config" v-if="!ran">
       <k-form v-model="config" :schema="Config" :initial="initial"></k-form>
     </div>
-    <div class="run">
+    <div class="run" v-if="!ran">
       <el-button type="info" @click="run" size="large">run</el-button>
     </div>
-    <h3>Set MAC address to: {{ mac }}</h3>
     <div ref="v86div" class="v86"></div>
     <input type="file" ref="file" style="display: none;"/>
   </div>
@@ -18,6 +17,7 @@ import { ref } from 'vue'
 import { Cryonet } from 'cryonet-lib'
 import { V86 } from 'v86'
 import v86wasm from 'v86/build/v86.wasm?url'
+import { FatFsDisk } from 'fatfs-wasm'
 
 interface IceServer {
   url: string,
@@ -82,12 +82,11 @@ const initial = ref<Config>({
 
 const v86div = ref<HTMLDivElement>()
 const file = ref<HTMLInputElement>()
-const mac = ref('')
 
-let ran = false
+const ran = ref(false)
 async function run() {
-  if (ran) return
-  ran = true
+  if (ran.value) return
+  ran.value = true
 
   let resolve: () => void
   const promise = new Promise<void>(r => resolve = r)
@@ -95,9 +94,25 @@ async function run() {
   file.value!.click()
   await promise
 
+  function send(data: Uint8Array) {
+    // @ts-ignore
+    v86.bus.send('net0-receive', data)
+  }
+
+  let notify = (_data: Uint8Array) => {}
+  function recv() {
+    return new Promise<Uint8Array>(resolve => {
+      notify = resolve
+    })
+  }
+
+  const cryonet = await Cryonet.init(config.value.cryonet, send, recv)
+  const mac = [...cryonet.tap_mac()].map(x => x.toString(16).padStart(2, '0')).join(':')
+
   const v86 = new V86({
     wasm_path: v86wasm,
     autostart: true,
+    memory_size: 1024 * 1024 * 1024, // 1GB
     screen: {
       container: v86div.value,
     },
@@ -111,29 +126,31 @@ async function run() {
       // 'https://cdn.jsdelivr.net/gh/copy/images/linux.iso'
       url: URL.createObjectURL(file.value!.files![0]!),
     },
+    hda: {
+      buffer: await createImage({ mac, address }),
+    },
+    // boot_order: BootOrder.CD_HARDDISK_FLOPPY,
+    boot_order: 0x123,
   })
-
-  function send(data: Uint8Array) {
-    // @ts-ignore
-    v86.bus.send('net0-receive', data)
-  }
-
-  let notify = (_data: Uint8Array) => {}
   v86.add_listener('net0-send', data => {
     notify(data)
   })
 
-  function recv() {
-    return new Promise<Uint8Array>(resolve => {
-      notify = resolve
-    })
-  }
-
-  const cryonet = await Cryonet.init(config.value.cryonet, send, recv)
-  mac.value = [...cryonet.tap_mac()].map(x => x.toString(16).padStart(2, '0')).join(':')
 
   // @ts-ignore
   globalThis.cryonet = cryonet
+  // @ts-ignore
+  globalThis.v86 = v86
+}
+
+async function createImage(info: any) {
+  const image = new Uint8Array(1024 * 1024) // 1MB
+  const disk = await FatFsDisk.create(image)
+  disk.mkfs()
+  disk.mount()
+  disk.writeFile('/info', new TextEncoder().encode(JSON.stringify(info)))
+  disk.unmount()
+  return image.buffer
 }
 </script>
 
@@ -145,14 +162,6 @@ async function run() {
   flex-direction: column;
   align-items: center;
   gap: 20px;
-}
-
-.v86 {
-  box-sizing: border-box;
-  padding: 10px;
-  height: 1000px;
-  width: 60%;
-  background: black;
 }
 
 .config {

@@ -17,6 +17,6 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ['tcpip'],
+    exclude: ['v86', 'fatfs-wasm'],
   },
 })
