@@ -501,7 +501,7 @@ impl FullMesh {
                 conn.last_received = (received, time);
             }
             let keep = time.duration_since(conn.last_received.1) < self.connection_timeout;
-            if !keep && conn.once_connected {
+            if !keep {
                 disconnected.push(*node_id);
             }
             keep
