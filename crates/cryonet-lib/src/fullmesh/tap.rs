@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::Arc, time::Duration,
+    sync::Arc,
+    time::Duration,
 };
 
 #[cfg(target_arch = "wasm32")]

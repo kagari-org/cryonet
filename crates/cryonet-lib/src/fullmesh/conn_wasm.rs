@@ -17,7 +17,12 @@ use tokio::sync::mpsc;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    Event, MessageEvent, RtcConfiguration, RtcDataChannel, RtcDataChannelEvent, RtcIceCandidateInit, RtcIceCandidatePairStats, RtcIceGatheringState, RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent, RtcPeerConnectionState, RtcSdpType, RtcSessionDescriptionInit, RtcStatsReport, js_sys::{Array, ArrayBuffer, Function, Promise, Reflect, Uint8Array}, wasm_bindgen::{JsCast, prelude::Closure}
+    Event, MessageEvent, RtcConfiguration, RtcDataChannel, RtcDataChannelEvent,
+    RtcIceCandidateInit, RtcIceCandidatePairStats, RtcIceGatheringState, RtcIceServer,
+    RtcPeerConnection, RtcPeerConnectionIceEvent, RtcPeerConnectionState, RtcSdpType,
+    RtcSessionDescriptionInit, RtcStatsReport,
+    js_sys::{Array, ArrayBuffer, Function, Promise, Reflect, Uint8Array},
+    wasm_bindgen::{JsCast, prelude::Closure},
 };
 
 use crate::{
@@ -205,14 +210,20 @@ impl Connection for ConnectionWasmDataChannel {
         let Some(dc) = self.dc.borrow().clone() else {
             return Err(anyhow!("Data channel not established"));
         };
-        Ok(Box::new(ConnectionWasmDataChannelSender { dc, sent: self.sent.clone() }))
+        Ok(Box::new(ConnectionWasmDataChannelSender {
+            dc,
+            sent: self.sent.clone(),
+        }))
     }
 
     async fn receiver(&self) -> Result<Box<dyn ConnectionReceiver>> {
         let Some(dc) = self.dc.borrow().clone() else {
             return Err(anyhow!("Data channel not established"));
         };
-        Ok(Box::new(ConnectionWasmDataChannelReceiver::new(dc, self.received.clone())))
+        Ok(Box::new(ConnectionWasmDataChannelReceiver::new(
+            dc,
+            self.received.clone(),
+        )))
     }
 
     fn sent(&self) -> u64 {
@@ -233,7 +244,11 @@ impl Connection for ConnectionWasmDataChannel {
     }
 
     async fn selected_candidate(&self) -> Option<String> {
-        let stats: RtcStatsReport = JsFuture::from(self.peer.get_stats()).await.ok()?.dyn_into().ok()?;
+        let stats: RtcStatsReport = JsFuture::from(self.peer.get_stats())
+            .await
+            .ok()?
+            .dyn_into()
+            .ok()?;
         for stat in stats.values() {
             let Some(pair) = stat.ok()?.dyn_into::<RtcIceCandidatePairStats>().ok() else {
                 continue;
@@ -304,7 +319,8 @@ impl ConnectionReceiver for ConnectionWasmDataChannelReceiver {
     async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
         const ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
         let data = self.rx.recv().await.ok_or(CryonetError::ChannelClosed)?;
-        self.received.fetch_add(data.len() as u64, Ordering::Relaxed);
+        self.received
+            .fetch_add(data.len() as u64, Ordering::Relaxed);
         Ok((data, ADDR))
     }
 }

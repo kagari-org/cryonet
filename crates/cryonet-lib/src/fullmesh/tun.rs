@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
     net::IpAddr,
-    sync::{Arc, Weak}, time::Duration,
+    sync::{Arc, Weak},
+    time::Duration,
 };
 
 use anyhow::Result;
@@ -29,10 +30,18 @@ pub struct TunManager {
 
 impl TunManager {
     pub fn new(interface_prefix: String, enable_packet_information: bool) -> TunManager {
-        Self::new_with_parameters(interface_prefix, enable_packet_information, Duration::from_secs(10))
+        Self::new_with_parameters(
+            interface_prefix,
+            enable_packet_information,
+            Duration::from_secs(10),
+        )
     }
 
-    pub fn new_with_parameters(interface_prefix: String, enable_packet_information: bool, keepalive_interval: Duration) -> TunManager {
+    pub fn new_with_parameters(
+        interface_prefix: String,
+        enable_packet_information: bool,
+        keepalive_interval: Duration,
+    ) -> TunManager {
         TunManager {
             interface_prefix,
             enable_packet_information,
@@ -85,7 +94,13 @@ impl DeviceManager for TunManager {
         let dev_send = self.create_device(node_id)?;
         let dev_recv = dev_send.clone();
         let stop_tx = watch::channel(false).0;
-        tokio::spawn(send_loop(node_id, self.keepalive_interval, sender, dev_send, stop_tx.subscribe()));
+        tokio::spawn(send_loop(
+            node_id,
+            self.keepalive_interval,
+            sender,
+            dev_send,
+            stop_tx.subscribe(),
+        ));
         tokio::spawn(recv_loop(node_id, receiver, dev_recv, stop_tx.subscribe()));
         self.tasks.insert(node_id, stop_tx);
         Ok(())

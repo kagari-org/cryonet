@@ -145,7 +145,11 @@ impl Cryonet {
             tap_mac_prefix,
             enable_packet_information,
             ips.clone(),
-            Arc::new(AsyncDevice { send, recv, addresses }),
+            Arc::new(AsyncDevice {
+                send,
+                recv,
+                addresses,
+            }),
         )
         .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
         let dm = Arc::new(Mutex::new(Box::new(dm) as Box<dyn DeviceManager>));

@@ -1,4 +1,11 @@
-use std::{any::Any, collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
+use std::{
+    any::Any,
+    collections::HashMap,
+    net::IpAddr,
+    pin::Pin,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use anyhow::Result;
 use sactor::sactor;
@@ -48,6 +55,7 @@ pub struct Registry {
 
     nodes: HashMap<NodeId, (Node, Instant)>,
     ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+    notifiers: Vec<Weak<Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>>>>>>>,
 }
 
 #[sactor(pub)]
@@ -92,6 +100,7 @@ impl Registry {
             node_timeout,
             nodes: HashMap::new(),
             ips,
+            notifiers: Vec::new(),
         });
         tokio::task::spawn_local(future);
         Ok(registry)
@@ -120,9 +129,22 @@ impl Registry {
                 let now = Instant::now();
                 self.nodes.insert(src, (node.clone(), now));
                 let mut ips = self.ips.lock().await;
+                let mut updated = false;
                 for ip in &node.ips {
-                    ips.insert(*ip, (src, now));
+                    if ips.insert(*ip, (src, now)).is_none() {
+                        updated = true;
+                    }
                 }
+                if updated {
+                    for notify in &self.notifiers {
+                        if let Some(notify) = notify.upgrade() {
+                            if let Err(err) = notify().await {
+                                error!("Failed to notify registry change: {err:?}");
+                            }
+                        }
+                    }
+                }
+                self.notifiers.retain(|notify| notify.strong_count() > 0);
             }
         }
         Ok(())
@@ -160,6 +182,13 @@ impl Registry {
             }
         }
         Ok(())
+    }
+
+    pub async fn register_notifier(
+        &mut self,
+        notify: Weak<Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>>>>>>,
+    ) {
+        self.notifiers.push(notify);
     }
 
     pub fn get_nodes(&self) -> HashMap<NodeId, (Node, Instant)> {

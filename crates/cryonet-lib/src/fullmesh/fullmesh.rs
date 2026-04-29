@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
+use std::{any::Any, collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::{Error, Result};
 use cidr::AnyIpCidr;
@@ -97,6 +97,8 @@ pub struct FullMesh {
     packet_rx: mpsc::Receiver<Packet>,
     connect_ticker: Interval,
     connections: HashMap<NodeId, FullMeshConnection>,
+
+    notifier: Arc<Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>>>>>>,
 }
 
 #[sactor(pub)]
@@ -144,7 +146,7 @@ impl FullMesh {
             }))
             .await?;
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
-            handle,
+            handle: handle.clone(),
             id,
             mesh,
             registry,
@@ -157,9 +159,20 @@ impl FullMesh {
             packet_rx,
             connect_ticker: interval(connect_interval),
             connections: HashMap::new(),
+            notifier: Arc::new(Box::new(move || {
+                let handle = handle.clone();
+                Box::pin(async move { handle.connect_tick().await })
+            })),
         });
         tokio::task::spawn_local(future);
+        fm.register_notifier().await??;
         Ok(fm)
+    }
+
+    async fn register_notifier(&self) -> Result<()> {
+        self.registry
+            .register_notifier(Arc::downgrade(&self.notifier))
+            .await
     }
 
     #[select]
