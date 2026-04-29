@@ -39,6 +39,7 @@ web-sys = { version = "=0.3.85", features = [
   "RtcDataChannelEvent",
   "RtcIceCandidate",
   "RtcIceCandidateInit",
+  "RtcIceCandidatePairStats",
   "RtcIceGatheringState",
   "RtcIceServer",
   "RtcPeerConnection",
@@ -47,6 +48,7 @@ web-sys = { version = "=0.3.85", features = [
   "RtcSdpType",
   "RtcSessionDescription",
   "RtcSessionDescriptionInit",
+  "RtcStatsReport",
 ] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

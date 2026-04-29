@@ -17,11 +17,7 @@ use tokio::sync::mpsc;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    Event, MessageEvent, RtcConfiguration, RtcDataChannel, RtcDataChannelEvent,
-    RtcIceCandidateInit, RtcIceGatheringState, RtcIceServer, RtcPeerConnection,
-    RtcPeerConnectionIceEvent, RtcPeerConnectionState, RtcSdpType, RtcSessionDescriptionInit,
-    js_sys::{Array, ArrayBuffer, Function, Promise, Reflect, Uint8Array},
-    wasm_bindgen::{JsCast, prelude::Closure},
+    Event, MessageEvent, RtcConfiguration, RtcDataChannel, RtcDataChannelEvent, RtcIceCandidateInit, RtcIceCandidatePairStats, RtcIceGatheringState, RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent, RtcPeerConnectionState, RtcSdpType, RtcSessionDescriptionInit, RtcStatsReport, js_sys::{Array, ArrayBuffer, Function, Promise, Reflect, Uint8Array}, wasm_bindgen::{JsCast, prelude::Closure}
 };
 
 use crate::{
@@ -237,7 +233,15 @@ impl Connection for ConnectionWasmDataChannel {
     }
 
     async fn selected_candidate(&self) -> Option<String> {
-        // TODO
+        let stats: RtcStatsReport = JsFuture::from(self.peer.get_stats()).await.ok()?.dyn_into().ok()?;
+        for stat in stats.values() {
+            let Some(pair) = stat.ok()?.dyn_into::<RtcIceCandidatePairStats>().ok() else {
+                continue;
+            };
+            if pair.get_selected() == Some(true) {
+                return pair.get_remote_candidate_id();
+            }
+        }
         None
     }
 
