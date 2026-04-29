@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     net::IpAddr,
-    sync::{Arc, Weak},
+    sync::{Arc, Weak}, time::Duration,
 };
 
 use anyhow::Result;
@@ -15,11 +15,13 @@ use crate::{
     errors::CryonetError,
     fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
     mesh::packet::NodeId,
+    time::interval,
 };
 
 pub struct TunManager {
     interface_prefix: String,
     enable_packet_information: bool,
+    keepalive_interval: Duration,
 
     devices: HashMap<NodeId, Weak<AsyncDevice>>,
     tasks: HashMap<NodeId, watch::Sender<bool>>,
@@ -27,9 +29,14 @@ pub struct TunManager {
 
 impl TunManager {
     pub fn new(interface_prefix: String, enable_packet_information: bool) -> TunManager {
+        Self::new_with_parameters(interface_prefix, enable_packet_information, Duration::from_secs(10))
+    }
+
+    pub fn new_with_parameters(interface_prefix: String, enable_packet_information: bool, keepalive_interval: Duration) -> TunManager {
         TunManager {
             interface_prefix,
             enable_packet_information,
+            keepalive_interval,
             devices: HashMap::new(),
             tasks: HashMap::new(),
         }
@@ -78,7 +85,7 @@ impl DeviceManager for TunManager {
         let dev_send = self.create_device(node_id)?;
         let dev_recv = dev_send.clone();
         let stop_tx = watch::channel(false).0;
-        tokio::spawn(send_loop(node_id, sender, dev_send, stop_tx.subscribe()));
+        tokio::spawn(send_loop(node_id, self.keepalive_interval, sender, dev_send, stop_tx.subscribe()));
         tokio::spawn(recv_loop(node_id, receiver, dev_recv, stop_tx.subscribe()));
         self.tasks.insert(node_id, stop_tx);
         Ok(())
@@ -106,14 +113,24 @@ impl DeviceManager for TunManager {
 
 async fn send_loop(
     node_id: NodeId,
+    keepalive_interval: Duration,
     mut sender: Box<dyn ConnectionSender>,
     device: Arc<AsyncDevice>,
     mut stop: watch::Receiver<bool>,
 ) {
     let mut buf = [0u8; 2000];
+    let mut keepalive_ticker = interval(keepalive_interval);
+    // We use a single byte as keepalive packet, which is guaranteed to be smaller than any valid packet.
+    let keepalive = Bytes::from_static(&[0u8; 1]);
     loop {
         select! {
             _ = stop.changed() => break,
+            // Moving the keepalive logic to otherside is too annoying, so just send keepalive from here.
+            _ = keepalive_ticker.tick() => {
+                if let Err(err) = sender.send(keepalive.clone()).await {
+                    error!("Failed to send keepalive to node {node_id:X}: {err}");
+                }
+            }
             res = device.recv(&mut buf) => {
                 let size = match res {
                     Ok(s) => s,
@@ -151,6 +168,10 @@ async fn recv_loop(
                         }
                     }
                 };
+                if packet.len() == 1 {
+                    // Keepalive packet, ignore
+                    continue;
+                }
                 if let Err(err) = device.send(&packet).await {
                     error!("Failed to write to TUN device for node {node_id:X}: {err}");
                 }

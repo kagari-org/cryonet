@@ -1,14 +1,14 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::Arc,
+    sync::Arc, time::Duration,
 };
 
 #[cfg(target_arch = "wasm32")]
 use crate::wasm::AsyncDevice;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use pnet_packet::{
     MutablePacket, Packet,
     arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket},
@@ -31,7 +31,7 @@ use crate::{
     errors::CryonetError,
     fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
     mesh::packet::NodeId,
-    time::Instant,
+    time::{Instant, interval},
 };
 
 pub struct TapManager {
@@ -74,6 +74,7 @@ impl TapManager {
         Ok(TapManager {
             handle: TapManagerInner::new_with_device(
                 node_id,
+                Duration::from_secs(10),
                 tap_mac_prefix,
                 enable_packet_information,
                 ips,
@@ -116,6 +117,7 @@ struct TapManagerInner {
 impl TapManagerInner {
     fn new_with_device(
         node_id: NodeId,
+        keepalive_interval: Duration,
         tap_mac_prefix: u16,
         enable_packet_information: bool,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
@@ -134,6 +136,7 @@ impl TapManagerInner {
         });
         tokio::task::spawn_local(future);
         let future = send_loop(
+            keepalive_interval,
             enable_packet_information,
             ips,
             device2,
@@ -204,6 +207,7 @@ enum SendLoopMessage {
 }
 
 async fn send_loop(
+    keepalive_interval: Duration,
     enable_packet_information: bool,
     ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
     device: Arc<AsyncDevice>,
@@ -212,6 +216,9 @@ async fn send_loop(
 ) {
     let mut senders = HashMap::new();
     let mut buf = [0u8; 2000];
+    let mut keepalive_ticker = interval(keepalive_interval);
+    // We use a single byte as keepalive packet, which is guaranteed to be smaller than any valid packet.
+    let keepalive = Bytes::from_static(&[0u8; 1]);
     loop {
         tokio::select! {
             msg = msg_rx.recv() => match msg {
@@ -223,6 +230,14 @@ async fn send_loop(
                     senders.remove(&node_id);
                 }
             },
+            // Moving the keepalive logic to otherside is too annoying, so just send keepalive from here.
+            _ = keepalive_ticker.tick() => {
+                for (node_id, sender) in &mut senders {
+                    if let Err(err) = sender.send(keepalive.clone()).await {
+                        error!("Failed to send keepalive to node {node_id:X}: {err}");
+                    }
+                }
+            }
             res = device.recv(&mut buf) => {
                 let packet = match res {
                     Ok(size) => match EthernetPacket::new(&buf[..size]) {
@@ -371,6 +386,10 @@ async fn recv_loop(
                         }
                     }
                 };
+                if packet.len() == 1 {
+                    // Keepalive packet, ignore
+                    continue;
+                }
                 let (payload, ethertype, len) = if enable_packet_information {
                     if packet.len() < 4 {
                         warn!("Received packet with insufficient length for packet information from node {peer_id:X}");
