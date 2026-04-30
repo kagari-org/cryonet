@@ -17,11 +17,10 @@ use crate::{
     },
     mesh::{
         Mesh, MeshHandle,
-        igp::{Igp, IgpHandle},
+        igp::{Igp, IgpHandle}, packet::NodeId,
     },
 };
 use anyhow::{Result, anyhow, bail};
-use cryonet_uapi::NodeId;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::Mutex, task::LocalSet};
 use tracing_subscriber::EnvFilter;
@@ -108,8 +107,6 @@ pub struct Cryonet {
     mgr: *mut ConnManagerHandle,
     registry: *mut RegistryHandle,
     fm: *mut FullMeshHandle,
-
-    tap_mac: [u8; 6],
 }
 
 #[wasm_bindgen]
@@ -179,12 +176,11 @@ impl Cryonet {
             mgr: Box::into_raw(Box::new(mgr)),
             registry: Box::into_raw(Box::new(registry)),
             fm: Box::into_raw(Box::new(fm)),
-            tap_mac: generate_tap_mac(id, tap_mac_prefix),
         })
     }
 
-    pub fn tap_mac(&self) -> Vec<u8> {
-        self.tap_mac.to_vec()
+    pub fn generate_tap_mac(node_id: NodeId, tap_mac_prefix: u16) -> Vec<u8> {
+        generate_tap_mac(node_id, tap_mac_prefix).to_vec()
     }
 }
 

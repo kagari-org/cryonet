@@ -9,7 +9,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::{select, sync::watch};
-use tracing::error;
+use tracing::{debug, error};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::{
@@ -185,6 +185,7 @@ async fn recv_loop(
                 };
                 if packet.len() == 1 {
                     // Keepalive packet, ignore
+                    debug!("Received keepalive packet from node {node_id:X}");
                     continue;
                 }
                 if let Err(err) = device.send(&packet).await {

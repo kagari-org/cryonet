@@ -24,7 +24,7 @@ use pnet_packet::{
 };
 use sactor::sactor;
 use tokio::sync::{Mutex, mpsc, watch};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 #[cfg(not(target_arch = "wasm32"))]
 use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
 
@@ -389,6 +389,7 @@ async fn recv_loop(
                 };
                 if packet.len() == 1 {
                     // Keepalive packet, ignore
+                    debug!("Received keepalive packet from node {peer_id:X}");
                     continue;
                 }
                 let (payload, ethertype, len) = if enable_packet_information {

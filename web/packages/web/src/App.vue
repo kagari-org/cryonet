@@ -56,7 +56,8 @@ const Config = Schema.object({
 }).description('cryonet')
 
 const id = Math.floor(Math.random() * 254) + 1
-const address = `10.114.0.${id}`
+const ipv4 = `10.114.0.${id}`
+const ipv6 = `fd72::${id.toString(16)}`
 
 const config = ref<Config>({
   cryonet: {
@@ -65,7 +66,7 @@ const config = ref<Config>({
     ice_servers: [],
     enable_packet_information: false,
     tap_mac_prefix: 0x0200,
-    addresses: [address],
+    addresses: [ipv4, ipv6],
   },
 })
 
@@ -76,7 +77,7 @@ const initial = ref<Config>({
     ice_servers: [],
     enable_packet_information: false,
     tap_mac_prefix: 0x0200,
-    addresses: [address],
+    addresses: [ipv4, ipv6],
   },
 })
 
@@ -94,20 +95,7 @@ async function run() {
   file.value!.click()
   await promise
 
-  function send(data: Uint8Array) {
-    // @ts-ignore
-    v86.bus.send('net0-receive', data)
-  }
-
-  let notify = (_data: Uint8Array) => {}
-  function recv() {
-    return new Promise<Uint8Array>(resolve => {
-      notify = resolve
-    })
-  }
-
-  const cryonet = await Cryonet.init(config.value.cryonet, send, recv)
-  const mac = [...cryonet.tap_mac()].map(x => x.toString(16).padStart(2, '0')).join(':')
+  const mac = [...Cryonet.generate_tap_mac(config.value.cryonet.id, config.value.cryonet.tap_mac_prefix)].map(x => x.toString(16).padStart(2, '0')).join(':')
 
   const v86 = new V86({
     wasm_path: v86wasm,
@@ -127,15 +115,29 @@ async function run() {
       url: URL.createObjectURL(file.value!.files![0]!),
     },
     hda: {
-      buffer: await createImage({ mac, address }),
+      buffer: await createImage({ mac, ipv4, ipv6 }),
     },
     // boot_order: BootOrder.CD_HARDDISK_FLOPPY,
     boot_order: 0x123,
   })
+
+  function send(data: Uint8Array) {
+    // @ts-ignore
+    v86.bus.send('net0-receive', data)
+  }
+
+  let notify = (_data: Uint8Array) => {}
+  function recv() {
+    return new Promise<Uint8Array>(resolve => {
+      notify = resolve
+    })
+  }
   v86.add_listener('net0-send', data => {
     notify(data)
   })
 
+  config.value.cryonet.addresses.push(macToLinkLocal(mac))
+  const cryonet = await Cryonet.init(config.value.cryonet, send, recv)
 
   // @ts-ignore
   globalThis.cryonet = cryonet
@@ -151,6 +153,25 @@ async function createImage(info: any) {
   disk.writeFile('/info', new TextEncoder().encode(JSON.stringify(info)))
   disk.unmount()
   return image.buffer
+}
+
+function macToLinkLocal(mac: string) {
+  const parts = mac.split(':').map(x => parseInt(x, 16))
+  const eui64 = [
+    parts[0]! ^ 0b00000010,
+    parts[1]!,
+    parts[2]!,
+    0xff,
+    0xfe,
+    parts[3]!,
+    parts[4]!,
+    parts[5]!,
+  ]
+  const groups = []
+  for (let i = 0; i < 8; i += 2) {
+    groups.push(((eui64[i]! << 8) | eui64[i + 1]!).toString(16).padStart(4, '0'))
+  }
+  return 'fe80::' + groups.join(':')
 }
 </script>
 
