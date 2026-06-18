@@ -55,6 +55,8 @@ struct Args {
     tap_mode: bool,
     #[clap(env, long, default_value_t = 0x0200)]
     tap_mac_prefix: u16,
+    #[clap(env, long, default_value = "cn0")]
+    tap_interface_name: String,
 }
 
 fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
@@ -104,6 +106,7 @@ async fn main() -> Result<()> {
                     Arc::new(Mutex::new(Box::new(TapManager::new(
                         args.id,
                         args.tap_mac_prefix,
+                        args.tap_interface_name,
                         args.enable_packet_information,
                         ips.clone(),
                     )?)))

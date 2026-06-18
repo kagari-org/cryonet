@@ -44,6 +44,7 @@ impl TapManager {
     pub fn new(
         node_id: NodeId,
         tap_mac_prefix: u16,
+        tap_interface_name: String,
         enable_packet_information: bool,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
     ) -> Result<TapManager> {
@@ -53,6 +54,7 @@ impl TapManager {
                 .mtu(1280)
                 .layer(Layer::L2)
                 .mac_addr(tap_mac)
+                .name(&tap_interface_name)
                 .enable(true)
                 .build_async()?,
         );
