@@ -157,6 +157,7 @@
     systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
     perSystem = { self', pkgs, ... }: {
       packages.default = pkgs.callPackage cryonet {};
+      packages.static = pkgs.pkgsStatic.callPackage cryonet {};
       packages.wasm = pkgs.callPackage cryonet-wasm {};
       packages.iso = iso;
       devShells.default = pkgs.mkShell {
