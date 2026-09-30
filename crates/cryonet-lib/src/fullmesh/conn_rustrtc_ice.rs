@@ -262,7 +262,7 @@ impl ConnectionSender for ConnectionRustrtcIceSender {
             if self.key.has_changed()? {
                 key = self.key.borrow_and_update().unwrap();
                 self.aes = Aes128Gcm::new(&key.key);
-                self.counter = 0;
+                self.counter = 1;
             }
 
             if self.encrypt_local_packets || !is_private(pair.remote.address) {
