@@ -109,6 +109,10 @@ impl ConnManager {
 
     #[no_reply]
     async fn connect(&mut self) -> Result<()> {
+        // drop half-open links, they would keep rejecting the peer's re-dials
+        if let Err(err) = self.mesh.reap_stale_links().await {
+            warn!("Failed to reap stale mesh links: {err}");
+        }
         for server in &self.servers {
             if server.is_empty() {
                 continue;

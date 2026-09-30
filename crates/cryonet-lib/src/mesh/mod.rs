@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Debug};
+use std::{collections::HashMap, fmt::Debug, time::Duration};
 
 use anyhow::{Error, Result};
 use async_trait::async_trait;
@@ -11,7 +11,7 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 
-use crate::errors::CryonetError;
+use crate::{errors::CryonetError, time::Instant};
 
 pub mod igp;
 pub mod packet;
@@ -21,9 +21,11 @@ pub struct Mesh {
     handle: MeshHandle,
 
     id: NodeId,
+    link_idle_timeout: Duration,
 
     link_send: HashMap<NodeId, Box<dyn LinkSend>>,
     link_recv_stop: HashMap<NodeId, watch::Sender<bool>>,
+    link_last_recv: HashMap<NodeId, Instant>,
     routes: HashMap<NodeId, NodeId>,
     #[allow(clippy::type_complexity)]
     dispatchees: Vec<(
@@ -64,11 +66,17 @@ pub enum MeshEvent {
 #[sactor(pub)]
 impl Mesh {
     pub fn new(id: NodeId) -> MeshHandle {
+        Self::new_with_parameters(id, Duration::from_secs(20))
+    }
+
+    pub fn new_with_parameters(id: NodeId, link_idle_timeout: Duration) -> MeshHandle {
         let (future, mesh) = Mesh::run(move |handle| Mesh {
             handle,
             id,
+            link_idle_timeout,
             link_send: HashMap::new(),
             link_recv_stop: HashMap::new(),
+            link_last_recv: HashMap::new(),
             routes: HashMap::new(),
             dispatchees: Vec::new(),
             mesh_event_tx: broadcast::Sender::new(16),
@@ -83,6 +91,9 @@ impl Mesh {
         from: NodeId,
         packet: Result<Packet, LinkError>,
     ) -> Result<()> {
+        if self.link_send.contains_key(&from) {
+            self.link_last_recv.insert(from, Instant::now());
+        }
         let mut packet = match packet {
             Ok(packet) => packet,
             Err(LinkError::Closed) => {
@@ -219,8 +230,9 @@ impl Mesh {
         is_initiator: bool,
     ) -> bool {
         if self.link_send.contains_key(&dst) {
-            // ensure keeping the same link for both sides to avoid duplicate links
-            let keep_new = is_initiator == (self.id < dst);
+            // ensure keeping the same link for both sides to avoid duplicate links,
+            // unless the existing link is dead
+            let keep_new = is_initiator == (self.id < dst) || !self.link_is_alive(dst);
             if !keep_new {
                 debug!(
                     "Link to node {dst:X} already exists, keeping existing (is_initiator={is_initiator}, our id {:X}, dst {dst:X})",
@@ -237,6 +249,7 @@ impl Mesh {
 
         let mesh = self.handle.clone();
         self.link_send.insert(dst, send);
+        self.link_last_recv.insert(dst, Instant::now());
         let (stop, mut stop_rx) = watch::channel(false);
         self.link_recv_stop.insert(dst, stop);
 
@@ -263,11 +276,33 @@ impl Mesh {
         debug!("Removing link to node {dst:X}");
         self.routes.retain(|_, &mut v| v != dst);
         self.link_send.remove(&dst);
+        self.link_last_recv.remove(&dst);
         let ctrl = self.link_recv_stop.remove(&dst);
         if let Some(ctrl) = ctrl {
             let _ = ctrl.send(true);
         }
         let _ = self.mesh_event_tx.send(MeshEvent::LinkDown(dst));
+    }
+
+    pub fn link_is_alive(&self, dst: NodeId) -> bool {
+        self.link_last_recv
+            .get(&dst)
+            .is_some_and(|last| Instant::now().duration_since(*last) < self.link_idle_timeout)
+    }
+
+    // drop links that stopped receiving, a half-open one would keep rejecting
+    // the peer's re-dials forever
+    pub fn reap_stale_links(&mut self) {
+        let stale: Vec<NodeId> = self
+            .link_send
+            .keys()
+            .filter(|dst| !self.link_is_alive(**dst))
+            .copied()
+            .collect();
+        for dst in stale {
+            warn!("Link to node {dst:X} is silent, removing");
+            self.remove_link(dst);
+        }
     }
 
     pub fn get_links(&self) -> Vec<NodeId> {
