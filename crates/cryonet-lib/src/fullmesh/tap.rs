@@ -77,7 +77,7 @@ impl TapManager {
         Ok(TapManager {
             handle: TapManagerInner::new_with_device(
                 node_id,
-                Duration::from_secs(10),
+                Duration::from_secs(3),
                 tap_mac_prefix,
                 enable_packet_information,
                 ips,

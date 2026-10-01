@@ -33,7 +33,7 @@ impl TunManager {
         Self::new_with_parameters(
             interface_prefix,
             enable_packet_information,
-            Duration::from_secs(10),
+            Duration::from_secs(3),
         )
     }
 

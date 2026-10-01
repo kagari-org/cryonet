@@ -119,7 +119,7 @@ impl FullMesh {
             dm,
             ice_servers,
             Duration::from_secs(10),
-            Duration::from_secs(30),
+            Duration::from_secs(12),
             Duration::from_secs(120),
             candidate_filter_prefix,
             encrypt_local_packets,
@@ -494,6 +494,7 @@ impl FullMesh {
         let mut disconnected = Vec::new();
         self.connections.retain(|node_id, conn| {
             if conn.connection.status() == ConnectionState::Closed {
+                disconnected.push(*node_id);
                 return false;
             }
             let received = conn.connection.received();
@@ -509,7 +510,7 @@ impl FullMesh {
         {
             let mut dm = self.dm.lock().await;
             for node_id in disconnected {
-                debug!("Connection to peer {node_id:X} timed out, disconnecting");
+                debug!("Connection to peer {node_id:X} is gone, disconnecting");
                 dm.disconnected(node_id).await?;
             }
             // mark connected
