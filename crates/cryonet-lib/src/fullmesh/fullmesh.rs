@@ -92,6 +92,7 @@ pub struct FullMesh {
     candidate_filter_prefix: Option<AnyIpCidr>,
     encrypt_local_packets: bool,
     connection_timeout: Duration,
+    connect_timeout: Duration,
     rekey_timeout: Duration,
 
     packet_rx: mpsc::Receiver<Packet>,
@@ -120,6 +121,7 @@ impl FullMesh {
             ice_servers,
             Duration::from_secs(10),
             Duration::from_secs(12),
+            Duration::from_secs(30),
             Duration::from_secs(120),
             candidate_filter_prefix,
             encrypt_local_packets,
@@ -136,6 +138,7 @@ impl FullMesh {
         ice_servers: Vec<IceServer>,
         connect_interval: Duration,
         connection_timeout: Duration,
+        connect_timeout: Duration,
         rekey_timeout: Duration,
         candidate_filter_prefix: Option<AnyIpCidr>,
         encrypt_local_packets: bool,
@@ -153,6 +156,7 @@ impl FullMesh {
             dm,
             ice_servers,
             connection_timeout,
+            connect_timeout,
             rekey_timeout,
             candidate_filter_prefix,
             encrypt_local_packets,
@@ -509,7 +513,12 @@ impl FullMesh {
             if received != conn.last_received.0 {
                 conn.last_received = (received, time);
             }
-            let keep = time.duration_since(conn.last_received.1) < self.connection_timeout;
+            let timeout = if conn.once_connected {
+                self.connection_timeout
+            } else {
+                self.connect_timeout
+            };
+            let keep = time.duration_since(conn.last_received.1) < timeout;
             if !keep {
                 disconnected.push(*node_id);
             }
