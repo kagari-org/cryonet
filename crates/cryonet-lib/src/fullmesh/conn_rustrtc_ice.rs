@@ -328,6 +328,7 @@ impl PacketReceiver for MpscSender {
 #[async_trait]
 impl ConnectionReceiver for ConnectionRustrtcIceReceiver {
     async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
+        let (data, addr) = self.rx.recv().await.ok_or(CryonetError::ChannelClosed)?;
         if self.key.has_changed()? {
             let key = self.key.borrow_and_update().unwrap();
             if key.index {
@@ -336,7 +337,6 @@ impl ConnectionReceiver for ConnectionRustrtcIceReceiver {
                 self.aes[0] = Aes128Gcm::new(&key.key);
             }
         }
-        let (data, addr) = self.rx.recv().await.ok_or(CryonetError::ChannelClosed)?;
         if data.len() < 4 {
             anyhow::bail!("Received packet is too short");
         }
