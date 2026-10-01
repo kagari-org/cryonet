@@ -330,6 +330,10 @@ impl FullMesh {
                         .await?;
                 } else {
                     // we received the rekey response
+                    if connection.key().is_some_and(|key| key.index == *index) {
+                        debug!("Ignoring stale rekey response from peer {src:X}");
+                        return Ok(());
+                    }
                     let mut key = [0; 16];
                     conn.ecdh_key
                         .diffie_hellman(&public_key)
@@ -373,6 +377,10 @@ impl FullMesh {
                     return Ok(());
                 };
                 // we confirmed the rekey
+                if connection.key().is_some_and(|key| key.index == *index) {
+                    debug!("Ignoring stale rekey confirm from peer {src:X}");
+                    return Ok(());
+                }
                 let mut key = [0; 16];
                 conn.ecdh_key
                     .diffie_hellman(&public_key)
@@ -555,6 +563,7 @@ impl FullMesh {
             let new_ecdh_key = EphemeralSecret::generate();
             let new_public_key = new_ecdh_key.public_key();
             conn.ecdh_key = new_ecdh_key;
+            conn.last_rekey = time;
             self.mesh
                 .send_packet(
                     *peer_id,
