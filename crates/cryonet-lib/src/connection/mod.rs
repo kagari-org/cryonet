@@ -25,7 +25,7 @@ use tokio::net::TcpListener;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_tungstenite::accept_async;
 
-use crate::time::{Interval, interval};
+use crate::time::{Interval, interval, timeout};
 
 pub mod link;
 
@@ -42,6 +42,7 @@ pub struct ConnManager {
     servers: Vec<String>,
 
     connect_timer: Interval,
+    connect_timeout: Duration,
 
     servers_map: Arc<Mutex<HashMap<String, NodeId>>>,
     connecting: Arc<Mutex<HashSet<String>>>,
@@ -65,7 +66,16 @@ impl ConnManager {
         servers: Vec<String>,
         listen: SocketAddr,
     ) -> Result<ConnManagerHandle> {
-        Self::new_with_parameters(id, mesh, token, servers, listen, Duration::from_secs(8)).await
+        Self::new_with_parameters(
+            id,
+            mesh,
+            token,
+            servers,
+            listen,
+            Duration::from_secs(8),
+            Duration::from_secs(10),
+        )
+        .await
     }
 
     #[allow(unused_variables)]
@@ -76,6 +86,7 @@ impl ConnManager {
         servers: Vec<String>,
         listen: SocketAddr,
         connect_interval: Duration,
+        connect_timeout: Duration,
     ) -> Result<ConnManagerHandle> {
         #[cfg(not(target_arch = "wasm32"))]
         let listener = {
@@ -89,6 +100,7 @@ impl ConnManager {
             token,
             servers,
             connect_timer: interval(connect_interval),
+            connect_timeout,
             servers_map: Arc::new(Mutex::new(HashMap::new())),
             connecting: Arc::new(Mutex::new(HashSet::new())),
             #[cfg(not(target_arch = "wasm32"))]
@@ -129,11 +141,19 @@ impl ConnManager {
             let token = self.token.clone();
             let servers_map = self.servers_map.clone();
             let connecting = self.connecting.clone();
+            let connect_timeout = self.connect_timeout;
             let server = server.clone();
             tokio::task::spawn_local(async move {
-                if let Err(err) =
-                    Self::connect_task(id, mesh, token, servers_map, server.clone()).await
+                let result = match timeout(
+                    connect_timeout,
+                    Self::connect_task(id, mesh, token, servers_map, server.clone()),
+                )
+                .await
                 {
+                    Ok(result) => result,
+                    Err(_) => Err(Error::msg("timed out")),
+                };
+                if let Err(err) = result {
                     warn!("Failed to connect to server {server}: {err}");
                 }
                 connecting.lock().await.remove(&server);

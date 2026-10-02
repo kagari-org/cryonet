@@ -1,7 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
-pub use tokio::time::{Instant, Interval, interval};
+pub use tokio::time::{Instant, Interval, interval, timeout};
 #[cfg(target_arch = "wasm32")]
 pub use wasmtimer::{
     std::Instant,
-    tokio::{Interval, interval},
+    tokio::{Interval, interval, timeout},
 };
