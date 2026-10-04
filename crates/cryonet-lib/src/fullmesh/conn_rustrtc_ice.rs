@@ -135,7 +135,7 @@ impl ConnectionRustrtcIce {
     }
 
     pub async fn start(&mut self, remote_parameters: IceParameters) -> Result<()> {
-        self.ice.start(remote_parameters)
+        self.ice.start(remote_parameters).await
     }
 
     pub fn add_candidates(&self, candidates: &Vec<String>) {
@@ -222,7 +222,6 @@ impl Connection for ConnectionRustrtcIce {
     async fn selected_candidate(&self) -> Option<String> {
         self.ice
             .get_selected_pair()
-            .await
             .map(|pair| pair.remote.to_sdp())
     }
 
@@ -318,7 +317,7 @@ pub struct ConnectionRustrtcIceReceiver {
 
 #[async_trait]
 impl PacketReceiver for MpscSender {
-    async fn receive(&self, packet: Bytes, addr: SocketAddr) {
+    async fn receive(&self, packet: Bytes, addr: SocketAddr, _marshal_buf: &mut Vec<u8>) {
         if let Err(err) = self.0.send((packet, addr)).await {
             debug!("Failed to send received packet to channel: {err}");
         }

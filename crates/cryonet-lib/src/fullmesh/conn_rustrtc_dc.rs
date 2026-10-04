@@ -183,7 +183,6 @@ impl Connection for ConnectionRustrtcDataChannel {
         self.pc
             .ice_transport()
             .get_selected_pair()
-            .await
             .map(|pair| pair.remote.to_sdp())
     }
 
@@ -226,6 +225,7 @@ impl ConnectionReceiver for ConnectionRustrtcDataChannelReceiver {
                     return Err(CryonetError::ChannelClosed.into());
                 }
                 Some(DataChannelEvent::Open) => continue,
+                Some(DataChannelEvent::BufferedAmountLow(_)) => continue,
                 Some(DataChannelEvent::Message(data)) => {
                     self.received
                         .fetch_add(data.len() as u64, Ordering::Relaxed);
