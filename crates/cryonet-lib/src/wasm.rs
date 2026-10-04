@@ -17,7 +17,8 @@ use crate::{
     },
     mesh::{
         Mesh, MeshHandle,
-        igp::{Igp, IgpHandle}, packet::NodeId,
+        igp::{Igp, IgpHandle},
+        packet::NodeId,
     },
 };
 use anyhow::{Result, anyhow, bail};

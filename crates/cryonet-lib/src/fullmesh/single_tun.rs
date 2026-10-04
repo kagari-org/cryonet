@@ -18,6 +18,8 @@ use crate::{
 pub struct SingleTunManager {
     device: Arc<AsyncDevice>,
 
+    addresses: Option<Vec<IpAddr>>,
+
     send_msg_tx: mpsc::UnboundedSender<SendLoopMessage>,
     recv_tasks: HashMap<NodeId, watch::Sender<bool>>,
 }
@@ -36,7 +38,7 @@ impl SingleTunManager {
             builder = builder.packet_information(true);
         }
         let device = Arc::new(builder.build_async()?);
-        Self::new_with_device(device, enable_packet_information, ips)
+        Self::new_with_device(device, enable_packet_information, ips, None)
     }
 
     // Safety: fd must be a valid, open TUN file descriptor.
@@ -45,21 +47,24 @@ impl SingleTunManager {
         fd: RawFd,
         enable_packet_information: bool,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        addresses: Vec<IpAddr>,
     ) -> Result<SingleTunManager> {
         let device = Arc::new(unsafe { AsyncDevice::from_fd(fd)? });
-        Self::new_with_device(device, enable_packet_information, ips)
+        Self::new_with_device(device, enable_packet_information, ips, Some(addresses))
     }
 
     pub fn new_with_device(
         device: Arc<AsyncDevice>,
         enable_packet_information: bool,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        addresses: Option<Vec<IpAddr>>,
     ) -> Result<SingleTunManager> {
         Self::new_with_parameters(
             device,
             enable_packet_information,
             Duration::from_secs(3),
             ips,
+            addresses,
         )
     }
 
@@ -68,6 +73,7 @@ impl SingleTunManager {
         enable_packet_information: bool,
         keepalive_interval: Duration,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        addresses: Option<Vec<IpAddr>>,
     ) -> Result<SingleTunManager> {
         let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
         tokio::spawn(send_loop(
@@ -79,6 +85,7 @@ impl SingleTunManager {
         ));
         Ok(SingleTunManager {
             device,
+            addresses,
             send_msg_tx,
             recv_tasks: HashMap::new(),
         })
@@ -121,7 +128,10 @@ impl DeviceManager for SingleTunManager {
     }
 
     async fn ips(&self) -> Result<Vec<IpAddr>> {
-        Ok(self.device.addresses()?)
+        match &self.addresses {
+            Some(addresses) => Ok(addresses.clone()),
+            None => Ok(self.device.addresses()?),
+        }
     }
 }
 
