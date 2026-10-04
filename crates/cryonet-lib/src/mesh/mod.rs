@@ -36,15 +36,26 @@ pub struct Mesh {
     mesh_event_tx: broadcast::Sender<MeshEvent>,
 }
 
-#[async_trait(?Send)]
-pub trait LinkSend {
-    async fn send(&mut self, packet: Packet) -> Result<(), LinkError>;
+macro_rules! define_link_traits {
+    ($($supertrait:path),*) => {
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        pub trait LinkSend: $($supertrait +)* {
+            async fn send(&mut self, packet: Packet) -> Result<(), LinkError>;
+        }
+
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        pub trait LinkRecv: $($supertrait +)* {
+            async fn recv(&mut self) -> Result<Packet, LinkError>;
+        }
+    };
 }
 
-#[async_trait(?Send)]
-pub trait LinkRecv {
-    async fn recv(&mut self) -> Result<Packet, LinkError>;
-}
+#[cfg(not(target_arch = "wasm32"))]
+define_link_traits!(Send);
+#[cfg(target_arch = "wasm32")]
+define_link_traits!();
 
 #[derive(Debug, thiserror::Error)]
 pub enum LinkError {

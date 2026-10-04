@@ -39,7 +39,7 @@ pub fn new_reqwest_ws_link(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[async_trait(?Send)]
+#[async_trait]
 impl LinkSend for WebSocketLinkSend<TungsteniteWebSocket, TungsteniteMessage> {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
         let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(e.into()))?;
@@ -52,7 +52,7 @@ impl LinkSend for WebSocketLinkSend<TungsteniteWebSocket, TungsteniteMessage> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[async_trait(?Send)]
+#[async_trait]
 impl LinkRecv for WebSocketLinkRecv<TungsteniteWebSocket> {
     async fn recv(&mut self) -> Result<Packet, LinkError> {
         let packet = match self.0.next().await {
@@ -68,7 +68,8 @@ impl LinkRecv for WebSocketLinkRecv<TungsteniteWebSocket> {
     }
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl LinkSend for WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage> {
     async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
         let data = serde_json::to_vec(&packet).map_err(|e| LinkError::Unknown(e.into()))?;
@@ -80,7 +81,8 @@ impl LinkSend for WebSocketLinkSend<ReqwestWebSocket, ReqwestMessage> {
     }
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl LinkRecv for WebSocketLinkRecv<ReqwestWebSocket> {
     async fn recv(&mut self) -> Result<Packet, LinkError> {
         let packet = match self.0.next().await {

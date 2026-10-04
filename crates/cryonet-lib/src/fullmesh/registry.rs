@@ -2,7 +2,6 @@ use std::{
     any::Any,
     collections::HashMap,
     net::IpAddr,
-    pin::Pin,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -14,7 +13,7 @@ use tokio::sync::{Mutex, mpsc};
 use tracing::error;
 
 use crate::{
-    fullmesh::DeviceManager,
+    fullmesh::{DeviceManager, NotifyFn},
     mesh::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
@@ -55,7 +54,7 @@ pub struct Registry {
 
     nodes: HashMap<NodeId, (Node, Instant)>,
     ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
-    notifiers: Vec<Weak<Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>>>>>>>,
+    notifiers: Vec<Weak<NotifyFn>>,
 }
 
 #[sactor(pub)]
@@ -186,7 +185,7 @@ impl Registry {
 
     pub async fn register_notifier(
         &mut self,
-        notify: Weak<Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>>>>>>,
+        notify: Weak<NotifyFn>,
     ) {
         self.notifiers.push(notify);
     }

@@ -1,6 +1,8 @@
 use std::{
     any::Any,
+    future::Future,
     net::{IpAddr, SocketAddr},
+    pin::Pin,
 };
 
 use anyhow::Result;
@@ -85,3 +87,9 @@ macro_rules! define_sender_receiver {
 define_sender_receiver!(Send, Sync);
 #[cfg(target_arch = "wasm32")]
 define_sender_receiver!();
+
+#[cfg(not(target_arch = "wasm32"))]
+pub type NotifyFn =
+    Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
+#[cfg(target_arch = "wasm32")]
+pub type NotifyFn = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>>>>>;

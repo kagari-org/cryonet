@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, pin::Pin, sync::Arc, time::Duration};
+use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Error, Result};
 use cidr::AnyIpCidr;
@@ -27,7 +27,7 @@ use sha2::Sha256;
 
 use crate::{
     fullmesh::{
-        Connection, ConnectionState, DeviceManager, IceServer,
+        Connection, ConnectionState, DeviceManager, IceServer, NotifyFn,
         registry::{ConnectionType, RegistryHandle},
     },
     mesh::{
@@ -99,7 +99,7 @@ pub struct FullMesh {
     connect_ticker: Interval,
     connections: HashMap<NodeId, FullMeshConnection>,
 
-    notifier: Arc<Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>>>>>>,
+    notifier: Arc<NotifyFn>,
 }
 
 #[sactor(pub)]
