@@ -23,7 +23,7 @@ use crate::{
 };
 
 pub struct ConnectionRustrtcDataChannel {
-    candidate_filter_prefix: Option<AnyIpCidr>,
+    candidate_filter_prefixes: Vec<AnyIpCidr>,
 
     pc: PeerConnection,
     dc: Arc<Mutex<Option<Arc<DataChannel>>>>,
@@ -37,7 +37,7 @@ pub struct ConnectionRustrtcDataChannel {
 impl ConnectionRustrtcDataChannel {
     pub async fn new(
         ice_servers: Vec<IceServer>,
-        candidate_filter_prefix: Option<AnyIpCidr>,
+        candidate_filter_prefixes: Vec<AnyIpCidr>,
     ) -> ConnectionRustrtcDataChannel {
         let pc = PeerConnection::new(RtcConfiguration {
             ice_servers: ice_servers
@@ -75,7 +75,7 @@ impl ConnectionRustrtcDataChannel {
         });
 
         ConnectionRustrtcDataChannel {
-            candidate_filter_prefix,
+            candidate_filter_prefixes,
             pc,
             dc,
             status,
@@ -124,8 +124,10 @@ impl ConnectionRustrtcDataChannel {
     pub async fn add_candidates(&self, candidates: &Vec<String>) -> Result<()> {
         for candidate in candidates {
             if let Ok(candidate) = IceCandidate::from_sdp(candidate) {
-                if let Some(prefix) = &self.candidate_filter_prefix
-                    && prefix.contains(&candidate.address.ip())
+                if self
+                    .candidate_filter_prefixes
+                    .iter()
+                    .any(|prefix| prefix.contains(&candidate.address.ip()))
                 {
                     continue;
                 }

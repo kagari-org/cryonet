@@ -92,8 +92,8 @@ return network.registerProtocol('cryonet', {
 		o.password = true;
 		o.rmempty = true;
 
-		o = s.taboption('advanced', form.Value, 'candidate_filter_prefix', _('Candidate filter prefix'),
-			_('Optional IPv4 or IPv6 CIDR prefix.'));
+		o = s.taboption('advanced', form.DynamicList, 'candidate_filter_prefixes', _('Candidate filter prefixes'),
+			_('Optional IPv4 or IPv6 CIDR prefixes. Candidates matching any of these prefixes are filtered out.'));
 		o.datatype = 'or(cidr4,cidr6)';
 		o.rmempty = true;
 

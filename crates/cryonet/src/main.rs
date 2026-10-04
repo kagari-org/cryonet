@@ -40,8 +40,8 @@ struct Args {
     servers: Vec<String>,
     #[clap(env, long, short, value_parser = parse_rtc_ice_server, value_delimiter = ',')]
     ice_servers: Vec<IceServer>,
-    #[clap(env, long, short, value_parser = AnyIpCidr::from_str)]
-    candidate_filter_prefix: Option<AnyIpCidr>,
+    #[clap(env, long, short, value_parser = AnyIpCidr::from_str, value_delimiter = ',')]
+    candidate_filter_prefixes: Vec<AnyIpCidr>,
     #[clap(env, long, default_value_t = false)]
     encrypt_local_packets: bool,
     #[clap(env, long, default_value = "cn")]
@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
                     registry,
                     dm.clone(),
                     args.ice_servers,
-                    args.candidate_filter_prefix,
+                    args.candidate_filter_prefixes,
                     args.encrypt_local_packets,
                 )
                 .await?;

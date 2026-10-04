@@ -47,7 +47,7 @@ pub struct ConnectionWasmDataChannel {
 impl ConnectionWasmDataChannel {
     pub async fn new(
         ice_servers: Vec<IceServer>,
-        _candidate_filter_prefix: Option<AnyIpCidr>,
+        _candidate_filter_prefixes: Vec<AnyIpCidr>,
     ) -> Result<Self> {
         let ice_servers: Vec<_> = ice_servers
             .into_iter()

@@ -164,7 +164,7 @@ impl Cryonet {
             registry.clone(),
             dm,
             ice_servers,
-            None,
+            Vec::new(),
             false,
         )
         .await

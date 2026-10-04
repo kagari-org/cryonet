@@ -11,7 +11,7 @@ proto_cryonet_init_config() {
 	proto_config_add_string 'listen'
 	proto_config_add_string 'servers'
 	proto_config_add_string 'ice_servers'
-	proto_config_add_string 'candidate_filter_prefix'
+	proto_config_add_string 'candidate_filter_prefixes:list(string)'
 	proto_config_add_string 'tap_interface_name'
 	proto_config_add_boolean 'encrypt_local_packets'
 	proto_config_add_boolean 'enable_packet_information'
@@ -23,9 +23,9 @@ proto_cryonet_init_config() {
 
 proto_cryonet_setup() {
 	local config="$1"
-	local id token listen servers ice_servers candidate_filter_prefix
+	local id token listen servers ice_servers candidate_filter_prefixes
 	local tap_interface_name encrypt_local_packets enable_packet_information ipaddr ip6addr
-	json_get_vars id token listen servers ice_servers candidate_filter_prefix \
+	json_get_vars id token listen servers ice_servers candidate_filter_prefixes \
 		tap_interface_name encrypt_local_packets enable_packet_information ipaddr ip6addr
 
 	[ -n "$id" ] || { proto_notify_error "$config" "missing id"; proto_block_restart "$config"; return 1; }
@@ -68,7 +68,9 @@ proto_cryonet_setup() {
 	[ -n "$listen" ] && set -- "$@" --listen "$listen"
 	[ -n "$servers" ] && set -- "$@" --servers "$servers"
 	[ -n "$ice_servers" ] && set -- "$@" --ice-servers "$ice_servers"
-	[ -n "$candidate_filter_prefix" ] && set -- "$@" --candidate-filter-prefix "$candidate_filter_prefix"
+	for prefix in $candidate_filter_prefixes; do
+		set -- "$@" --candidate-filter-prefixes "$prefix"
+	done
 	[ -n "$tap_interface_name" ] && set -- "$@" --tap-interface-name "$tap_interface_name"
 	[ "$encrypt_local_packets" = 1 ] && set -- "$@" --encrypt-local-packets
 	[ "$enable_packet_information" = 1 ] && set -- "$@" --enable-packet-information

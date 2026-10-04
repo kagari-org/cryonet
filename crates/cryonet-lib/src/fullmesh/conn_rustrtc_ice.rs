@@ -43,7 +43,7 @@ pub struct ConnectionRustrtcIce {
     id: NodeId,
     peer_id: NodeId,
     ice: IceTransport,
-    candidate_filter_prefix: Option<AnyIpCidr>,
+    candidate_filter_prefixes: Vec<AnyIpCidr>,
     encrypt_local_packets: bool,
     send_key: watch::Sender<Option<ConnectionRustrtcIceKey>>,
     recv_key: watch::Sender<Option<ConnectionRustrtcIceKey>>,
@@ -59,7 +59,7 @@ impl ConnectionRustrtcIce {
         peer_id: NodeId,
         fm: FullMeshHandle,
         ice_servers: Vec<IceServer>,
-        candidate_filter_prefix: Option<AnyIpCidr>,
+        candidate_filter_prefixes: Vec<AnyIpCidr>,
         encrypt_local_packets: bool,
         controlling: bool,
     ) -> Result<(Self, IceParameters, Vec<String>)> {
@@ -112,9 +112,11 @@ impl ConnectionRustrtcIce {
             gather.changed().await?;
         }
         let mut candidates = ice.local_candidates();
-        if let Some(prefix) = &candidate_filter_prefix {
-            candidates.retain(|candidate| !prefix.contains(&candidate.address.ip()));
-        }
+        candidates.retain(|candidate| {
+            !candidate_filter_prefixes
+                .iter()
+                .any(|prefix| prefix.contains(&candidate.address.ip()))
+        });
         let candidates = candidates.into_iter().map(|c| c.to_sdp()).collect();
 
         Ok((
@@ -122,7 +124,7 @@ impl ConnectionRustrtcIce {
                 id,
                 peer_id,
                 ice,
-                candidate_filter_prefix,
+                candidate_filter_prefixes,
                 encrypt_local_packets,
                 send_key: watch::channel(None).0,
                 recv_key: watch::channel(None).0,
@@ -141,8 +143,10 @@ impl ConnectionRustrtcIce {
     pub fn add_candidates(&self, candidates: &Vec<String>) {
         for candidate in candidates {
             if let Ok(candidate) = IceCandidate::from_sdp(candidate) {
-                if let Some(prefix) = &self.candidate_filter_prefix
-                    && prefix.contains(&candidate.address.ip())
+                if self
+                    .candidate_filter_prefixes
+                    .iter()
+                    .any(|prefix| prefix.contains(&candidate.address.ip()))
                 {
                     continue;
                 }

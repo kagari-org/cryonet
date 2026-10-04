@@ -89,7 +89,7 @@ pub struct FullMesh {
     registry: RegistryHandle,
     dm: Arc<Mutex<Box<dyn DeviceManager>>>,
     ice_servers: Vec<IceServer>,
-    candidate_filter_prefix: Option<AnyIpCidr>,
+    candidate_filter_prefixes: Vec<AnyIpCidr>,
     encrypt_local_packets: bool,
     connection_timeout: Duration,
     connect_timeout: Duration,
@@ -110,7 +110,7 @@ impl FullMesh {
         registry: RegistryHandle,
         dm: Arc<Mutex<Box<dyn DeviceManager>>>,
         ice_servers: Vec<IceServer>,
-        candidate_filter_prefix: Option<AnyIpCidr>,
+        candidate_filter_prefixes: Vec<AnyIpCidr>,
         encrypt_local_packets: bool,
     ) -> Result<FullMeshHandle> {
         Self::new_with_parameters(
@@ -123,7 +123,7 @@ impl FullMesh {
             Duration::from_secs(12),
             Duration::from_secs(30),
             Duration::from_secs(120),
-            candidate_filter_prefix,
+            candidate_filter_prefixes,
             encrypt_local_packets,
         )
         .await
@@ -140,7 +140,7 @@ impl FullMesh {
         connection_timeout: Duration,
         connect_timeout: Duration,
         rekey_timeout: Duration,
-        candidate_filter_prefix: Option<AnyIpCidr>,
+        candidate_filter_prefixes: Vec<AnyIpCidr>,
         encrypt_local_packets: bool,
     ) -> Result<FullMeshHandle> {
         let packet_rx = mesh
@@ -158,7 +158,7 @@ impl FullMesh {
             connection_timeout,
             connect_timeout,
             rekey_timeout,
-            candidate_filter_prefix,
+            candidate_filter_prefixes,
             encrypt_local_packets,
             packet_rx,
             connect_ticker: interval(connect_interval),
@@ -228,7 +228,7 @@ impl FullMesh {
                         src,
                         self.handle.clone(),
                         self.ice_servers.clone(),
-                        self.candidate_filter_prefix,
+                        self.candidate_filter_prefixes.clone(),
                         self.encrypt_local_packets,
                         false,
                     )
@@ -399,7 +399,7 @@ impl FullMesh {
             FullMeshPayload::Offer { sdp, candidates } => {
                 let connection = ConnectionRustrtcDataChannel::new(
                     self.ice_servers.clone(),
-                    self.candidate_filter_prefix,
+                    self.candidate_filter_prefixes.clone(),
                 )
                 .await;
                 let (answer, local_candidates) = connection.create_answer(sdp.clone()).await?;
@@ -453,7 +453,7 @@ impl FullMesh {
             FullMeshPayload::Offer { sdp, candidates } => {
                 let mut connection = ConnectionWasmDataChannel::new(
                     self.ice_servers.clone(),
-                    self.candidate_filter_prefix,
+                    self.candidate_filter_prefixes.clone(),
                 )
                 .await?;
                 let (answer, local_candidates) = connection.create_answer(sdp.clone()).await?;
@@ -601,7 +601,7 @@ impl FullMesh {
                         peer_id,
                         self.handle.clone(),
                         self.ice_servers.clone(),
-                        self.candidate_filter_prefix,
+                        self.candidate_filter_prefixes.clone(),
                         self.encrypt_local_packets,
                         true,
                     )
@@ -640,7 +640,7 @@ impl FullMesh {
                 let result: Result<()> = try {
                     let connection = ConnectionRustrtcDataChannel::new(
                         self.ice_servers.clone(),
-                        self.candidate_filter_prefix,
+                        self.candidate_filter_prefixes.clone(),
                     )
                     .await;
                     let (offer, candidates) = connection.create_offer().await?;
@@ -677,7 +677,7 @@ impl FullMesh {
                 let result: Result<()> = try {
                     let mut connection = ConnectionWasmDataChannel::new(
                         self.ice_servers.clone(),
-                        self.candidate_filter_prefix,
+                        self.candidate_filter_prefixes.clone(),
                     )
                     .await?;
                     let (offer, candidates) = connection.create_offer().await?;
