@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
+    os::fd::{BorrowedFd, IntoRawFd},
     str::FromStr,
     sync::{Arc, Mutex as StdMutex},
 };
@@ -18,15 +19,26 @@ use crate::{
         igp::{Igp, IgpHandle},
         packet::NodeId,
     },
+    time::Instant,
 };
 use anyhow::Result;
 use cidr::AnyIpCidr;
-use tokio::{sync::Mutex, task::LocalSet};
+use cryonet_uapi::{Conn, IgpRoute};
+use tokio::{
+    sync::{Mutex, oneshot},
+    task::LocalSet,
+};
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum AndroidError {
     #[error("{message}")]
     Error { message: String },
+}
+
+fn android_error(err: anyhow::Error) -> AndroidError {
+    AndroidError::Error {
+        message: format!("{err:?}"),
+    }
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -89,10 +101,13 @@ async fn run(args: Args) -> Result<Handles> {
     )
     .await?;
     let ips = Arc::new(Mutex::new(HashMap::new()));
-    // Safety: Android passes a valid, open tun fd and transfers its ownership.
+    // Safety: dup the fd so the tun owns a copy, the original stays with Android.
+    let tun_fd = unsafe { BorrowedFd::borrow_raw(args.tun_fd) }
+        .try_clone_to_owned()?
+        .into_raw_fd();
     let dm = unsafe {
         SingleTunManager::new_from_fd(
-            args.tun_fd,
+            tun_fd,
             args.enable_packet_information,
             ips.clone(),
             addresses,
@@ -121,7 +136,14 @@ async fn run(args: Args) -> Result<Handles> {
 
 #[derive(uniffi::Object)]
 pub struct Cryonet {
-    stop: StdMutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    mesh: MeshHandle,
+    igp: IgpHandle,
+    #[allow(dead_code)]
+    mgr: ConnManagerHandle,
+    #[allow(dead_code)]
+    registry: RegistryHandle,
+    fm: FullMeshHandle,
+    stop: StdMutex<Option<oneshot::Sender<()>>>,
     thread: StdMutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -143,10 +165,9 @@ impl Cryonet {
 #[uniffi::export]
 impl Cryonet {
     #[uniffi::constructor]
-    pub fn init(args: Args) -> std::result::Result<Arc<Self>, AndroidError> {
-        let (ready_tx, ready_rx) =
-            std::sync::mpsc::sync_channel::<std::result::Result<(), String>>(1);
-        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    pub async fn init(args: Args) -> std::result::Result<Arc<Self>, AndroidError> {
+        let (ready_tx, ready_rx) = oneshot::channel::<std::result::Result<Handles, String>>();
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("cryonet".to_owned())
             .spawn(move || {
@@ -163,8 +184,11 @@ impl Cryonet {
                 let local = LocalSet::new();
                 local.block_on(&rt, async move {
                     match run(args).await {
-                        Ok(_handles) => {
-                            let _ = ready_tx.send(Ok(()));
+                        Ok(handles) => {
+                            // The actor handles are `Send` on this target, so hand them back to the
+                            // FFI thread. The `LocalSet` stays alive here until `stop` is called,
+                            // which keeps the actors running.
+                            let _ = ready_tx.send(Ok(handles));
                             let _ = stop_rx.await;
                         }
                         Err(err) => {
@@ -176,13 +200,18 @@ impl Cryonet {
             .map_err(|err| AndroidError::Error {
                 message: err.to_string(),
             })?;
-        ready_rx
-            .recv()
-            .map_err(|err| AndroidError::Error {
-                message: err.to_string(),
+        let (mesh, igp, mgr, registry, fm) = ready_rx
+            .await
+            .map_err(|_| AndroidError::Error {
+                message: "cryonet thread exited".to_owned(),
             })?
             .map_err(|message| AndroidError::Error { message })?;
         Ok(Arc::new(Cryonet {
+            mesh,
+            igp,
+            mgr,
+            registry,
+            fm,
             stop: StdMutex::new(Some(stop_tx)),
             thread: StdMutex::new(Some(thread)),
         }))
@@ -190,6 +219,43 @@ impl Cryonet {
 
     pub fn stop(&self) {
         self.shutdown();
+    }
+
+    pub async fn get_links(&self) -> std::result::Result<Vec<NodeId>, AndroidError> {
+        self.mesh.get_links().await.map_err(android_error)
+    }
+
+    pub async fn get_routes(
+        &self,
+    ) -> std::result::Result<HashMap<NodeId, NodeId>, AndroidError> {
+        self.mesh.get_routes().await.map_err(android_error)
+    }
+
+    pub async fn get_igp_routes(&self) -> std::result::Result<Vec<IgpRoute>, AndroidError> {
+        let routes = self.igp.get_routes().await.map_err(android_error)?;
+        let now = Instant::now();
+        Ok(routes
+            .into_iter()
+            .map(|route| IgpRoute {
+                seq: route.metric.seq.0,
+                metric: route.metric.metric,
+                computed_metric: route.computed_metric,
+                dst: route.dst,
+                from: route.from,
+                selected: route.selected,
+                timeout_remaining_ms: if route.timeout > now {
+                    route.timeout.duration_since(now).as_millis() as i64
+                } else {
+                    -(now.duration_since(route.timeout).as_millis() as i64)
+                },
+            })
+            .collect())
+    }
+
+    pub async fn get_full_mesh_peers(
+        &self,
+    ) -> std::result::Result<HashMap<NodeId, Conn>, AndroidError> {
+        self.fm.get_peers().await.map_err(android_error)
     }
 }
 

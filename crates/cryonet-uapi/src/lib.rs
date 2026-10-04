@@ -2,9 +2,13 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "android")]
+uniffi::setup_scaffolding!();
+
 pub type NodeId = u32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct IgpRoute {
     pub seq: u16,
     pub metric: u32,
@@ -16,6 +20,7 @@ pub struct IgpRoute {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(target_os = "android", derive(uniffi::Enum))]
 pub enum ConnState {
     Connecting,
     Connected,
@@ -23,6 +28,7 @@ pub enum ConnState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct Conn {
     pub state: ConnState,
     pub selected_candidate: Option<String>,

@@ -780,6 +780,7 @@ name = "cryonet-uapi"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "uniffi",
  "uuid",
 ]
 
