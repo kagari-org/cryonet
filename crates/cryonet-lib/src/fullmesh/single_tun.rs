@@ -2,8 +2,8 @@ use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use bytes::Bytes;
-use pnet_packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
+use bytes::{BufMut, Bytes, BytesMut};
+use pnet_packet::{ethernet::EtherTypes, ipv4::Ipv4Packet, ipv6::Ipv6Packet};
 #[cfg(target_os = "android")]
 use std::os::fd::RawFd;
 use tokio::sync::{Mutex, mpsc, watch};
@@ -21,6 +21,7 @@ use crate::{
 
 pub struct SingleTunManager {
     device: Arc<AsyncDevice>,
+    enable_packet_information: bool,
 
     #[cfg(target_os = "android")]
     addresses: Vec<IpAddr>,
@@ -86,6 +87,7 @@ impl SingleTunManager {
         ));
         Ok(SingleTunManager {
             device,
+            enable_packet_information,
             #[cfg(target_os = "android")]
             addresses,
             send_msg_tx,
@@ -111,6 +113,7 @@ impl DeviceManager for SingleTunManager {
         let stop_tx = watch::channel(false).0;
         tokio::spawn(recv_loop(
             node_id,
+            self.enable_packet_information,
             receiver,
             self.device.clone(),
             stop_tx.subscribe(),
@@ -182,7 +185,9 @@ async fn send_loop(
                         continue;
                     }
                 };
-                let packet = if enable_packet_information {
+                let device_packet_information =
+                    enable_packet_information && !cfg!(target_os = "android");
+                let packet = if device_packet_information {
                     if size < 4 {
                         warn!("Received undersized packet with packet information from TUN device");
                         continue;
@@ -191,8 +196,8 @@ async fn send_loop(
                 } else {
                     &buf[..size]
                 };
-                // Reads the destination address from a raw IPv4 or IPv6 packet.
-                let dst = match packet.first().map(|byte| byte >> 4) {
+                let version = packet.first().map(|byte| byte >> 4);
+                let dst = match version {
                     Some(4) => Ipv4Packet::new(packet).map(|packet| IpAddr::V4(packet.get_destination())),
                     Some(6) => Ipv6Packet::new(packet).map(|packet| IpAddr::V6(packet.get_destination())),
                     _ => None,
@@ -215,7 +220,19 @@ async fn send_loop(
                     warn!("Received packet for node {node_id:X} without an active connection");
                     continue;
                 };
-                let bytes = Bytes::copy_from_slice(&buf[..size]);
+                let bytes = if enable_packet_information && cfg!(target_os = "android") {
+                    let proto = match version {
+                        Some(4) => EtherTypes::Ipv4.0,
+                        _ => EtherTypes::Ipv6.0,
+                    };
+                    let mut bytes = BytesMut::with_capacity(size + 4);
+                    bytes.put_u16(0); // flags
+                    bytes.put_u16(proto);
+                    bytes.extend_from_slice(&buf[..size]);
+                    bytes.freeze()
+                } else {
+                    Bytes::copy_from_slice(&buf[..size])
+                };
                 if let Err(err) = sender.send(bytes).await {
                     error!("Failed to send packet to node {node_id:X}: {err}");
                 }
@@ -226,6 +243,7 @@ async fn send_loop(
 
 async fn recv_loop(
     node_id: NodeId,
+    enable_packet_information: bool,
     mut receiver: Box<dyn ConnectionReceiver>,
     device: Arc<AsyncDevice>,
     mut stop: watch::Receiver<bool>,
@@ -249,7 +267,17 @@ async fn recv_loop(
                     debug!("Received keepalive packet from node {node_id:X}");
                     continue;
                 }
-                if let Err(err) = device.send(&packet).await {
+                // Strip the simulated packet information before writing to the android fd.
+                let packet = if enable_packet_information && cfg!(target_os = "android") {
+                    if packet.len() < 4 {
+                        warn!("Received undersized packet with packet information from node {node_id:X}");
+                        continue;
+                    }
+                    &packet[4..]
+                } else {
+                    &packet[..]
+                };
+                if let Err(err) = device.send(packet).await {
                     error!("Failed to write to TUN device for node {node_id:X}: {err}");
                 }
             }
