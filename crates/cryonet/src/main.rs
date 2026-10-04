@@ -15,6 +15,7 @@ use cryonet_lib::{
         DeviceManager, IceServer,
         fullmesh::FullMesh,
         registry::{ConnectionType, Registry},
+        single_tun::SingleTunManager,
         tap::TapManager,
         tun::TunManager,
     },
@@ -57,6 +58,10 @@ struct Args {
     tap_mac_prefix: u16,
     #[clap(env, long, default_value = "cn0")]
     tap_interface_name: String,
+    #[clap(env, long, default_value_t = false, conflicts_with = "tap_mode")]
+    single_tun_mode: bool,
+    #[clap(env, long, default_value = "cn0")]
+    single_tun_interface_name: String,
 }
 
 fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
@@ -107,6 +112,12 @@ async fn main() -> Result<()> {
                         args.id,
                         args.tap_mac_prefix,
                         args.tap_interface_name,
+                        args.enable_packet_information,
+                        ips.clone(),
+                    )?)))
+                } else if args.single_tun_mode {
+                    Arc::new(Mutex::new(Box::new(SingleTunManager::new(
+                        args.single_tun_interface_name,
                         args.enable_packet_information,
                         ips.clone(),
                     )?)))

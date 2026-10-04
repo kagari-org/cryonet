@@ -19,6 +19,8 @@ pub mod conn_wasm;
 
 pub mod fullmesh;
 pub mod registry;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod single_tun;
 pub mod tap;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tun;
