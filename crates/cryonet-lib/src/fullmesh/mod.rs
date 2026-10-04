@@ -21,8 +21,9 @@ pub mod fullmesh;
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod single_tun;
+#[cfg(not(target_os = "android"))]
 pub mod tap;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 pub mod tun;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

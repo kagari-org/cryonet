@@ -1,12 +1,16 @@
-use std::{collections::HashMap, net::IpAddr, os::fd::RawFd, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use bytes::Bytes;
 use pnet_packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
+#[cfg(target_os = "android")]
+use std::os::fd::RawFd;
 use tokio::sync::{Mutex, mpsc, watch};
 use tracing::{debug, error, warn};
-use tun_rs::{AsyncDevice, DeviceBuilder};
+use tun_rs::AsyncDevice;
+#[cfg(not(target_os = "android"))]
+use tun_rs::DeviceBuilder;
 
 use crate::{
     errors::CryonetError,
@@ -18,13 +22,15 @@ use crate::{
 pub struct SingleTunManager {
     device: Arc<AsyncDevice>,
 
-    addresses: Option<Vec<IpAddr>>,
+    #[cfg(target_os = "android")]
+    addresses: Vec<IpAddr>,
 
     send_msg_tx: mpsc::UnboundedSender<SendLoopMessage>,
     recv_tasks: HashMap<NodeId, watch::Sender<bool>>,
 }
 
 impl SingleTunManager {
+    #[cfg(not(target_os = "android"))]
     pub fn new(
         interface_name: String,
         enable_packet_information: bool,
@@ -37,11 +43,16 @@ impl SingleTunManager {
         if enable_packet_information {
             builder = builder.packet_information(true);
         }
-        let device = Arc::new(builder.build_async()?);
-        Self::new_with_device(device, enable_packet_information, ips, None)
+        Self::new_with_parameters(
+            Arc::new(builder.build_async()?),
+            enable_packet_information,
+            Duration::from_secs(3),
+            ips,
+        )
     }
 
     // Safety: fd must be a valid, open TUN file descriptor.
+    #[cfg(target_os = "android")]
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn new_from_fd(
         fd: RawFd,
@@ -49,18 +60,8 @@ impl SingleTunManager {
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
         addresses: Vec<IpAddr>,
     ) -> Result<SingleTunManager> {
-        let device = Arc::new(unsafe { AsyncDevice::from_fd(fd)? });
-        Self::new_with_device(device, enable_packet_information, ips, Some(addresses))
-    }
-
-    pub fn new_with_device(
-        device: Arc<AsyncDevice>,
-        enable_packet_information: bool,
-        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
-        addresses: Option<Vec<IpAddr>>,
-    ) -> Result<SingleTunManager> {
         Self::new_with_parameters(
-            device,
+            Arc::new(unsafe { AsyncDevice::from_fd(fd)? }),
             enable_packet_information,
             Duration::from_secs(3),
             ips,
@@ -73,7 +74,7 @@ impl SingleTunManager {
         enable_packet_information: bool,
         keepalive_interval: Duration,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
-        addresses: Option<Vec<IpAddr>>,
+        #[cfg(target_os = "android")] addresses: Vec<IpAddr>,
     ) -> Result<SingleTunManager> {
         let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
         tokio::spawn(send_loop(
@@ -85,6 +86,7 @@ impl SingleTunManager {
         ));
         Ok(SingleTunManager {
             device,
+            #[cfg(target_os = "android")]
             addresses,
             send_msg_tx,
             recv_tasks: HashMap::new(),
@@ -128,10 +130,11 @@ impl DeviceManager for SingleTunManager {
     }
 
     async fn ips(&self) -> Result<Vec<IpAddr>> {
-        match &self.addresses {
-            Some(addresses) => Ok(addresses.clone()),
-            None => Ok(self.device.addresses()?),
-        }
+        #[cfg(target_os = "android")]
+        let addresses = self.addresses.clone();
+        #[cfg(not(target_os = "android"))]
+        let addresses = self.device.addresses()?;
+        Ok(addresses)
     }
 }
 
