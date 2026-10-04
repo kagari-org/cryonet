@@ -34,6 +34,23 @@ type AcceptParam = ();
 #[cfg(not(target_arch = "wasm32"))]
 type AcceptParam = tokio::io::Result<(tokio::net::TcpStream, SocketAddr)>;
 
+#[cfg(not(target_arch = "wasm32"))]
+fn build_client() -> Result<reqwest::Client> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(reqwest::Client::builder()
+        .use_preconfigured_tls(config)
+        .build()?)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn build_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::new())
+}
+
 pub struct ConnManager {
     id: NodeId,
     mesh: MeshHandle,
@@ -180,7 +197,7 @@ impl ConnManager {
         }
 
         info!("Connecting to server {server} ...");
-        let client = reqwest::Client::new();
+        let client = build_client()?;
         let mut ws = client
             .get(&server)
             .upgrade()

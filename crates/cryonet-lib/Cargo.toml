@@ -20,7 +20,12 @@ tracing = "0.1.44"
 typetag = "0.2.21"
 cryonet-uapi = { path = "../cryonet-uapi" }
 sactor = "0.1.6"
-reqwest = "0.13.2"
+reqwest = { version = "0.13.2", default-features = false, features = [
+  "rustls-no-provider",
+  "charset",
+  "http2",
+  "system-proxy",
+] }
 reqwest-websocket = "0.6.0"
 tokio = { version = "1.49.0", features = ["rt"] }
 wasmtimer = "0.4.3"
@@ -55,6 +60,8 @@ web-sys = { version = "=0.3.85", features = [
 uuid = { version = "1.19.0", features = ["serde", "v4"] }
 tun-rs = { version = "2.7.8", features = ["async"] }
 rustrtc = "0.3.145"
+rustls = "0.23.37"
+webpki-roots = "1"
 tokio-tungstenite = "0.28.0"
 p256 = { version = "0.14.0-rc.8", features = ["serde", "ecdh", "getrandom", "std"] }
 aes-gcm = "0.10.3"
