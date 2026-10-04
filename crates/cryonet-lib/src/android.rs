@@ -138,22 +138,24 @@ async fn run(args: Args) -> Result<Handles> {
 pub struct Cryonet {
     mesh: MeshHandle,
     igp: IgpHandle,
-    #[allow(dead_code)]
-    mgr: ConnManagerHandle,
-    #[allow(dead_code)]
-    registry: RegistryHandle,
+    _mgr: ConnManagerHandle,
+    _registry: RegistryHandle,
     fm: FullMeshHandle,
     stop: StdMutex<Option<oneshot::Sender<()>>>,
     thread: StdMutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Cryonet {
-    fn shutdown(&self) {
+    fn signal_stop(&self) {
         if let Ok(mut stop) = self.stop.lock()
             && let Some(stop) = stop.take()
         {
             let _ = stop.send(());
         }
+    }
+
+    fn shutdown(&self) {
+        self.signal_stop();
         if let Ok(mut thread) = self.thread.lock()
             && let Some(thread) = thread.take()
         {
@@ -200,7 +202,7 @@ impl Cryonet {
             .map_err(|err| AndroidError::Error {
                 message: err.to_string(),
             })?;
-        let (mesh, igp, mgr, registry, fm) = ready_rx
+        let (mesh, igp, _mgr, _registry, fm) = ready_rx
             .await
             .map_err(|_| AndroidError::Error {
                 message: "cryonet thread exited".to_owned(),
@@ -209,25 +211,24 @@ impl Cryonet {
         Ok(Arc::new(Cryonet {
             mesh,
             igp,
-            mgr,
-            registry,
+            _mgr,
+            _registry,
             fm,
             stop: StdMutex::new(Some(stop_tx)),
             thread: StdMutex::new(Some(thread)),
         }))
     }
 
+    // Signals the daemon thread and returns; the join happens in Drop, so this never blocks.
     pub fn stop(&self) {
-        self.shutdown();
+        self.signal_stop();
     }
 
     pub async fn get_links(&self) -> std::result::Result<Vec<NodeId>, AndroidError> {
         self.mesh.get_links().await.map_err(android_error)
     }
 
-    pub async fn get_routes(
-        &self,
-    ) -> std::result::Result<HashMap<NodeId, NodeId>, AndroidError> {
+    pub async fn get_routes(&self) -> std::result::Result<HashMap<NodeId, NodeId>, AndroidError> {
         self.mesh.get_routes().await.map_err(android_error)
     }
 
