@@ -250,20 +250,33 @@ impl ConnManager {
         use tokio_tungstenite::tungstenite::Message;
         let (stream, addr) = param?;
         info!("Accepted connection from {addr}");
-        let mut ws = accept_async(stream).await?;
-        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(
-            &AuthPacket {
-                token: None,
-                node_id: self.id,
-            },
-        )?)))
-        .await?;
+        let id = self.id;
+        let connect_timeout = self.connect_timeout;
+        let mut ws = match timeout(connect_timeout, accept_async(stream)).await {
+            Ok(ws) => ws?,
+            Err(_) => bail!("Timed out during WebSocket handshake with {addr}"),
+        };
+        let auth = timeout(connect_timeout, async {
+            ws.send(Message::Binary(Bytes::from(serde_json::to_vec(
+                &AuthPacket {
+                    token: None,
+                    node_id: id,
+                },
+            )?)))
+            .await?;
+            let auth = match ws.next().await {
+                Some(Ok(Message::Binary(bytes))) => serde_json::from_slice::<AuthPacket>(&bytes)?,
+                _ => bail!("Failed to receive authentication response from connection at {addr}",),
+            };
+            Ok::<_, Error>(auth)
+        })
+        .await;
         let AuthPacket {
             token: neigh_token,
             node_id: neigh_id,
-        } = match ws.next().await {
-            Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
-            _ => bail!("Failed to receive authentication response from connection at {addr}",),
+        } = match auth {
+            Ok(auth) => auth?,
+            Err(_) => bail!("Timed out waiting for authentication from {addr}"),
         };
         if let Some(token) = &self.token {
             match neigh_token {
