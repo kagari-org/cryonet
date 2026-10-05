@@ -13,7 +13,7 @@ use cryonet_uapi::{CryonetUapi, IgpRoute};
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    fs::remove_file,
+    fs::{create_dir_all, remove_file},
     net::UnixDatagram,
     sync::mpsc,
     time::{Instant, Interval, interval},
@@ -72,6 +72,11 @@ impl Uapi {
         gc_interval: Duration,
         ping_timeout: Duration,
     ) -> Result<UapiHandle> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                create_dir_all(parent).await?;
+            }
+        }
         let _ = remove_file(&path).await;
         let socket = UnixDatagram::bind(path).unwrap();
         let packet_rx = mesh

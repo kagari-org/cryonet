@@ -91,11 +91,15 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
-    let runtime_directory = var("RUNTIME_DIRECTORY");
-    let ctl_path = match (args.ctl_path, runtime_directory) {
-        (Some(path), _) => path,
-        (None, Ok(dir)) => PathBuf::from(dir).join("cryonet.ctl"),
-        (None, Err(_)) => PathBuf::from("cryonet.ctl"),
+    let ctl_path = match (
+        args.ctl_path,
+        var("RUNTIME_DIRECTORY"),
+        var("XDG_RUNTIME_DIR"),
+    ) {
+        (Some(path), _, _) => path,
+        (None, Ok(dir), _) => PathBuf::from(dir).join("cryonet.ctl"),
+        (None, Err(_), Ok(dir)) => PathBuf::from(dir).join("cryonet").join("cryonet.ctl"),
+        (None, Err(_), Err(_)) => PathBuf::from("cryonet.ctl"),
     };
 
     LocalSet::new()

@@ -1,6 +1,6 @@
-use std::time::Instant;
+use std::{env::var, path::PathBuf, time::Instant};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Parser;
 use clap_num::maybe_hex;
 use cryonet_uapi::{CryonetUapi, NodeId};
@@ -21,8 +21,8 @@ fn format_bytes(bytes: u64) -> String {
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[arg(short, default_value = "/run/cryonet/cryonet.ctl")]
-    ctl_path: String,
+    #[arg(short)]
+    ctl_path: Option<PathBuf>,
     #[clap(subcommand)]
     subcommand: Subcommand,
 }
@@ -43,9 +43,31 @@ enum Subcommand {
     },
 }
 
+fn resolve_ctl_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    let mut candidates = vec![PathBuf::from("/run/cryonet/cryonet.ctl")];
+    if let Ok(dir) = var("XDG_RUNTIME_DIR") {
+        candidates.push(PathBuf::from(dir).join("cryonet").join("cryonet.ctl"));
+    }
+    if let Some(path) = candidates.iter().find(|path| path.exists()) {
+        return Ok(path.clone());
+    }
+    bail!(
+        "no Cryonet control socket found, tried: {}",
+        candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let ctl_path = resolve_ctl_path(args.ctl_path)?;
     let dir = tempdir()?;
     let socket = UnixDatagram::bind(dir.path().join("cryonetc"))?;
 
@@ -58,7 +80,7 @@ async fn main() -> Result<()> {
         Subcommand::Ping { node_id } => CryonetUapi::Ping(node_id),
     };
     let request = serde_json::to_vec(&request)?;
-    socket.send_to(&request, args.ctl_path).await?;
+    socket.send_to(&request, &ctl_path).await?;
 
     let mut buf = [0u8; 16384];
     let len = socket.recv(&mut buf).await?;
