@@ -63,11 +63,10 @@
         cargo build --offline --release --package uniffi-bindgen
       '';
       installPhase = ''
-        mkdir -p $out/lib $out/kotlin
-        export HOME=$TMPDIR
-        cp target/aarch64-linux-android/release/libcryonet_lib.so $out/lib/
+        mkdir -p $out/jniLibs/arm64-v8a $out/kotlin
+        cp target/aarch64-linux-android/release/libcryonet_lib.so $out/jniLibs/arm64-v8a/
         target/release/uniffi-bindgen generate \
-          --library $out/lib/libcryonet_lib.so \
+          --library $out/jniLibs/arm64-v8a/libcryonet_lib.so \
           --language kotlin \
           --out-dir $out/kotlin
       '';
