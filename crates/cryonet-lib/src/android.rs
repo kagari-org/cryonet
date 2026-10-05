@@ -31,13 +31,13 @@ use tokio::{
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum AndroidError {
-    #[error("{message}")]
-    Error { message: String },
+    #[error("{reason}")]
+    Error { reason: String },
 }
 
 fn android_error(err: anyhow::Error) -> AndroidError {
     AndroidError::Error {
-        message: format!("{err:?}"),
+        reason: format!("{err:?}"),
     }
 }
 
@@ -200,14 +200,14 @@ impl Cryonet {
                 });
             })
             .map_err(|err| AndroidError::Error {
-                message: err.to_string(),
+                reason: err.to_string(),
             })?;
         let (mesh, igp, _mgr, _registry, fm) = ready_rx
             .await
             .map_err(|_| AndroidError::Error {
-                message: "cryonet thread exited".to_owned(),
+                reason: "cryonet thread exited".to_owned(),
             })?
-            .map_err(|message| AndroidError::Error { message })?;
+            .map_err(|reason| AndroidError::Error { reason })?;
         Ok(Arc::new(Cryonet {
             mesh,
             igp,
