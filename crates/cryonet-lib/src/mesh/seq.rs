@@ -69,12 +69,117 @@ pub struct SeqMetric {
 
 impl SeqMetric {
     pub fn feasible(&self, rhs: &Self) -> bool {
-        if self.seq > rhs.seq || self.metric == u32::MAX {
-            return true;
-        }
-        if self.seq == rhs.seq && self.metric <= rhs.metric {
-            return true;
-        }
-        false
+        self.metric == u32::MAX || self.better(rhs)
+    }
+
+    pub fn better(&self, rhs: &Self) -> bool {
+        self.seq > rhs.seq || (self.seq == rhs.seq && self.metric < rhs.metric)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feasibility_requires_strictly_better_metric() {
+        let fd = SeqMetric {
+            seq: Seq(10),
+            metric: 100,
+        };
+        assert!(
+            SeqMetric {
+                seq: Seq(10),
+                metric: 99
+            }
+            .feasible(&fd)
+        );
+        assert!(
+            !SeqMetric {
+                seq: Seq(10),
+                metric: 100
+            }
+            .feasible(&fd)
+        );
+        assert!(
+            !SeqMetric {
+                seq: Seq(10),
+                metric: 101
+            }
+            .feasible(&fd)
+        );
+    }
+
+    #[test]
+    fn newer_seq_is_feasible_even_with_worse_metric() {
+        let fd = SeqMetric {
+            seq: Seq(10),
+            metric: 100,
+        };
+        assert!(
+            SeqMetric {
+                seq: Seq(11),
+                metric: 1000
+            }
+            .feasible(&fd)
+        );
+        assert!(
+            !SeqMetric {
+                seq: Seq(9),
+                metric: 1
+            }
+            .feasible(&fd)
+        );
+    }
+
+    #[test]
+    fn retraction_is_always_feasible() {
+        let fd = SeqMetric {
+            seq: Seq(10),
+            metric: 100,
+        };
+        assert!(
+            SeqMetric {
+                seq: Seq(1),
+                metric: u32::MAX
+            }
+            .feasible(&fd)
+        );
+    }
+
+    #[test]
+    fn better_orders_by_seq_then_metric() {
+        let fd = SeqMetric {
+            seq: Seq(10),
+            metric: 100,
+        };
+        assert!(
+            SeqMetric {
+                seq: Seq(11),
+                metric: 1000
+            }
+            .better(&fd)
+        );
+        assert!(
+            SeqMetric {
+                seq: Seq(10),
+                metric: 99
+            }
+            .better(&fd)
+        );
+        assert!(
+            !SeqMetric {
+                seq: Seq(10),
+                metric: 100
+            }
+            .better(&fd)
+        );
+        assert!(
+            !SeqMetric {
+                seq: Seq(9),
+                metric: 1
+            }
+            .better(&fd)
+        );
     }
 }
