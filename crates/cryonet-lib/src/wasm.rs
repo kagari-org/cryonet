@@ -152,6 +152,7 @@ impl Cryonet {
         .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
         let dm = Arc::new(Mutex::new(Box::new(dm) as Box<dyn DeviceManager>));
         let registry = Registry::new(
+            id,
             mesh.clone(),
             dm.clone(),
             vec![ConnectionType::DataChannel],

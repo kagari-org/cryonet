@@ -115,6 +115,7 @@ async fn run(args: Args) -> Result<Handles> {
     }?;
     let dm = Arc::new(Mutex::new(Box::new(dm) as Box<dyn DeviceManager>));
     let registry = Registry::new(
+        args.id,
         mesh.clone(),
         dm.clone(),
         vec![ConnectionType::Ice, ConnectionType::DataChannel],

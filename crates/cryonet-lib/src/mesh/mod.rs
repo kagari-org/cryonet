@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt::Debug, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use anyhow::{Error, Result};
 use async_trait::async_trait;
@@ -139,6 +144,17 @@ const RELIABLE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const RELIABLE_RETRY_TICK: Duration = Duration::from_millis(250);
 const RELIABLE_MAX_ATTEMPTS: u32 = 10;
 
+// Peers keep a receive window per source; starting at zero makes a restarted
+// process look like a duplicate of its previous run and its packets get dropped.
+fn initial_seq() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ COUNTER.fetch_add(1, Ordering::Relaxed).rotate_left(32)
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum MeshEvent {
@@ -160,7 +176,7 @@ impl Mesh {
             id,
             link_idle_timeout,
             pending: HashMap::new(),
-            next_seq: 0,
+            next_seq: initial_seq(),
             received: HashMap::new(),
             retry_ticker: interval(RELIABLE_RETRY_TICK),
             link_send: HashMap::new(),

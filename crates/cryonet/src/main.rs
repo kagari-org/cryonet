@@ -132,6 +132,7 @@ async fn main() -> Result<()> {
                     ))))
                 };
                 let registry = Registry::new(
+                    args.id,
                     mesh.clone(),
                     dm.clone(),
                     vec![ConnectionType::Ice, ConnectionType::DataChannel],

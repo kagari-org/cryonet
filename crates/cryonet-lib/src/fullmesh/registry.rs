@@ -39,7 +39,7 @@ pub struct Node {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum RegistryPayload {
-    Node(Node),
+    Node { id: NodeId, node: Node },
 }
 
 #[typetag::serde]
@@ -48,6 +48,7 @@ impl Payload for RegistryPayload {}
 pub struct Registry {
     handle: RegistryHandle,
 
+    id: NodeId,
     mesh: MeshHandle,
     dm: Arc<Mutex<Box<dyn DeviceManager>>>,
     connection_types: Vec<ConnectionType>,
@@ -67,12 +68,14 @@ pub struct Registry {
 #[sactor(pub)]
 impl Registry {
     pub async fn new(
+        id: NodeId,
         mesh: MeshHandle,
         dm: Arc<Mutex<Box<dyn DeviceManager>>>,
         connection_types: Vec<ConnectionType>,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
     ) -> Result<RegistryHandle> {
         Self::new_with_parameters(
+            id,
             mesh,
             dm,
             connection_types,
@@ -84,6 +87,7 @@ impl Registry {
     }
 
     pub async fn new_with_parameters(
+        id: NodeId,
         mesh: MeshHandle,
         dm: Arc<Mutex<Box<dyn DeviceManager>>>,
         connection_types: Vec<ConnectionType>,
@@ -102,6 +106,7 @@ impl Registry {
         let mesh_event_rx = mesh.subscribe_mesh_events().await?;
         let (future, registry) = Registry::run(move |handle| Registry {
             handle,
+            id,
             mesh,
             dm,
             connection_types,
@@ -135,19 +140,18 @@ impl Registry {
             self.handle.stop();
             return Ok(());
         };
-        let src = packet.src;
         let payload = packet
             .payload
             .as_payload()
             .and_then(|payload| (payload as &dyn Any).downcast_ref::<RegistryPayload>())
             .unwrap();
         match payload {
-            RegistryPayload::Node(node) => {
+            RegistryPayload::Node { id, node } => {
                 let now = Instant::now();
-                let mut updated = self.nodes.insert(src, (node.clone(), now)).is_none();
+                let mut updated = self.nodes.insert(*id, (node.clone(), now)).is_none();
                 let mut ips = self.ips.lock().await;
                 for ip in &node.ips {
-                    if ips.insert(*ip, (src, now)).is_none() {
+                    if ips.insert(*ip, (*id, now)).is_none() {
                         updated = true;
                     }
                 }
@@ -206,10 +210,18 @@ impl Registry {
                 return Ok(());
             }
         };
-        if let MeshEvent::RouteSet(dst, _) = event
-            && let Err(err) = self.announce_to(dst).await
-        {
-            error!("Failed to send registry packet to {dst}: {err:?}");
+        match event {
+            MeshEvent::LinkUp(dst) => {
+                if let Err(err) = self.dump_registry(dst).await {
+                    error!("Failed to dump registry to {dst}: {err:?}");
+                }
+            }
+            MeshEvent::RouteSet(dst, _) => {
+                if let Err(err) = self.announce_to(dst).await {
+                    error!("Failed to send registry packet to {dst}: {err:?}");
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -223,15 +235,31 @@ impl Registry {
     }
 
     #[skip]
-    async fn send_node(&self, dst: NodeId, node: &Node) -> Result<()> {
-        let payload = Box::new(RegistryPayload::Node(node.clone()));
+    async fn dump_registry(&self, dst: NodeId) -> Result<()> {
+        let local = self.local_node().await?;
+        self.send_node(dst, self.id, &local).await?;
+        for (node_id, (node, _)) in &self.nodes {
+            if *node_id == dst {
+                continue;
+            }
+            self.send_node(dst, *node_id, node).await?;
+        }
+        Ok(())
+    }
+
+    #[skip]
+    async fn send_node(&self, dst: NodeId, node_id: NodeId, node: &Node) -> Result<()> {
+        let payload = Box::new(RegistryPayload::Node {
+            id: node_id,
+            node: node.clone(),
+        });
         self.mesh.send_packet_reliable(dst, payload).await
     }
 
     #[skip]
     async fn announce_to(&self, dst: NodeId) -> Result<()> {
         let node = self.local_node().await?;
-        self.send_node(dst, &node).await
+        self.send_node(dst, self.id, &node).await
     }
 
     #[skip]
@@ -250,7 +278,7 @@ impl Registry {
             .cloned()
             .collect::<Vec<_>>();
         for peer in peers {
-            if let Err(err) = self.send_node(peer, node).await {
+            if let Err(err) = self.send_node(peer, self.id, node).await {
                 error!("Failed to send registry packet to {peer}: {err:?}");
             }
         }
