@@ -90,7 +90,7 @@ impl Mesh {
             link_last_recv: HashMap::new(),
             routes: HashMap::new(),
             dispatchees: Vec::new(),
-            mesh_event_tx: broadcast::Sender::new(16),
+            mesh_event_tx: broadcast::Sender::new(64),
         });
         tokio::task::spawn_local(future);
         mesh
@@ -330,8 +330,10 @@ impl Mesh {
             return;
         }
         debug!("Setting route: {dst:X} via {next_hop:X}");
-        self.routes.insert(dst, next_hop);
-        let _ = self.mesh_event_tx.send(MeshEvent::RouteSet(dst, next_hop));
+        let previous = self.routes.insert(dst, next_hop);
+        if previous != Some(next_hop) {
+            let _ = self.mesh_event_tx.send(MeshEvent::RouteSet(dst, next_hop));
+        }
     }
 
     pub fn remove_route(&mut self, dst: NodeId) {

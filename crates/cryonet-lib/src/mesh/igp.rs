@@ -151,24 +151,30 @@ impl Igp {
         ]
     }
 
+    #[skip]
+    async fn hello_link(&mut self, link: NodeId) -> Result<()> {
+        let cost = self
+            .costs
+            .entry(link)
+            .and_modify(|cost| {
+                cost.seq += Seq(1);
+                cost.start = Instant::now();
+            })
+            .or_insert(Cost {
+                seq: Seq(0),
+                start: Instant::now(),
+                cost: u32::MAX,
+            });
+        self.mesh
+            .send_packet_link(link, Box::new(IgpPayload::Hello { seq: cost.seq }))
+            .await?;
+        Ok(())
+    }
+
     #[no_reply]
     async fn hello(&mut self) -> Result<()> {
         for link in self.mesh.get_links().await? {
-            let cost = self
-                .costs
-                .entry(link)
-                .and_modify(|cost| {
-                    cost.seq += Seq(1);
-                    cost.start = Instant::now();
-                })
-                .or_insert(Cost {
-                    seq: Seq(0),
-                    start: Instant::now(),
-                    cost: u32::MAX,
-                });
-            self.mesh
-                .send_packet_link(link, Box::new(IgpPayload::Hello { seq: cost.seq }))
-                .await?;
+            self.hello_link(link).await?;
         }
         Ok(())
     }
@@ -523,7 +529,8 @@ impl Igp {
             }
         };
         match event {
-            MeshEvent::LinkUp(_) => {
+            MeshEvent::LinkUp(node_id) => {
+                self.hello_link(node_id).await?;
                 // re-export routes after unexpected link disconnection
                 let _ = self.export().await;
             }
@@ -564,8 +571,8 @@ impl Igp {
                         self.mesh.remove_route(**dst).await?;
                         // no reachable route
                     } else {
-                        // here should be unreachable, but just in case
                         source.insert((best.0.metric, Instant::now() + self.source_timeout));
+                        best.0.selected = true;
                         self.mesh.set_route(**dst, best.0.from).await?;
                         self.mesh
                             .broadcast_packet_local(generate_update(best.0))

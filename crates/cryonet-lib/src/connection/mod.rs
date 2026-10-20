@@ -57,6 +57,7 @@ pub struct ConnManager {
 
     token: Option<String>,
     servers: Vec<String>,
+    client: reqwest::Client,
 
     connect_timer: Interval,
     connect_timeout: Duration,
@@ -89,7 +90,7 @@ impl ConnManager {
             token,
             servers,
             listen,
-            Duration::from_secs(8),
+            Duration::from_secs(2),
             Duration::from_secs(10),
         )
         .await
@@ -111,11 +112,13 @@ impl ConnManager {
             info!("Listening on {listen}");
             listener
         };
+        let client = build_client()?;
         let (future, mgr) = ConnManager::run(move |_| ConnManager {
             id,
             mesh,
             token,
             servers,
+            client,
             connect_timer: interval(connect_interval),
             connect_timeout,
             servers_map: Arc::new(Mutex::new(HashMap::new())),
@@ -156,6 +159,7 @@ impl ConnManager {
             let id = self.id;
             let mesh = self.mesh.clone();
             let token = self.token.clone();
+            let client = self.client.clone();
             let servers_map = self.servers_map.clone();
             let connecting = self.connecting.clone();
             let connect_timeout = self.connect_timeout;
@@ -163,7 +167,7 @@ impl ConnManager {
             tokio::task::spawn_local(async move {
                 let result = match timeout(
                     connect_timeout,
-                    Self::connect_task(id, mesh, token, servers_map, server.clone()),
+                    Self::connect_task(id, mesh, token, client, servers_map, server.clone()),
                 )
                 .await
                 {
@@ -183,6 +187,7 @@ impl ConnManager {
         id: NodeId,
         mesh: MeshHandle,
         token: Option<String>,
+        client: reqwest::Client,
         servers_map: Arc<Mutex<HashMap<String, NodeId>>>,
         server: String,
     ) -> Result<()> {
@@ -197,7 +202,6 @@ impl ConnManager {
         }
 
         info!("Connecting to server {server} ...");
-        let client = build_client()?;
         let mut ws = client
             .get(&server)
             .upgrade()
@@ -249,6 +253,7 @@ impl ConnManager {
     async fn accept_internal(&mut self, param: AcceptParam) -> Result<()> {
         use tokio_tungstenite::tungstenite::Message;
         let (stream, addr) = param?;
+        stream.set_nodelay(true)?;
         info!("Accepted connection from {addr}");
         let id = self.id;
         let connect_timeout = self.connect_timeout;

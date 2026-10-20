@@ -9,13 +9,17 @@ use std::{
 use anyhow::Result;
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{
+    Mutex,
+    broadcast::{self, error::RecvError},
+    mpsc,
+};
 use tracing::error;
 
 use crate::{
     fullmesh::{DeviceManager, NotifyFn},
     mesh::{
-        MeshHandle,
+        MeshEvent, MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
     time::{Instant, Interval, interval},
@@ -27,7 +31,7 @@ pub enum ConnectionType {
     DataChannel,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
     pub connection_types: Vec<ConnectionType>,
     pub ips: Vec<IpAddr>,
@@ -50,6 +54,9 @@ pub struct Registry {
 
     packet_rx: mpsc::Receiver<Packet>,
     announce_ticker: Interval,
+    ip_ticker: Interval,
+    last_node: Option<Node>,
+    mesh_event_rx: broadcast::Receiver<MeshEvent>,
     node_timeout: Duration,
 
     nodes: HashMap<NodeId, (Node, Instant)>,
@@ -89,6 +96,7 @@ impl Registry {
                 (packet.payload.as_ref() as &dyn Any).is::<RegistryPayload>()
             }))
             .await?;
+        let mesh_event_rx = mesh.subscribe_mesh_events().await?;
         let (future, registry) = Registry::run(move |handle| Registry {
             handle,
             mesh,
@@ -96,6 +104,9 @@ impl Registry {
             connection_types,
             packet_rx,
             announce_ticker: interval(announce_interval),
+            ip_ticker: interval(Duration::from_secs(1)),
+            last_node: None,
+            mesh_event_rx,
             node_timeout,
             nodes: HashMap::new(),
             ips,
@@ -109,7 +120,9 @@ impl Registry {
     fn select(&mut self) -> Vec<Selection<'_>> {
         vec![
             selection!(self.packet_rx.recv().await, handle_packet, it => it),
+            selection!(self.mesh_event_rx.recv().await, handle_mesh_event, it => it),
             selection!(self.announce_ticker.tick().await, announce_tick),
+            selection!(self.ip_ticker.tick().await, ip_tick),
         ]
     }
 
@@ -126,9 +139,8 @@ impl Registry {
         match payload {
             RegistryPayload::Node(node) => {
                 let now = Instant::now();
-                self.nodes.insert(src, (node.clone(), now));
+                let mut updated = self.nodes.insert(src, (node.clone(), now)).is_none();
                 let mut ips = self.ips.lock().await;
-                let mut updated = false;
                 for ip in &node.ips {
                     if ips.insert(*ip, (src, now)).is_none() {
                         updated = true;
@@ -137,9 +149,11 @@ impl Registry {
                 if updated {
                     for notify in &self.notifiers {
                         if let Some(notify) = notify.upgrade() {
-                            if let Err(err) = notify().await {
-                                error!("Failed to notify registry change: {err:?}");
-                            }
+                            tokio::task::spawn_local(async move {
+                                if let Err(err) = notify().await {
+                                    error!("Failed to notify registry change: {err:?}");
+                                }
+                            });
                         }
                     }
                 }
@@ -159,11 +173,70 @@ impl Registry {
             .lock()
             .await
             .retain(|_, (_, last_seen)| now.duration_since(*last_seen) < self.node_timeout);
-        // annonce
-        let node = Node {
+        self.announce_routes().await?;
+        Ok(())
+    }
+
+    #[no_reply]
+    async fn ip_tick(&mut self) -> Result<()> {
+        let node = self.local_node().await?;
+        if self.last_node.as_ref() == Some(&node) {
+            return Ok(());
+        }
+        self.announce_node_routes(&node).await?;
+        self.last_node = Some(node);
+        Ok(())
+    }
+
+    #[no_reply]
+    async fn handle_mesh_event(&mut self, event: Result<MeshEvent, RecvError>) -> Result<()> {
+        let event = match event {
+            Ok(event) => event,
+            Err(RecvError::Lagged(_)) => {
+                self.announce_routes().await?;
+                return Ok(());
+            }
+            Err(RecvError::Closed) => {
+                self.handle.stop();
+                return Ok(());
+            }
+        };
+        if let MeshEvent::RouteSet(dst, _) = event
+            && let Err(err) = self.announce_to(dst).await
+        {
+            error!("Failed to send registry packet to {dst}: {err:?}");
+        }
+        Ok(())
+    }
+
+    #[skip]
+    async fn local_node(&self) -> Result<Node> {
+        Ok(Node {
             connection_types: self.connection_types.clone(),
             ips: self.dm.lock().await.ips().await?,
-        };
+        })
+    }
+
+    #[skip]
+    async fn send_node(&self, dst: NodeId, node: &Node) -> Result<()> {
+        let payload = Box::new(RegistryPayload::Node(node.clone()));
+        self.mesh.send_packet(dst, payload).await
+    }
+
+    #[skip]
+    async fn announce_to(&self, dst: NodeId) -> Result<()> {
+        let node = self.local_node().await?;
+        self.send_node(dst, &node).await
+    }
+
+    #[skip]
+    async fn announce_routes(&self) -> Result<()> {
+        let node = self.local_node().await?;
+        self.announce_node_routes(&node).await
+    }
+
+    #[skip]
+    async fn announce_node_routes(&self, node: &Node) -> Result<()> {
         let peers = self
             .mesh
             .get_routes()
@@ -172,11 +245,7 @@ impl Registry {
             .cloned()
             .collect::<Vec<_>>();
         for peer in peers {
-            let result = self
-                .mesh
-                .send_packet(peer, Box::new(RegistryPayload::Node(node.clone())))
-                .await;
-            if let Err(err) = result {
+            if let Err(err) = self.send_node(peer, node).await {
                 error!("Failed to send registry packet to {peer}: {err:?}");
             }
         }

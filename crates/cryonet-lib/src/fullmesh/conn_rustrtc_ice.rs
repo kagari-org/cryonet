@@ -88,6 +88,9 @@ impl ConnectionRustrtcIce {
             loop {
                 use IceTransportState::*;
                 match *state.borrow_and_update() {
+                    Connected | Completed => {
+                        let _ = fm.connect_tick().await;
+                    }
                     Failed | Closed => {
                         let _ = fm.connect_tick().await;
                         break;

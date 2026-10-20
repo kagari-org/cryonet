@@ -98,6 +98,7 @@ pub struct FullMesh {
     packet_rx: mpsc::Receiver<Packet>,
     connect_ticker: Interval,
     connections: HashMap<NodeId, FullMeshConnection>,
+    connect_backoff: HashMap<NodeId, (Instant, Duration)>,
 
     notifier: Arc<NotifyFn>,
 }
@@ -119,9 +120,9 @@ impl FullMesh {
             registry,
             dm,
             ice_servers,
-            Duration::from_secs(10),
+            Duration::from_secs(1),
             Duration::from_secs(12),
-            Duration::from_secs(30),
+            Duration::from_secs(10),
             Duration::from_secs(120),
             candidate_filter_prefixes,
             encrypt_local_packets,
@@ -163,6 +164,7 @@ impl FullMesh {
             packet_rx,
             connect_ticker: interval(connect_interval),
             connections: HashMap::new(),
+            connect_backoff: HashMap::new(),
             notifier: Arc::new(Box::new(move || {
                 let handle = handle.clone();
                 Box::pin(async move { handle.connect_tick().await })
@@ -499,6 +501,29 @@ impl FullMesh {
         Ok(())
     }
 
+    #[skip]
+    fn schedule_retry(&mut self, node_id: NodeId) {
+        let delay = self
+            .connect_backoff
+            .get(&node_id)
+            .map_or(Duration::from_secs(1), |(_, delay)| {
+                delay.saturating_mul(2).min(Duration::from_secs(10))
+            });
+        self.connect_backoff
+            .insert(node_id, (Instant::now() + delay, delay));
+    }
+
+    #[skip]
+    fn finish_connect(&mut self, node_id: NodeId, result: Result<()>) {
+        if let Err(err) = result {
+            error!("Failed to connect to peer {node_id:X}: {err:?}");
+            self.connections.remove(&node_id);
+            self.schedule_retry(node_id);
+        } else {
+            self.connect_backoff.remove(&node_id);
+        }
+    }
+
     #[no_reply]
     pub async fn connect_tick(&mut self) -> Result<()> {
         let time = Instant::now();
@@ -513,11 +538,12 @@ impl FullMesh {
             if received != conn.last_received.0 {
                 conn.last_received = (received, time);
             }
-            let timeout = if conn.once_connected {
-                self.connection_timeout
-            } else {
-                self.connect_timeout
-            };
+            let timeout =
+                if conn.once_connected || conn.connection.status() == ConnectionState::Connected {
+                    self.connection_timeout
+                } else {
+                    self.connect_timeout
+                };
             let keep = time.duration_since(conn.last_received.1) < timeout;
             if !keep {
                 disconnected.push(*node_id);
@@ -526,9 +552,9 @@ impl FullMesh {
         });
         {
             let mut dm = self.dm.lock().await;
-            for node_id in disconnected {
+            for node_id in &disconnected {
                 debug!("Connection to peer {node_id:X} is gone, disconnecting");
-                dm.disconnected(node_id).await?;
+                dm.disconnected(*node_id).await?;
             }
             // mark connected
             for (node_id, conn) in &mut self.connections {
@@ -543,9 +569,15 @@ impl FullMesh {
                 }
             }
         }
+        for node_id in &disconnected {
+            self.schedule_retry(*node_id);
+        }
+        let nodes = self.registry.get_nodes().await?;
+        self.connect_backoff
+            .retain(|node_id, _| nodes.contains_key(node_id));
         // rekey
         #[cfg(not(target_arch = "wasm32"))]
-        for peer_id in self.registry.get_nodes().await?.keys() {
+        for peer_id in nodes.keys() {
             if !is_initiator(self.id, *peer_id) {
                 continue;
             }
@@ -584,11 +616,16 @@ impl FullMesh {
                 .await?;
         }
         // connect
-        for (peer_id, node) in self.registry.get_nodes().await? {
+        for (&peer_id, node) in &nodes {
             if !is_initiator(self.id, peer_id) {
                 continue;
             }
-            if self.connections.get_mut(&peer_id).is_some() {
+            if self.connections.contains_key(&peer_id) {
+                continue;
+            }
+            if let Some((retry_at, _)) = self.connect_backoff.get(&peer_id)
+                && time < *retry_at
+            {
                 continue;
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -629,9 +666,7 @@ impl FullMesh {
                         )
                         .await?;
                 };
-                if let Err(err) = result {
-                    error!("Failed to connect to peer {peer_id:X}: {err:?}");
-                }
+                self.finish_connect(peer_id, result);
             } else if node
                 .0
                 .connection_types
@@ -664,9 +699,7 @@ impl FullMesh {
                         )
                         .await?;
                 };
-                if let Err(err) = result {
-                    error!("Failed to connect to peer {peer_id:X}: {err:?}");
-                }
+                self.finish_connect(peer_id, result);
             }
             #[cfg(target_arch = "wasm32")]
             if node
@@ -699,9 +732,7 @@ impl FullMesh {
                         )
                         .await?;
                 };
-                if let Err(err) = result {
-                    error!("Failed to connect to peer {peer_id:X}: {err:?}");
-                }
+                self.finish_connect(peer_id, result);
             }
         }
         Ok(())
