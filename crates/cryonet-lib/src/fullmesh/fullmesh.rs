@@ -27,7 +27,7 @@ use sha2::Sha256;
 
 use crate::{
     fullmesh::{
-        Connection, ConnectionState, DeviceManager, IceServer, NotifyFn,
+        Connection, ConnectionState, DeviceManager, IceServer, NotifyFn, is_initiator,
         registry::{ConnectionType, RegistryHandle},
     },
     mesh::{
@@ -210,7 +210,7 @@ impl FullMesh {
                 public_key,
             } => {
                 let public_key = serde_json::from_str::<PublicKey>(public_key)?;
-                if self.id > src {
+                if !is_initiator(self.id, src) {
                     let ecdh_key = EphemeralSecret::generate();
                     let local_public_key = ecdh_key.public_key();
                     let mut key = [0; 16];
@@ -308,7 +308,7 @@ impl FullMesh {
                     );
                     return Ok(());
                 };
-                if self.id > src {
+                if !is_initiator(self.id, src) {
                     // we received the rekey request
                     let new_ecdh_key = EphemeralSecret::generate();
                     let new_public_key = new_ecdh_key.public_key();
@@ -546,7 +546,7 @@ impl FullMesh {
         // rekey
         #[cfg(not(target_arch = "wasm32"))]
         for peer_id in self.registry.get_nodes().await?.keys() {
-            if self.id > *peer_id {
+            if !is_initiator(self.id, *peer_id) {
                 continue;
             }
             let Some(conn) = self.connections.get_mut(peer_id) else {
@@ -585,7 +585,7 @@ impl FullMesh {
         }
         // connect
         for (peer_id, node) in self.registry.get_nodes().await? {
-            if self.id > peer_id {
+            if !is_initiator(self.id, peer_id) {
                 continue;
             }
             if self.connections.get_mut(&peer_id).is_some() {

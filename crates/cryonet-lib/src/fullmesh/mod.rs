@@ -93,3 +93,58 @@ pub type NotifyFn =
     Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
 #[cfg(target_arch = "wasm32")]
 pub type NotifyFn = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>>>>>;
+
+// Pick one side of the pair deterministically so both peers agree.
+fn pair_initiator(a: NodeId, b: NodeId) -> NodeId {
+    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+    let mut hash = ((lo as u64) << 32) | hi as u64;
+    // splitmix64 finalizer, stable across runs and versions
+    hash ^= hash >> 30;
+    hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash ^= hash >> 27;
+    hash = hash.wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^= hash >> 31;
+    if hash & 1 == 0 { lo } else { hi }
+}
+
+fn is_initiator(me: NodeId, peer: NodeId) -> bool {
+    pair_initiator(me, peer) == me
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pair_initiator_is_symmetric() {
+        for a in 0..256 {
+            for b in 0..256 {
+                let initiator = pair_initiator(a, b);
+                assert_eq!(initiator, pair_initiator(b, a));
+                assert!(initiator == a || initiator == b);
+                if a != b {
+                    assert_ne!(is_initiator(a, b), is_initiator(b, a));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pair_initiator_is_balanced() {
+        let n = 64;
+        let mut counts = vec![0usize; n as usize];
+        for a in 0..n {
+            for b in (a + 1)..n {
+                counts[pair_initiator(a, b) as usize] += 1;
+            }
+        }
+        let average = (n - 1) as f64 / 2.0;
+        for count in counts {
+            let ratio = count as f64 / average;
+            assert!(
+                (0.5..=1.5).contains(&ratio),
+                "unbalanced: {count} vs {average}"
+            );
+        }
+    }
+}
