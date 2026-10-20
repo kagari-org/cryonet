@@ -166,7 +166,10 @@ impl FullMesh {
     ) -> Result<FullMeshHandle> {
         let packet_rx = mesh
             .add_dispatchee(Box::new(|packet| {
-                (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>()
+                packet
+                    .payload
+                    .as_payload()
+                    .is_some_and(|payload| (payload as &dyn Any).is::<FullMeshPayload>())
             }))
             .await?;
         let session = new_session();
@@ -222,8 +225,10 @@ impl FullMesh {
             return Ok(());
         };
         let src = packet.src;
-        let payload = (packet.payload.as_ref() as &dyn Any)
-            .downcast_ref::<FullMeshPayload>()
+        let payload = packet
+            .payload
+            .as_payload()
+            .and_then(|payload| (payload as &dyn Any).downcast_ref::<FullMeshPayload>())
             .unwrap();
         if src == self.id {
             error!("Received packet from self (node {:X}), ignoring", self.id);
@@ -281,7 +286,7 @@ impl FullMesh {
                     );
                     self.last_seen_gen.insert(src, *conn_gen);
                     self.mesh
-                        .send_packet(
+                        .send_packet_reliable(
                             src,
                             Box::new(FullMeshPayload::Shake {
                                 ufrag: parameters.username_fragment,
@@ -360,7 +365,7 @@ impl FullMesh {
                     conn.ecdh_key = new_ecdh_key;
                     conn.last_rekey = Instant::now();
                     self.mesh
-                        .send_packet(
+                        .send_packet_reliable(
                             src,
                             Box::new(FullMeshPayload::Rekey {
                                 index: *index,
@@ -387,7 +392,7 @@ impl FullMesh {
                     connection.set_send_key(new_key);
                     conn.last_rekey = Instant::now();
                     self.mesh
-                        .send_packet(
+                        .send_packet_reliable(
                             src,
                             Box::new(FullMeshPayload::RekeyConfirm {
                                 index: *index,
@@ -446,7 +451,7 @@ impl FullMesh {
                 let (answer, local_candidates) = connection.create_answer(sdp.clone()).await?;
                 connection.add_candidates(candidates).await?;
                 self.mesh
-                    .send_packet(
+                    .send_packet_reliable(
                         src,
                         Box::new(FullMeshPayload::Answer {
                             sdp: answer,
@@ -525,7 +530,7 @@ impl FullMesh {
                 );
                 self.last_seen_gen.insert(src, *conn_gen);
                 self.mesh
-                    .send_packet(
+                    .send_packet_reliable(
                         src,
                         Box::new(FullMeshPayload::Answer {
                             sdp: answer,
@@ -706,7 +711,7 @@ impl FullMesh {
             conn.ecdh_key = new_ecdh_key;
             conn.last_rekey = time;
             self.mesh
-                .send_packet(
+                .send_packet_reliable(
                     *peer_id,
                     Box::new(FullMeshPayload::Rekey {
                         index: !key.index,
@@ -737,7 +742,7 @@ impl FullMesh {
                     (time + self.connect_interval, self.connect_interval),
                 );
                 self.mesh
-                    .send_packet(
+                    .send_packet_reliable(
                         peer_id,
                         Box::new(FullMeshPayload::ConnectRequest {
                             responder_session: self.session,
@@ -790,7 +795,7 @@ impl FullMesh {
                     },
                 );
                 self.mesh
-                    .send_packet(
+                    .send_packet_reliable(
                         peer_id,
                         Box::new(FullMeshPayload::Shake {
                             ufrag: parameters.username_fragment,
@@ -828,7 +833,7 @@ impl FullMesh {
                     },
                 );
                 self.mesh
-                    .send_packet(
+                    .send_packet_reliable(
                         peer_id,
                         Box::new(FullMeshPayload::Offer {
                             sdp: offer,
@@ -863,7 +868,7 @@ impl FullMesh {
                     },
                 );
                 self.mesh
-                    .send_packet(
+                    .send_packet_reliable(
                         peer_id,
                         Box::new(FullMeshPayload::Offer {
                             sdp: offer,

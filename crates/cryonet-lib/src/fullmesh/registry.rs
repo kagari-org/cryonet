@@ -93,7 +93,10 @@ impl Registry {
     ) -> Result<RegistryHandle> {
         let packet_rx = mesh
             .add_dispatchee(Box::new(|packet| {
-                (packet.payload.as_ref() as &dyn Any).is::<RegistryPayload>()
+                packet
+                    .payload
+                    .as_payload()
+                    .is_some_and(|payload| (payload as &dyn Any).is::<RegistryPayload>())
             }))
             .await?;
         let mesh_event_rx = mesh.subscribe_mesh_events().await?;
@@ -133,8 +136,10 @@ impl Registry {
             return Ok(());
         };
         let src = packet.src;
-        let payload = (packet.payload.as_ref() as &dyn Any)
-            .downcast_ref::<RegistryPayload>()
+        let payload = packet
+            .payload
+            .as_payload()
+            .and_then(|payload| (payload as &dyn Any).downcast_ref::<RegistryPayload>())
             .unwrap();
         match payload {
             RegistryPayload::Node(node) => {
@@ -220,7 +225,7 @@ impl Registry {
     #[skip]
     async fn send_node(&self, dst: NodeId, node: &Node) -> Result<()> {
         let payload = Box::new(RegistryPayload::Node(node.clone()));
-        self.mesh.send_packet(dst, payload).await
+        self.mesh.send_packet_reliable(dst, payload).await
     }
 
     #[skip]

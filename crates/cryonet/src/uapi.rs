@@ -81,7 +81,10 @@ impl Uapi {
         let socket = UnixDatagram::bind(path).unwrap();
         let packet_rx = mesh
             .add_dispatchee(Box::new(|packet| {
-                (packet.payload.as_ref() as &dyn Any).is::<UapiPayload>()
+                packet
+                    .payload
+                    .as_payload()
+                    .is_some_and(|payload| (payload as &dyn Any).is::<UapiPayload>())
             }))
             .await?;
         let (future, uapi) = Uapi::run(move |handle| Uapi {
@@ -116,8 +119,10 @@ impl Uapi {
             return Ok(());
         };
         let src = packet.src;
-        let uapi_payload = (packet.payload.as_ref() as &dyn Any)
-            .downcast_ref::<UapiPayload>()
+        let uapi_payload = packet
+            .payload
+            .as_payload()
+            .and_then(|payload| (payload as &dyn Any).downcast_ref::<UapiPayload>())
             .unwrap();
         use UapiPayload::*;
         match uapi_payload {

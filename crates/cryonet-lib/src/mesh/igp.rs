@@ -117,7 +117,10 @@ impl Igp {
     ) -> Result<IgpHandle> {
         let packet_rx = mesh
             .add_dispatchee(Box::new(|packet| {
-                (packet.payload.as_ref() as &dyn Any).is::<IgpPayload>()
+                packet
+                    .payload
+                    .as_payload()
+                    .is_some_and(|payload| (payload as &dyn Any).is::<IgpPayload>())
             }))
             .await?;
         let mesh_event_rx = mesh.subscribe_mesh_events().await?;
@@ -297,8 +300,10 @@ impl Igp {
             }
         };
         let src = packet.src;
-        let payload = (packet.payload.as_ref() as &dyn Any)
-            .downcast_ref::<IgpPayload>()
+        let payload = packet
+            .payload
+            .as_payload()
+            .and_then(|payload| (payload as &dyn Any).downcast_ref::<IgpPayload>())
             .unwrap();
         match payload {
             IgpPayload::Hello { seq } => {

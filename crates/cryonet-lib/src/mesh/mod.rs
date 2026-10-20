@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Debug, time::Duration};
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use futures::future::join_all;
-use packet::{NodeId, Packet, Payload};
+use packet::{NodeId, Packet, PacketPayload, Payload};
 use sactor::sactor;
 use tokio::{
     select,
@@ -11,7 +11,10 @@ use tokio::{
 };
 use tracing::{debug, error, warn};
 
-use crate::{errors::CryonetError, time::Instant};
+use crate::{
+    errors::CryonetError,
+    time::{Instant, Interval, interval},
+};
 
 pub mod igp;
 pub mod packet;
@@ -22,6 +25,11 @@ pub struct Mesh {
 
     id: NodeId,
     link_idle_timeout: Duration,
+
+    pending: HashMap<(NodeId, u64), PendingPacket>,
+    next_seq: u64,
+    received: HashMap<NodeId, ReceivedWindow>,
+    retry_ticker: Interval,
 
     link_send: HashMap<NodeId, Box<dyn LinkSend>>,
     link_recv_stop: HashMap<NodeId, watch::Sender<bool>>,
@@ -65,6 +73,72 @@ pub enum LinkError {
     Unknown(#[from] anyhow::Error),
 }
 
+struct PendingPacket {
+    payload: Box<dyn Payload>,
+    attempts: u32,
+    next_retry: Instant,
+}
+
+// bit 0 is highest, bit n is highest - n
+struct ReceivedWindow {
+    initialized: bool,
+    highest: u64,
+    bits: u64,
+}
+
+impl ReceivedWindow {
+    fn new() -> Self {
+        Self {
+            initialized: false,
+            highest: 0,
+            bits: 0,
+        }
+    }
+
+    fn accept(&mut self, seq: u64) -> bool {
+        if !self.initialized {
+            self.initialized = true;
+            self.highest = seq;
+            self.bits = 1;
+            return true;
+        }
+
+        let ahead = seq.wrapping_sub(self.highest);
+        if ahead == 0 {
+            if self.bits & 1 != 0 {
+                return false;
+            }
+            self.bits |= 1;
+            return true;
+        }
+        if ahead < 1 << 63 {
+            self.bits = if ahead >= 64 {
+                1
+            } else {
+                (self.bits << ahead) | 1
+            };
+            self.highest = seq;
+            return true;
+        }
+
+        let behind = self.highest.wrapping_sub(seq);
+        if behind >= 64 {
+            // too old to be tracked, accept it instead of silently dropping it
+            return true;
+        }
+        let mask = 1 << behind;
+        if self.bits & mask != 0 {
+            return false;
+        }
+        self.bits |= mask;
+        true
+    }
+}
+
+const RELIABLE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const RELIABLE_RETRY_TICK: Duration = Duration::from_millis(250);
+const RELIABLE_MAX_ATTEMPTS: u32 = 10;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum MeshEvent {
@@ -85,6 +159,10 @@ impl Mesh {
             handle,
             id,
             link_idle_timeout,
+            pending: HashMap::new(),
+            next_seq: 0,
+            received: HashMap::new(),
+            retry_ticker: interval(RELIABLE_RETRY_TICK),
             link_send: HashMap::new(),
             link_recv_stop: HashMap::new(),
             link_last_recv: HashMap::new(),
@@ -115,6 +193,41 @@ impl Mesh {
         };
         debug!("Received packet: {packet:?}");
         if packet.dst == self.id {
+            let Packet {
+                src,
+                dst,
+                ttl,
+                payload,
+            } = packet;
+            let payload = match payload {
+                PacketPayload::Ack { seq } => {
+                    debug!("Received ack {seq} from node {src:X}");
+                    self.pending.remove(&(src, seq));
+                    return Ok(());
+                }
+                PacketPayload::Payload(payload) => payload,
+                PacketPayload::Reliable { seq, payload } => {
+                    if let Err(err) = self.send_ack(from, src, seq).await {
+                        debug!("Failed to acknowledge packet {seq} from node {src:X}: {err:?}");
+                    }
+                    let first = self
+                        .received
+                        .entry(src)
+                        .or_insert_with(ReceivedWindow::new)
+                        .accept(seq);
+                    if !first {
+                        debug!("Dropping duplicate reliable packet {seq} from node {src:X}");
+                        return Ok(());
+                    }
+                    payload
+                }
+            };
+            let packet = Packet {
+                src,
+                dst,
+                ttl,
+                payload: PacketPayload::Payload(payload),
+            };
             for (filter, dispatch) in self.dispatchees.iter() {
                 if filter(&packet) {
                     if let Err(err) = dispatch.try_send(packet) {
@@ -160,7 +273,7 @@ impl Mesh {
             src: self.id,
             dst,
             ttl: 16,
-            payload,
+            payload: PacketPayload::Payload(payload),
         })
         .await
     }
@@ -174,7 +287,7 @@ impl Mesh {
             src: self.id,
             dst,
             ttl: 16,
-            payload,
+            payload: PacketPayload::Payload(payload),
         };
         debug!("Sending packet {packet:?} to {dst:X} via direct link");
         let res = link.send(packet).await;
@@ -182,6 +295,108 @@ impl Mesh {
             self.remove_link(dst);
         }
         res?;
+        Ok(())
+    }
+
+    #[no_reply]
+    pub async fn send_packet_reliable(
+        &mut self,
+        dst: NodeId,
+        payload: Box<dyn Payload>,
+    ) -> Result<()> {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.pending.insert(
+            (dst, seq),
+            PendingPacket {
+                payload: dyn_clone::clone_box(&*payload),
+                attempts: 1,
+                next_retry: Instant::now() + RELIABLE_RETRY_INTERVAL,
+            },
+        );
+        if let Err(err) = self.send_reliable_packet(seq, dst, payload).await {
+            // the destination may become routable later
+            debug!("Reliable packet {seq} to {dst:X} is not routable yet: {err:?}");
+        }
+        Ok(())
+    }
+
+    async fn send_reliable_packet(
+        &mut self,
+        seq: u64,
+        dst: NodeId,
+        payload: Box<dyn Payload>,
+    ) -> Result<()> {
+        let packet = Packet {
+            src: self.id,
+            dst,
+            ttl: 16,
+            payload: PacketPayload::Reliable { seq, payload },
+        };
+        if let Some(link) = self.link_send.get_mut(&dst) {
+            debug!("Sending reliable packet {seq} to {dst:X} via direct link");
+            let res = link.send(packet).await;
+            if let Err(LinkError::Closed) = res {
+                self.remove_link(dst);
+            }
+            res?;
+        } else {
+            self.send_packet_internal(packet).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_ack(&mut self, from: NodeId, dst: NodeId, seq: u64) -> Result<()> {
+        let ack = Packet {
+            src: self.id,
+            dst,
+            ttl: 16,
+            payload: PacketPayload::Ack { seq },
+        };
+        // the reverse path is valid for multi-hop packets and works before a
+        // route back to the source is installed
+        if let Some(link) = self.link_send.get_mut(&from) {
+            let res = link.send(ack).await;
+            if let Err(LinkError::Closed) = res {
+                self.remove_link(from);
+            }
+            res?;
+        } else {
+            self.send_packet_internal(ack).await?;
+        }
+        Ok(())
+    }
+
+    #[select]
+    fn select(&mut self) -> Vec<Selection<'_>> {
+        vec![selection!(self.retry_ticker.tick().await, retry)]
+    }
+
+    #[no_reply]
+    async fn retry(&mut self) -> Result<()> {
+        let now = Instant::now();
+        let mut resend = Vec::new();
+        self.pending.retain(|(dst, seq), pending| {
+            if now < pending.next_retry {
+                return true;
+            }
+            if pending.attempts >= RELIABLE_MAX_ATTEMPTS {
+                warn!(
+                    "Giving up reliable packet {seq} to node {dst:X} after {} attempts",
+                    pending.attempts
+                );
+                return false;
+            }
+            pending.attempts += 1;
+            pending.next_retry = now + RELIABLE_RETRY_INTERVAL;
+            resend.push((*seq, *dst, dyn_clone::clone_box(&*pending.payload)));
+            true
+        });
+        for (seq, dst, payload) in resend {
+            if let Err(err) = self.send_reliable_packet(seq, dst, payload).await {
+                debug!("Reliable packet {seq} to {dst:X} is still unreachable: {err:?}");
+            }
+        }
         Ok(())
     }
 
@@ -197,7 +412,7 @@ impl Mesh {
                         src: self.id,
                         dst: *dst,
                         ttl: 16,
-                        payload: dyn_clone::clone_box(&*payload),
+                        payload: PacketPayload::Payload(dyn_clone::clone_box(&*payload)),
                     })
                     .await,
                     *dst,
@@ -286,6 +501,7 @@ impl Mesh {
     pub fn remove_link(&mut self, dst: NodeId) {
         debug!("Removing link to node {dst:X}");
         self.routes.retain(|_, &mut v| v != dst);
+        self.received.remove(&dst);
         self.link_send.remove(&dst);
         self.link_last_recv.remove(&dst);
         let ctrl = self.link_recv_stop.remove(&dst);
@@ -369,9 +585,18 @@ impl Drop for Mesh {
 }
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, time::Duration};
+    use std::{
+        any::Any,
+        future::Future,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     use async_trait::async_trait;
+    use serde::{Deserialize, Serialize};
     use tokio::sync::mpsc;
 
     use super::*;
@@ -391,6 +616,70 @@ mod tests {
     impl LinkRecv for ChannelRecv {
         async fn recv(&mut self) -> Result<Packet, LinkError> {
             self.0.recv().await.ok_or(LinkError::Closed)
+        }
+    }
+
+    #[typetag::serde]
+    impl Payload for MeshTestPayload {}
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct MeshTestPayload {
+        value: u32,
+    }
+
+    fn is_test_payload(packet: &Packet) -> bool {
+        packet
+            .payload
+            .as_payload()
+            .is_some_and(|payload| (payload as &dyn Any).is::<MeshTestPayload>())
+    }
+
+    struct TestSend {
+        tx: mpsc::Sender<Packet>,
+        sent: Arc<AtomicUsize>,
+        drop_budget: usize,
+        matches: Arc<dyn Fn(&Packet) -> bool + Send + Sync>,
+    }
+
+    fn counted_send(tx: mpsc::Sender<Packet>) -> (TestSend, Arc<AtomicUsize>) {
+        let sent = Arc::new(AtomicUsize::new(0));
+        (
+            TestSend {
+                tx,
+                sent: sent.clone(),
+                drop_budget: 0,
+                matches: Arc::new(|_| false),
+            },
+            sent,
+        )
+    }
+
+    fn dropping_send(
+        tx: mpsc::Sender<Packet>,
+        drop_budget: usize,
+        matches: Arc<dyn Fn(&Packet) -> bool + Send + Sync>,
+    ) -> (TestSend, Arc<AtomicUsize>) {
+        let sent = Arc::new(AtomicUsize::new(0));
+        (
+            TestSend {
+                tx,
+                sent: sent.clone(),
+                drop_budget,
+                matches,
+            },
+            sent,
+        )
+    }
+
+    #[async_trait]
+    impl LinkSend for TestSend {
+        async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
+            self.sent.fetch_add(1, Ordering::SeqCst);
+            if self.drop_budget > 0 && (self.matches)(&packet) {
+                self.drop_budget -= 1;
+                return Ok(());
+            }
+            self.tx.send(packet).await.map_err(|_| LinkError::Closed)
         }
     }
 
@@ -723,6 +1012,255 @@ mod tests {
                 .await,
                 "A-B reconnect reachability"
             );
+        });
+    }
+
+    #[test]
+    fn reliable_packet_is_delivered_and_acked() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let a = 1;
+            let b = 2;
+            let mesh_a = Mesh::new(a);
+            let mesh_b = Mesh::new(b);
+            let mut packets = mesh_b
+                .add_dispatchee(Box::new(is_test_payload))
+                .await
+                .unwrap();
+
+            let (a_tx, b_rx) = mpsc::channel(64);
+            let (b_tx, a_rx) = mpsc::channel(64);
+            let (a_send, a_sent) = counted_send(a_tx);
+            let (b_send, b_sent) = counted_send(b_tx);
+            assert!(
+                mesh_a
+                    .add_link(b, Box::new(a_send), Box::new(ChannelRecv(a_rx)), true)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                mesh_b
+                    .add_link(a, Box::new(b_send), Box::new(ChannelRecv(b_rx)), true)
+                    .await
+                    .unwrap()
+            );
+
+            mesh_a
+                .send_packet_reliable(b, Box::new(MeshTestPayload { value: 7 }))
+                .await
+                .unwrap();
+            let packet = tokio::time::timeout(Duration::from_secs(2), packets.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let payload = (packet.payload.as_payload().unwrap() as &dyn Any)
+                .downcast_ref::<MeshTestPayload>()
+                .unwrap();
+            assert_eq!(payload.value, 7);
+
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            assert_eq!(a_sent.load(Ordering::SeqCst), 1);
+            assert_eq!(b_sent.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn reliable_packet_retries_until_acknowledged() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let a = 1;
+            let b = 2;
+            let mesh_a = Mesh::new(a);
+            let mesh_b = Mesh::new(b);
+            let mut packets = mesh_b
+                .add_dispatchee(Box::new(is_test_payload))
+                .await
+                .unwrap();
+
+            let (a_tx, b_rx) = mpsc::channel(64);
+            let (b_tx, a_rx) = mpsc::channel(64);
+            let (a_send, a_sent) = dropping_send(
+                a_tx,
+                1,
+                Arc::new(|packet: &Packet| {
+                    matches!(&packet.payload, PacketPayload::Reliable { .. })
+                }),
+            );
+            let (b_send, _) = counted_send(b_tx);
+            assert!(
+                mesh_a
+                    .add_link(b, Box::new(a_send), Box::new(ChannelRecv(a_rx)), true)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                mesh_b
+                    .add_link(a, Box::new(b_send), Box::new(ChannelRecv(b_rx)), true)
+                    .await
+                    .unwrap()
+            );
+
+            mesh_a
+                .send_packet_reliable(b, Box::new(MeshTestPayload { value: 8 }))
+                .await
+                .unwrap();
+            let packet = tokio::time::timeout(Duration::from_secs(3), packets.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let payload = (packet.payload.as_payload().unwrap() as &dyn Any)
+                .downcast_ref::<MeshTestPayload>()
+                .unwrap();
+            assert_eq!(payload.value, 8);
+            assert_eq!(a_sent.load(Ordering::SeqCst), 2);
+
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            assert_eq!(a_sent.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn lost_ack_retransmits_without_duplicate_delivery() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let a = 1;
+            let b = 2;
+            let mesh_a = Mesh::new(a);
+            let mesh_b = Mesh::new(b);
+            let mut packets = mesh_b
+                .add_dispatchee(Box::new(is_test_payload))
+                .await
+                .unwrap();
+
+            let (a_tx, b_rx) = mpsc::channel(64);
+            let (b_tx, a_rx) = mpsc::channel(64);
+            let (a_send, a_sent) = counted_send(a_tx);
+            let (b_send, b_sent) = dropping_send(
+                b_tx,
+                1,
+                Arc::new(|packet: &Packet| matches!(&packet.payload, PacketPayload::Ack { .. })),
+            );
+            assert!(
+                mesh_a
+                    .add_link(b, Box::new(a_send), Box::new(ChannelRecv(a_rx)), true)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                mesh_b
+                    .add_link(a, Box::new(b_send), Box::new(ChannelRecv(b_rx)), true)
+                    .await
+                    .unwrap()
+            );
+
+            mesh_a
+                .send_packet_reliable(b, Box::new(MeshTestPayload { value: 9 }))
+                .await
+                .unwrap();
+            let packet = tokio::time::timeout(Duration::from_secs(2), packets.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let payload = (packet.payload.as_payload().unwrap() as &dyn Any)
+                .downcast_ref::<MeshTestPayload>()
+                .unwrap();
+            assert_eq!(payload.value, 9);
+
+            assert!(
+                wait_until(|| async { a_sent.load(Ordering::SeqCst) == 2 }).await,
+                "retransmit after the lost ack"
+            );
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            assert_eq!(a_sent.load(Ordering::SeqCst), 2);
+            assert_eq!(b_sent.load(Ordering::SeqCst), 2);
+            assert!(packets.try_recv().is_err(), "duplicate was delivered");
+        });
+    }
+
+    #[test]
+    fn reliable_ack_routes_back_across_multiple_hops() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let a = 1;
+            let b = 2;
+            let c = 3;
+            let mesh_a = Mesh::new(a);
+            let mesh_b = Mesh::new(b);
+            let mesh_c = Mesh::new(c);
+            let mut packets = mesh_c
+                .add_dispatchee(Box::new(is_test_payload))
+                .await
+                .unwrap();
+
+            let (a_tx, b_rx) = mpsc::channel(64);
+            let (b_tx, a_rx) = mpsc::channel(64);
+            let (b2_tx, c_rx) = mpsc::channel(64);
+            let (c_tx, b2_rx) = mpsc::channel(64);
+            let (a_send, a_sent) = counted_send(a_tx);
+            let (b_send, _) = counted_send(b_tx);
+            let (b2_send, _) = counted_send(b2_tx);
+            let (c_send, _) = counted_send(c_tx);
+            assert!(
+                mesh_a
+                    .add_link(b, Box::new(a_send), Box::new(ChannelRecv(a_rx)), true)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                mesh_b
+                    .add_link(a, Box::new(b_send), Box::new(ChannelRecv(b_rx)), true)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                mesh_b
+                    .add_link(c, Box::new(b2_send), Box::new(ChannelRecv(b2_rx)), true)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                mesh_c
+                    .add_link(b, Box::new(c_send), Box::new(ChannelRecv(c_rx)), true)
+                    .await
+                    .unwrap()
+            );
+
+            mesh_a.set_route(c, b).await.unwrap();
+            mesh_b.set_route(a, a).await.unwrap();
+            mesh_b.set_route(c, c).await.unwrap();
+            mesh_c.set_route(a, b).await.unwrap();
+
+            mesh_a
+                .send_packet_reliable(c, Box::new(MeshTestPayload { value: 10 }))
+                .await
+                .unwrap();
+            let packet = tokio::time::timeout(Duration::from_secs(2), packets.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let payload = (packet.payload.as_payload().unwrap() as &dyn Any)
+                .downcast_ref::<MeshTestPayload>()
+                .unwrap();
+            assert_eq!(payload.value, 10);
+
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            assert_eq!(a_sent.load(Ordering::SeqCst), 1);
         });
     }
 }
