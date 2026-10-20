@@ -239,10 +239,7 @@ impl Igp {
                 continue;
             }
             // update source timeout
-            let distance = SeqMetric {
-                seq: route.metric.seq,
-                metric: route.computed_metric,
-            };
+            let distance = route_distance(route);
             match self.sources.entry(*dst) {
                 Entry::Occupied(mut occupied_entry) => {
                     let source = occupied_entry.get_mut();
@@ -360,16 +357,9 @@ impl Igp {
             IgpPayload::RouteDump => self.dump(Some(src)).await?,
 
             IgpPayload::SequenceRequest { seq, dst, ttl } => {
-                let route = self.routes.iter_mut().find(|((d, n), r)| {
-                    d == dst
-                        && if *dst == self.id {
-                            *n == self.id
-                        } else {
-                            r.selected
-                        }
-                });
+                let route = find_route_for_request(&mut self.routes, *dst, self.id);
                 let route = match route {
-                    Some((_, route)) => {
+                    Some(route) => {
                         if route.metric.metric == u32::MAX {
                             debug!(
                                 "Route to node {dst:X} is unreachable, dropping SequenceRequest"
@@ -400,7 +390,7 @@ impl Igp {
                     // guarantees the request is ahead, so this never moves the seqno
                     // backwards. This is a deliberate local extension to the literal
                     // +1 behaviour, not a spontaneous increment.
-                    route.metric.seq = *seq;
+                    route.metric.seq = self_seq_after_request(route.metric.seq, *seq);
 
                     self.mesh
                         .broadcast_packet_local(generate_update(route))
@@ -612,23 +602,9 @@ impl Igp {
         }
 
         let mut pending_requests = Vec::new();
-        for (dst, routes) in &mut routes {
-            let dst = *dst;
+        for (dst, routes) in routes {
             let source = self.sources.get(&dst).copied();
-            let best = routes
-                .iter_mut()
-                .filter(|(route, _)| {
-                    // the local route is always selectable; it has no next-hop cost
-                    if dst == self.id {
-                        return route.metric.metric == 0 && route.computed_metric == 0;
-                    }
-                    // feasibility uses the metric advertised by the neighbour, not our
-                    // computed metric; retractions and dead next hops are not selectable
-                    route.metric.metric != u32::MAX
-                        && route.computed_metric != u32::MAX
-                        && source.is_none_or(|source| route.metric.feasible(&source.0))
-                })
-                .min_by_key(|(route, _)| route.computed_metric);
+            let best = select_best_route(dst, routes, source.map(|source| source.0), self.id);
 
             let Some(best) = best else {
                 self.mesh.remove_route(dst).await?;
@@ -637,21 +613,18 @@ impl Igp {
                 }
                 continue;
             };
-            let best = &mut *best.0;
             best.selected = true;
             self.mesh.set_route(dst, best.from).await?;
 
-            let distance = SeqMetric {
-                seq: best.metric.seq,
-                metric: best.computed_metric,
-            };
+            let distance = route_distance(best);
 
             // advertise when the distance we send changes, not only when the FD changes
-            let significant = source.is_none()
-                || previous.get(&dst).is_none_or(|previous| {
-                    previous.seq != distance.seq
-                        || previous.metric.abs_diff(distance.metric) > self.update_threshold
-                });
+            let significant = should_advertise(
+                previous.get(&dst).copied(),
+                distance,
+                source.is_none(),
+                self.update_threshold,
+            );
             match self.sources.entry(dst) {
                 Entry::Occupied(mut entry) => {
                     let source = entry.get_mut();
@@ -672,8 +645,6 @@ impl Igp {
                     .await?;
             }
         }
-        drop(routes);
-
         for (dst, seq) in pending_requests {
             self.send_seqno_request(dst, seq, false).await?;
         }
@@ -749,13 +720,79 @@ impl Igp {
     }
 }
 
+fn route_distance(route: &Route) -> SeqMetric {
+    SeqMetric {
+        seq: route.metric.seq,
+        metric: route.computed_metric,
+    }
+}
+
+fn select_best_route<'a>(
+    dst: NodeId,
+    routes: Vec<(&'a mut Route, &'a NodeId)>,
+    source: Option<SeqMetric>,
+    self_id: NodeId,
+) -> Option<&'a mut Route> {
+    routes
+        .into_iter()
+        .filter(|(route, _)| {
+            // the local route is always selectable; it has no next-hop cost
+            if dst == self_id {
+                return route.metric.metric == 0 && route.computed_metric == 0;
+            }
+            // feasibility uses the metric advertised by the neighbour, not our
+            // computed metric; retractions and dead next hops are not selectable
+            route.metric.metric != u32::MAX
+                && route.computed_metric != u32::MAX
+                && source.is_none_or(|source| route.metric.feasible(&source))
+        })
+        .min_by_key(|(route, _)| route.computed_metric)
+        .map(|(route, _)| route)
+}
+
+fn should_advertise(
+    previous: Option<SeqMetric>,
+    distance: SeqMetric,
+    source_missing: bool,
+    update_threshold: u32,
+) -> bool {
+    source_missing
+        || previous.is_none_or(|previous| {
+            previous.seq != distance.seq
+                || previous.metric.abs_diff(distance.metric) > update_threshold
+        })
+}
+
+fn self_seq_after_request(current: Seq, requested: Seq) -> Seq {
+    if requested > current {
+        requested
+    } else {
+        current
+    }
+}
+
+fn find_route_for_request(
+    routes: &mut HashMap<(NodeId, NodeId), Route>,
+    dst: NodeId,
+    self_id: NodeId,
+) -> Option<&mut Route> {
+    routes
+        .iter_mut()
+        .find(|((d, n), r)| {
+            *d == dst
+                && if dst == self_id {
+                    *n == self_id
+                } else {
+                    r.selected
+                }
+        })
+        .map(|(_, route)| route)
+}
+
 fn generate_update(route: &Route) -> Box<dyn Payload> {
     Box::new(IgpPayload::Update {
         dst: route.dst,
-        metric: SeqMetric {
-            seq: route.metric.seq,
-            metric: route.computed_metric,
-        },
+        metric: route_distance(route),
     })
 }
 
@@ -767,4 +804,171 @@ fn generate_retraction(dst: NodeId) -> Box<dyn Payload> {
             metric: u32::MAX,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(dst: NodeId, from: NodeId, seq: u16, metric: u32, computed: u32) -> Route {
+        Route {
+            metric: SeqMetric {
+                seq: Seq(seq),
+                metric,
+            },
+            computed_metric: computed,
+            dst,
+            from,
+            timeout: Instant::now(),
+            selected: false,
+        }
+    }
+
+    #[test]
+    fn route_distance_tracks_computed_metric() {
+        let route = route(1, 2, 7, 0, 123);
+        assert_eq!(
+            route_distance(&route),
+            SeqMetric {
+                seq: Seq(7),
+                metric: 123
+            }
+        );
+    }
+
+    #[test]
+    fn best_route_ignores_seqno() {
+        let mut low = route(1, 2, 5, 90, 500);
+        let mut high = route(1, 3, 6, 1000, 600);
+        let n2 = 2;
+        let n3 = 3;
+        let source = SeqMetric {
+            seq: Seq(5),
+            metric: 100,
+        };
+        let best = select_best_route(1, vec![(&mut high, &n3), (&mut low, &n2)], Some(source), 9);
+        assert_eq!(best.unwrap().from, 2);
+    }
+
+    #[test]
+    fn best_route_skips_infeasible_dead_and_retracted() {
+        let mut infeasible = route(1, 2, 5, 100, 100);
+        let mut dead = route(1, 3, 6, 1000, u32::MAX);
+        let mut retracted = route(1, 4, 6, u32::MAX, 50);
+        let mut feasible = route(1, 5, 5, 10, 500);
+        let n2 = 2;
+        let n3 = 3;
+        let n4 = 4;
+        let n5 = 5;
+        let source = SeqMetric {
+            seq: Seq(5),
+            metric: 100,
+        };
+        let best = select_best_route(
+            1,
+            vec![
+                (&mut infeasible, &n2),
+                (&mut dead, &n3),
+                (&mut retracted, &n4),
+                (&mut feasible, &n5),
+            ],
+            Some(source),
+            9,
+        );
+        assert_eq!(best.unwrap().from, 5);
+    }
+
+    #[test]
+    fn best_route_keeps_local_route() {
+        let self_id = 7;
+        let mut local = route(self_id, self_id, 3, 0, 0);
+        let mut via = route(self_id, 2, 0, 0, 10);
+        let n_local = self_id;
+        let n_via = 2;
+        let source = SeqMetric {
+            seq: Seq(10),
+            metric: 100,
+        };
+        let best = select_best_route(
+            self_id,
+            vec![(&mut via, &n_via), (&mut local, &n_local)],
+            Some(source),
+            self_id,
+        );
+        assert_eq!(best.unwrap().from, self_id);
+    }
+
+    #[test]
+    fn best_route_none_without_feasible() {
+        let source = SeqMetric {
+            seq: Seq(5),
+            metric: 100,
+        };
+        let mut a = route(1, 2, 5, 100, 100);
+        let mut b = route(1, 3, 5, 200, 50);
+        let n2 = 2;
+        let n3 = 3;
+        let best = select_best_route(1, vec![(&mut a, &n2), (&mut b, &n3)], Some(source), 9);
+        assert!(best.is_none());
+    }
+
+    #[test]
+    fn advertise_on_seqno_or_large_metric_change() {
+        let previous = SeqMetric {
+            seq: Seq(5),
+            metric: 100,
+        };
+        let same = previous;
+        let newer = SeqMetric {
+            seq: Seq(6),
+            metric: 100,
+        };
+        let small = SeqMetric {
+            seq: Seq(5),
+            metric: 110,
+        };
+        let large = SeqMetric {
+            seq: Seq(5),
+            metric: 111,
+        };
+        assert!(!should_advertise(Some(previous), same, false, 10));
+        assert!(should_advertise(Some(previous), newer, false, 10));
+        assert!(!should_advertise(Some(previous), small, false, 10));
+        assert!(should_advertise(Some(previous), large, false, 10));
+        assert!(should_advertise(None, same, false, 10));
+        assert!(should_advertise(Some(previous), same, true, 10));
+    }
+
+    #[test]
+    fn self_seq_jumps_forward_only() {
+        assert_eq!(self_seq_after_request(Seq(0), Seq(5)), Seq(5));
+        assert_eq!(self_seq_after_request(Seq(10), Seq(3)), Seq(10));
+        assert_eq!(self_seq_after_request(Seq(65535), Seq(0)), Seq(0));
+        assert_eq!(self_seq_after_request(Seq(0), Seq(0)), Seq(0));
+    }
+
+    #[test]
+    fn find_route_for_request_prefers_local_route() {
+        let self_id = 7;
+        let mut routes = HashMap::new();
+        let local = route(self_id, self_id, 3, 0, 0);
+        let mut via = route(self_id, 2, 5, 0, 100);
+        via.selected = true;
+        routes.insert((self_id, self_id), local);
+        routes.insert((self_id, 2), via);
+
+        let found = find_route_for_request(&mut routes, self_id, self_id).unwrap();
+        assert_eq!(found.from, self_id);
+        assert_eq!(found.metric.seq, Seq(3));
+
+        let mut routes = HashMap::new();
+        let stale = route(8, 2, 1, 0, 100);
+        let mut current = route(8, 3, 2, 0, 100);
+        current.selected = true;
+        routes.insert((8, 2), stale);
+        routes.insert((8, 3), current);
+
+        let found = find_route_for_request(&mut routes, 8, self_id).unwrap();
+        assert_eq!(found.from, 3);
+    }
 }

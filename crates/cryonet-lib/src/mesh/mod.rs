@@ -367,3 +367,362 @@ impl Drop for Mesh {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use std::{future::Future, time::Duration};
+
+    use async_trait::async_trait;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::mesh::igp::{Igp, Route};
+
+    struct ChannelSend(mpsc::Sender<Packet>);
+    struct ChannelRecv(mpsc::Receiver<Packet>);
+
+    #[async_trait]
+    impl LinkSend for ChannelSend {
+        async fn send(&mut self, packet: Packet) -> Result<(), LinkError> {
+            self.0.send(packet).await.map_err(|_| LinkError::Closed)
+        }
+    }
+
+    #[async_trait]
+    impl LinkRecv for ChannelRecv {
+        async fn recv(&mut self) -> Result<Packet, LinkError> {
+            self.0.recv().await.ok_or(LinkError::Closed)
+        }
+    }
+
+    async fn connect(a: &MeshHandle, b: &MeshHandle, a_id: NodeId, b_id: NodeId) {
+        let (a_tx, b_rx) = mpsc::channel(64);
+        let (b_tx, a_rx) = mpsc::channel(64);
+        assert!(
+            a.add_link(
+                b_id,
+                Box::new(ChannelSend(a_tx)),
+                Box::new(ChannelRecv(a_rx)),
+                true
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            b.add_link(
+                a_id,
+                Box::new(ChannelSend(b_tx)),
+                Box::new(ChannelRecv(b_rx)),
+                true
+            )
+            .await
+            .unwrap()
+        );
+    }
+
+    async fn wait_until<F, Fut>(mut f: F) -> bool
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = bool>,
+    {
+        for _ in 0..200 {
+            if f().await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[test]
+    fn simulated_three_nodes_propagate_and_fail_over() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let a = 1;
+            let b = 2;
+            let c = 3;
+            let mesh_a = Mesh::new_with_parameters(a, Duration::from_secs(2));
+            let mesh_b = Mesh::new_with_parameters(b, Duration::from_secs(2));
+            let mesh_c = Mesh::new_with_parameters(c, Duration::from_secs(2));
+
+            let igp = |id, mesh| {
+                Igp::new_with_parameters(
+                    Duration::from_millis(50),
+                    Duration::from_millis(100),
+                    Duration::from_millis(500),
+                    Duration::from_secs(2),
+                    Duration::from_secs(5),
+                    Duration::from_millis(100),
+                    64,
+                    1000,
+                    id,
+                    mesh,
+                )
+            };
+            let igp_a = igp(a, mesh_a.clone()).await.unwrap();
+            let igp_b = igp(b, mesh_b.clone()).await.unwrap();
+            let igp_c = igp(c, mesh_c.clone()).await.unwrap();
+
+            connect(&mesh_a, &mesh_b, a, b).await;
+            connect(&mesh_b, &mesh_c, b, c).await;
+
+            assert!(
+                wait_until(|| async {
+                    let ar = igp_a.get_routes().await.unwrap();
+                    let br = igp_b.get_routes().await.unwrap();
+                    let cr = igp_c.get_routes().await.unwrap();
+                    ar.iter().any(|r| r.dst == c && r.from == b && r.selected)
+                        && br.iter().any(|r| r.dst == a && r.from == a && r.selected)
+                        && br.iter().any(|r| r.dst == c && r.from == c && r.selected)
+                        && cr.iter().any(|r| r.dst == a && r.from == b && r.selected)
+                })
+                .await,
+                "initial IGP routes"
+            );
+
+            assert_eq!(mesh_a.get_routes().await.unwrap().get(&c), Some(&b));
+            assert_eq!(mesh_b.get_routes().await.unwrap().get(&a), Some(&a));
+            assert_eq!(mesh_b.get_routes().await.unwrap().get(&c), Some(&c));
+            assert_eq!(mesh_c.get_routes().await.unwrap().get(&a), Some(&b));
+
+            mesh_b.remove_link(c).await.unwrap();
+            mesh_c.remove_link(b).await.unwrap();
+
+            assert!(
+                wait_until(|| async {
+                    !igp_a
+                        .get_routes()
+                        .await
+                        .unwrap()
+                        .iter()
+                        .any(|r| r.dst == c && r.selected)
+                        && !igp_b
+                            .get_routes()
+                            .await
+                            .unwrap()
+                            .iter()
+                            .any(|r| r.dst == c && r.selected)
+                        && !igp_c
+                            .get_routes()
+                            .await
+                            .unwrap()
+                            .iter()
+                            .any(|r| r.dst == a && r.selected)
+                        && !mesh_a.get_routes().await.unwrap().contains_key(&c)
+                        && !mesh_c.get_routes().await.unwrap().contains_key(&a)
+                })
+                .await,
+                "routes removed after link failure"
+            );
+
+            connect(&mesh_b, &mesh_c, b, c).await;
+
+            assert!(
+                wait_until(|| async {
+                    igp_a
+                        .get_routes()
+                        .await
+                        .unwrap()
+                        .iter()
+                        .any(|r| r.dst == c && r.from == b && r.selected)
+                        && igp_c
+                            .get_routes()
+                            .await
+                            .unwrap()
+                            .iter()
+                            .any(|r| r.dst == a && r.from == b && r.selected)
+                        && mesh_a.get_routes().await.unwrap().get(&c) == Some(&b)
+                })
+                .await,
+                "routes re-learned after link recovery"
+            );
+        });
+    }
+
+    fn has_route(routes: &[Route], dst: NodeId, from: NodeId) -> bool {
+        routes
+            .iter()
+            .any(|route| route.dst == dst && route.from == from && route.selected)
+    }
+
+    fn no_route(routes: &[Route], dst: NodeId) -> bool {
+        !routes
+            .iter()
+            .any(|route| route.dst == dst && route.selected)
+    }
+
+    async fn disconnect(a: &MeshHandle, b: &MeshHandle, a_id: NodeId, b_id: NodeId) {
+        a.remove_link(b_id).await.unwrap();
+        b.remove_link(a_id).await.unwrap();
+    }
+
+    #[test]
+    fn simulated_five_nodes_reachability_and_reconnect() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let a = 1;
+            let b = 2;
+            let c = 3;
+            let d = 4;
+            let e = 5;
+            let mesh_a = Mesh::new_with_parameters(a, Duration::from_secs(2));
+            let mesh_b = Mesh::new_with_parameters(b, Duration::from_secs(2));
+            let mesh_c = Mesh::new_with_parameters(c, Duration::from_secs(2));
+            let mesh_d = Mesh::new_with_parameters(d, Duration::from_secs(2));
+            let mesh_e = Mesh::new_with_parameters(e, Duration::from_secs(2));
+
+            let igp = |id, mesh| {
+                Igp::new_with_parameters(
+                    Duration::from_millis(50),
+                    Duration::from_millis(100),
+                    Duration::from_millis(500),
+                    Duration::from_secs(2),
+                    Duration::from_secs(5),
+                    Duration::from_millis(100),
+                    64,
+                    1000,
+                    id,
+                    mesh,
+                )
+            };
+            let igp_a = igp(a, mesh_a.clone()).await.unwrap();
+            let igp_b = igp(b, mesh_b.clone()).await.unwrap();
+            let igp_c = igp(c, mesh_c.clone()).await.unwrap();
+            let igp_d = igp(d, mesh_d.clone()).await.unwrap();
+            let igp_e = igp(e, mesh_e.clone()).await.unwrap();
+
+            connect(&mesh_a, &mesh_b, a, b).await;
+            connect(&mesh_b, &mesh_c, b, c).await;
+            connect(&mesh_c, &mesh_d, c, d).await;
+            connect(&mesh_d, &mesh_e, d, e).await;
+
+            assert!(
+                wait_until(|| async {
+                    let ar = igp_a.get_routes().await.unwrap();
+                    let br = igp_b.get_routes().await.unwrap();
+                    let cr = igp_c.get_routes().await.unwrap();
+                    let dr = igp_d.get_routes().await.unwrap();
+                    let er = igp_e.get_routes().await.unwrap();
+                    has_route(&ar, b, b)
+                        && has_route(&ar, c, b)
+                        && has_route(&ar, d, b)
+                        && has_route(&ar, e, b)
+                        && has_route(&br, a, a)
+                        && has_route(&br, c, c)
+                        && has_route(&br, d, c)
+                        && has_route(&br, e, c)
+                        && has_route(&cr, a, b)
+                        && has_route(&cr, b, b)
+                        && has_route(&cr, d, d)
+                        && has_route(&cr, e, d)
+                        && has_route(&dr, a, c)
+                        && has_route(&dr, b, c)
+                        && has_route(&dr, c, c)
+                        && has_route(&dr, e, e)
+                        && has_route(&er, a, d)
+                        && has_route(&er, b, d)
+                        && has_route(&er, c, d)
+                        && has_route(&er, d, d)
+                })
+                .await,
+                "initial five-node reachability"
+            );
+            assert_eq!(mesh_a.get_routes().await.unwrap().get(&e), Some(&b));
+            assert_eq!(mesh_e.get_routes().await.unwrap().get(&a), Some(&d));
+
+            disconnect(&mesh_c, &mesh_d, c, d).await;
+
+            assert!(
+                wait_until(|| async {
+                    let ar = igp_a.get_routes().await.unwrap();
+                    let br = igp_b.get_routes().await.unwrap();
+                    let cr = igp_c.get_routes().await.unwrap();
+                    let dr = igp_d.get_routes().await.unwrap();
+                    let er = igp_e.get_routes().await.unwrap();
+                    has_route(&ar, b, b)
+                        && has_route(&ar, c, b)
+                        && no_route(&ar, d)
+                        && no_route(&ar, e)
+                        && has_route(&br, a, a)
+                        && has_route(&br, c, c)
+                        && no_route(&br, d)
+                        && no_route(&br, e)
+                        && has_route(&cr, a, b)
+                        && has_route(&cr, b, b)
+                        && no_route(&cr, d)
+                        && no_route(&cr, e)
+                        && no_route(&dr, a)
+                        && no_route(&dr, b)
+                        && no_route(&dr, c)
+                        && has_route(&dr, e, e)
+                        && no_route(&er, a)
+                        && no_route(&er, b)
+                        && no_route(&er, c)
+                        && has_route(&er, d, d)
+                })
+                .await,
+                "C-D split reachability"
+            );
+            assert!(!mesh_a.get_routes().await.unwrap().contains_key(&e));
+            assert!(!mesh_e.get_routes().await.unwrap().contains_key(&a));
+
+            connect(&mesh_c, &mesh_d, c, d).await;
+
+            assert!(
+                wait_until(|| async {
+                    has_route(&igp_a.get_routes().await.unwrap(), e, b)
+                        && has_route(&igp_c.get_routes().await.unwrap(), e, d)
+                        && has_route(&igp_e.get_routes().await.unwrap(), a, d)
+                        && mesh_a.get_routes().await.unwrap().get(&e) == Some(&b)
+                })
+                .await,
+                "C-D reconnect reachability"
+            );
+
+            disconnect(&mesh_a, &mesh_b, a, b).await;
+
+            let isolated = wait_until(|| async {
+                let ar = igp_a.get_routes().await.unwrap();
+                let br = igp_b.get_routes().await.unwrap();
+                let cr = igp_c.get_routes().await.unwrap();
+                let dr = igp_d.get_routes().await.unwrap();
+                let er = igp_e.get_routes().await.unwrap();
+                no_route(&ar, b)
+                    && no_route(&ar, c)
+                    && no_route(&ar, d)
+                    && no_route(&ar, e)
+                    && no_route(&br, a)
+                    && no_route(&cr, a)
+                    && no_route(&dr, a)
+                    && no_route(&er, a)
+                    && has_route(&br, c, c)
+                    && has_route(&cr, d, d)
+                    && has_route(&dr, e, e)
+            })
+            .await;
+            assert!(isolated, "A isolated");
+            assert!(!mesh_a.get_routes().await.unwrap().contains_key(&b));
+            assert!(!mesh_b.get_routes().await.unwrap().contains_key(&a));
+
+            connect(&mesh_a, &mesh_b, a, b).await;
+
+            assert!(
+                wait_until(|| async {
+                    has_route(&igp_a.get_routes().await.unwrap(), e, b)
+                        && has_route(&igp_e.get_routes().await.unwrap(), a, d)
+                        && mesh_a.get_routes().await.unwrap().get(&e) == Some(&b)
+                        && mesh_e.get_routes().await.unwrap().get(&a) == Some(&d)
+                })
+                .await,
+                "A-B reconnect reachability"
+            );
+        });
+    }
+}
