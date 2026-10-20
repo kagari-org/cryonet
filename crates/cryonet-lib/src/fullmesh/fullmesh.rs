@@ -41,6 +41,8 @@ struct FullMeshConnection {
     connection: Box<dyn Connection>,
     last_received: (u64, Instant),
     once_connected: bool,
+    peer_session: u64,
+    conn_gen: u64,
 
     // for ice connection
     #[cfg(not(target_arch = "wasm32"))]
@@ -57,6 +59,8 @@ enum FullMeshPayload {
         pwd: String,
         candidates: Vec<String>,
         public_key: String,
+        session: u64,
+        conn_gen: u64,
     },
     Rekey {
         index: bool,
@@ -70,10 +74,18 @@ enum FullMeshPayload {
     Offer {
         sdp: String,
         candidates: Vec<String>,
+        session: u64,
+        conn_gen: u64,
     },
     Answer {
         sdp: String,
         candidates: Vec<String>,
+        session: u64,
+    },
+    ConnectRequest {
+        responder_session: u64,
+        last_seen_gen: Option<u64>,
+        connection_types: Vec<ConnectionType>,
     },
 }
 
@@ -94,6 +106,11 @@ pub struct FullMesh {
     connection_timeout: Duration,
     connect_timeout: Duration,
     rekey_timeout: Duration,
+    connect_interval: Duration,
+    connection_types: Vec<ConnectionType>,
+    session: u64,
+    next_conn_gen: u64,
+    last_seen_gen: HashMap<NodeId, u64>,
 
     packet_rx: mpsc::Receiver<Packet>,
     connect_ticker: Interval,
@@ -113,6 +130,7 @@ impl FullMesh {
         ice_servers: Vec<IceServer>,
         candidate_filter_prefixes: Vec<AnyIpCidr>,
         encrypt_local_packets: bool,
+        connection_types: Vec<ConnectionType>,
     ) -> Result<FullMeshHandle> {
         Self::new_with_parameters(
             id,
@@ -126,6 +144,7 @@ impl FullMesh {
             Duration::from_secs(120),
             candidate_filter_prefixes,
             encrypt_local_packets,
+            connection_types,
         )
         .await
     }
@@ -143,12 +162,14 @@ impl FullMesh {
         rekey_timeout: Duration,
         candidate_filter_prefixes: Vec<AnyIpCidr>,
         encrypt_local_packets: bool,
+        connection_types: Vec<ConnectionType>,
     ) -> Result<FullMeshHandle> {
         let packet_rx = mesh
             .add_dispatchee(Box::new(|packet| {
                 (packet.payload.as_ref() as &dyn Any).is::<FullMeshPayload>()
             }))
             .await?;
+        let session = new_session();
         let (future, fm) = FullMesh::run(move |handle| FullMesh {
             handle: handle.clone(),
             id,
@@ -159,6 +180,11 @@ impl FullMesh {
             connection_timeout,
             connect_timeout,
             rekey_timeout,
+            connect_interval,
+            connection_types,
+            session,
+            next_conn_gen: 1,
+            last_seen_gen: HashMap::new(),
             candidate_filter_prefixes,
             encrypt_local_packets,
             packet_rx,
@@ -210,6 +236,8 @@ impl FullMesh {
                 pwd,
                 candidates,
                 public_key,
+                session,
+                conn_gen,
             } => {
                 let public_key = serde_json::from_str::<PublicKey>(public_key)?;
                 if !is_initiator(self.id, src) {
@@ -245,10 +273,13 @@ impl FullMesh {
                             connection: Box::new(connection),
                             last_received: (0, Instant::now()),
                             once_connected: false,
+                            peer_session: *session,
+                            conn_gen: *conn_gen,
                             last_rekey: Instant::now(),
                             ecdh_key,
                         },
                     );
+                    self.last_seen_gen.insert(src, *conn_gen);
                     self.mesh
                         .send_packet(
                             src,
@@ -257,6 +288,8 @@ impl FullMesh {
                                 pwd: parameters.password,
                                 candidates: local_candidates,
                                 public_key: serde_json::to_string(&local_public_key)?,
+                                session: self.session,
+                                conn_gen: *conn_gen,
                             }),
                         )
                         .await?;
@@ -267,6 +300,7 @@ impl FullMesh {
                         );
                         return Ok(());
                     };
+                    conn.peer_session = *session;
                     conn.last_rekey = Instant::now();
                     let mut key = [0; 16];
                     conn.ecdh_key
@@ -398,7 +432,12 @@ impl FullMesh {
                 });
             }
             #[cfg(not(target_arch = "wasm32"))]
-            FullMeshPayload::Offer { sdp, candidates } => {
+            FullMeshPayload::Offer {
+                sdp,
+                candidates,
+                session,
+                conn_gen,
+            } => {
                 let connection = ConnectionRustrtcDataChannel::new(
                     self.ice_servers.clone(),
                     self.candidate_filter_prefixes.clone(),
@@ -412,6 +451,7 @@ impl FullMesh {
                         Box::new(FullMeshPayload::Answer {
                             sdp: answer,
                             candidates: local_candidates,
+                            session: self.session,
                         }),
                     )
                     .await?;
@@ -421,17 +461,25 @@ impl FullMesh {
                         connection: Box::new(connection),
                         last_received: (0, Instant::now()),
                         once_connected: false,
+                        peer_session: *session,
+                        conn_gen: *conn_gen,
                         last_rekey: Instant::now(),
                         ecdh_key: EphemeralSecret::generate(),
                     },
                 );
+                self.last_seen_gen.insert(src, *conn_gen);
             }
             #[cfg(not(target_arch = "wasm32"))]
-            FullMeshPayload::Answer { sdp, candidates } => {
+            FullMeshPayload::Answer {
+                sdp,
+                candidates,
+                session,
+            } => {
                 let Some(connection) = self.connections.get_mut(&src) else {
                     warn!("Received answer from peer {src:X} but no connection exists, ignoring");
                     return Ok(());
                 };
+                connection.peer_session = *session;
                 let Some(connection) = connection
                     .connection
                     .as_any_mut()
@@ -452,7 +500,12 @@ impl FullMesh {
                 warn!("Received unsupported payload from peer {src:X}, ignoring");
             }
             #[cfg(target_arch = "wasm32")]
-            FullMeshPayload::Offer { sdp, candidates } => {
+            FullMeshPayload::Offer {
+                sdp,
+                candidates,
+                session,
+                conn_gen,
+            } => {
                 let mut connection = ConnectionWasmDataChannel::new(
                     self.ice_servers.clone(),
                     self.candidate_filter_prefixes.clone(),
@@ -466,24 +519,33 @@ impl FullMesh {
                         connection: Box::new(connection),
                         last_received: (0, Instant::now()),
                         once_connected: false,
+                        peer_session: *session,
+                        conn_gen: *conn_gen,
                     },
                 );
+                self.last_seen_gen.insert(src, *conn_gen);
                 self.mesh
                     .send_packet(
                         src,
                         Box::new(FullMeshPayload::Answer {
                             sdp: answer,
                             candidates: local_candidates,
+                            session: self.session,
                         }),
                     )
                     .await?;
             }
             #[cfg(target_arch = "wasm32")]
-            FullMeshPayload::Answer { sdp, candidates } => {
+            FullMeshPayload::Answer {
+                sdp,
+                candidates,
+                session,
+            } => {
                 let Some(conn) = self.connections.get_mut(&src) else {
                     warn!("Received answer from peer {src:X} but no connection exists, ignoring");
                     return Ok(());
                 };
+                conn.peer_session = *session;
                 let Some(connection) = conn
                     .connection
                     .as_any_mut()
@@ -496,6 +558,38 @@ impl FullMesh {
                 };
                 connection.apply_answer(sdp.clone()).await?;
                 connection.add_candidates(candidates).await?;
+            }
+            FullMeshPayload::ConnectRequest {
+                responder_session,
+                last_seen_gen,
+                connection_types,
+            } => {
+                if !is_initiator(self.id, src) {
+                    return Ok(());
+                }
+                let stale = match self.connections.get(&src) {
+                    None => true,
+                    Some(conn) => {
+                        conn.peer_session != *responder_session
+                            || last_seen_gen.is_some_and(|last| conn.conn_gen <= last)
+                    }
+                };
+                debug!(
+                    "node {:X}: ConnectRequest from {src:X}: responder_session={responder_session:X}, last_seen={last_seen_gen:?}, current={:?}, stale={stale}",
+                    self.id,
+                    self.connections
+                        .get(&src)
+                        .map(|conn| (conn.peer_session, conn.conn_gen))
+                );
+                if stale {
+                    if self.connections.remove(&src).is_some() {
+                        let mut dm = self.dm.lock().await;
+                        dm.disconnected(src).await?;
+                    }
+                    self.connect_backoff.remove(&src);
+                    self.connect_to(src, connection_types.clone()).await?;
+                }
+                return Ok(());
             }
         }
         Ok(())
@@ -515,6 +609,12 @@ impl FullMesh {
 
     #[skip]
     fn finish_connect(&mut self, node_id: NodeId, result: Result<()>) {
+        debug!(
+            "node {:X}: finish_connect {:X} ok={}",
+            self.id,
+            node_id,
+            result.is_ok()
+        );
         if let Err(err) = result {
             error!("Failed to connect to peer {node_id:X}: {err:?}");
             self.connections.remove(&node_id);
@@ -553,7 +653,7 @@ impl FullMesh {
         {
             let mut dm = self.dm.lock().await;
             for node_id in &disconnected {
-                debug!("Connection to peer {node_id:X} is gone, disconnecting");
+                debug!("node {:X}: connection to peer {node_id:X} is gone", self.id);
                 dm.disconnected(*node_id).await?;
             }
             // mark connected
@@ -617,9 +717,6 @@ impl FullMesh {
         }
         // connect
         for (&peer_id, node) in &nodes {
-            if !is_initiator(self.id, peer_id) {
-                continue;
-            }
             if self.connections.contains_key(&peer_id) {
                 continue;
             }
@@ -628,112 +725,156 @@ impl FullMesh {
             {
                 continue;
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            if node.0.connection_types.contains(&ConnectionType::Ice) {
-                let result: Result<()> = try {
-                    let ecdh_key = EphemeralSecret::generate();
-                    let public_key = ecdh_key.public_key();
-                    let (connection, parameters, candidates) = ConnectionRustrtcIce::new(
-                        self.id,
+            if !is_initiator(self.id, peer_id) {
+                debug!(
+                    "node {:X}: responder request to {peer_id:X}: session={:X}, last_seen={:?}",
+                    self.id,
+                    self.session,
+                    self.last_seen_gen.get(&peer_id)
+                );
+                self.connect_backoff.insert(
+                    peer_id,
+                    (time + self.connect_interval, self.connect_interval),
+                );
+                self.mesh
+                    .send_packet(
                         peer_id,
-                        self.handle.clone(),
-                        self.ice_servers.clone(),
-                        self.candidate_filter_prefixes.clone(),
-                        self.encrypt_local_packets,
-                        true,
+                        Box::new(FullMeshPayload::ConnectRequest {
+                            responder_session: self.session,
+                            last_seen_gen: self.last_seen_gen.get(&peer_id).copied(),
+                            connection_types: self.connection_types.clone(),
+                        }),
                     )
                     .await?;
-                    self.connections.insert(
-                        peer_id,
-                        FullMeshConnection {
-                            connection: Box::new(connection),
-                            last_rekey: Instant::now(),
-                            last_received: (0, Instant::now()),
-                            once_connected: false,
-                            ecdh_key,
-                        },
-                    );
-                    self.mesh
-                        .send_packet(
-                            peer_id,
-                            Box::new(FullMeshPayload::Shake {
-                                ufrag: parameters.username_fragment,
-                                pwd: parameters.password,
-                                candidates,
-                                // TODO: https://github.com/rust-lang/rust/issues/149488
-                                public_key: serde_json::to_string(&public_key).unwrap(),
-                            }),
-                        )
-                        .await?;
-                };
-                self.finish_connect(peer_id, result);
-            } else if node
-                .0
-                .connection_types
-                .contains(&ConnectionType::DataChannel)
-            {
-                let result: Result<()> = try {
-                    let connection = ConnectionRustrtcDataChannel::new(
-                        self.ice_servers.clone(),
-                        self.candidate_filter_prefixes.clone(),
-                    )
-                    .await;
-                    let (offer, candidates) = connection.create_offer().await?;
-                    self.connections.insert(
-                        peer_id,
-                        FullMeshConnection {
-                            connection: Box::new(connection),
-                            last_received: (0, Instant::now()),
-                            once_connected: false,
-                            last_rekey: Instant::now(),
-                            ecdh_key: EphemeralSecret::generate(),
-                        },
-                    );
-                    self.mesh
-                        .send_packet(
-                            peer_id,
-                            Box::new(FullMeshPayload::Offer {
-                                sdp: offer,
-                                candidates,
-                            }),
-                        )
-                        .await?;
-                };
-                self.finish_connect(peer_id, result);
+                continue;
             }
-            #[cfg(target_arch = "wasm32")]
-            if node
-                .0
-                .connection_types
-                .contains(&ConnectionType::DataChannel)
-            {
-                let result: Result<()> = try {
-                    let mut connection = ConnectionWasmDataChannel::new(
-                        self.ice_servers.clone(),
-                        self.candidate_filter_prefixes.clone(),
+            self.connect_to(peer_id, node.0.connection_types.clone())
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn connect_to(
+        &mut self,
+        peer_id: NodeId,
+        connection_types: Vec<ConnectionType>,
+    ) -> Result<()> {
+        debug!("node {:X}: initiating full mesh to {peer_id:X}", self.id);
+        #[cfg(not(target_arch = "wasm32"))]
+        if connection_types.contains(&ConnectionType::Ice) {
+            let result: Result<()> = try {
+                let ecdh_key = EphemeralSecret::generate();
+                let public_key = ecdh_key.public_key();
+                let (connection, parameters, candidates) = ConnectionRustrtcIce::new(
+                    self.id,
+                    peer_id,
+                    self.handle.clone(),
+                    self.ice_servers.clone(),
+                    self.candidate_filter_prefixes.clone(),
+                    self.encrypt_local_packets,
+                    true,
+                )
+                .await?;
+                let conn_gen = self.next_conn_gen;
+                self.next_conn_gen += 1;
+                self.connections.insert(
+                    peer_id,
+                    FullMeshConnection {
+                        connection: Box::new(connection),
+                        last_rekey: Instant::now(),
+                        last_received: (0, Instant::now()),
+                        once_connected: false,
+                        peer_session: 0,
+                        conn_gen,
+                        ecdh_key,
+                    },
+                );
+                self.mesh
+                    .send_packet(
+                        peer_id,
+                        Box::new(FullMeshPayload::Shake {
+                            ufrag: parameters.username_fragment,
+                            pwd: parameters.password,
+                            candidates,
+                            // TODO: https://github.com/rust-lang/rust/issues/149488
+                            public_key: serde_json::to_string(&public_key).unwrap(),
+                            session: self.session,
+                            conn_gen,
+                        }),
                     )
                     .await?;
-                    let (offer, candidates) = connection.create_offer().await?;
-                    self.connections.insert(
+            };
+            self.finish_connect(peer_id, result);
+        } else if connection_types.contains(&ConnectionType::DataChannel) {
+            let result: Result<()> = try {
+                let connection = ConnectionRustrtcDataChannel::new(
+                    self.ice_servers.clone(),
+                    self.candidate_filter_prefixes.clone(),
+                )
+                .await;
+                let (offer, candidates) = connection.create_offer().await?;
+                let conn_gen = self.next_conn_gen;
+                self.next_conn_gen += 1;
+                self.connections.insert(
+                    peer_id,
+                    FullMeshConnection {
+                        connection: Box::new(connection),
+                        last_received: (0, Instant::now()),
+                        once_connected: false,
+                        peer_session: 0,
+                        conn_gen,
+                        last_rekey: Instant::now(),
+                        ecdh_key: EphemeralSecret::generate(),
+                    },
+                );
+                self.mesh
+                    .send_packet(
                         peer_id,
-                        FullMeshConnection {
-                            connection: Box::new(connection),
-                            last_received: (0, Instant::now()),
-                            once_connected: false,
-                        },
-                    );
-                    self.mesh
-                        .send_packet(
-                            peer_id,
-                            Box::new(FullMeshPayload::Offer {
-                                sdp: offer,
-                                candidates,
-                            }),
-                        )
-                        .await?;
-                };
-                self.finish_connect(peer_id, result);
-            }
+                        Box::new(FullMeshPayload::Offer {
+                            sdp: offer,
+                            candidates,
+                            session: self.session,
+                            conn_gen,
+                        }),
+                    )
+                    .await?;
+            };
+            self.finish_connect(peer_id, result);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if connection_types.contains(&ConnectionType::DataChannel) {
+            let result: Result<()> = try {
+                let mut connection = ConnectionWasmDataChannel::new(
+                    self.ice_servers.clone(),
+                    self.candidate_filter_prefixes.clone(),
+                )
+                .await?;
+                let (offer, candidates) = connection.create_offer().await?;
+                let conn_gen = self.next_conn_gen;
+                self.next_conn_gen += 1;
+                self.connections.insert(
+                    peer_id,
+                    FullMeshConnection {
+                        connection: Box::new(connection),
+                        last_received: (0, Instant::now()),
+                        once_connected: false,
+                        peer_session: 0,
+                        conn_gen,
+                    },
+                );
+                self.mesh
+                    .send_packet(
+                        peer_id,
+                        Box::new(FullMeshPayload::Offer {
+                            sdp: offer,
+                            candidates,
+                            session: self.session,
+                            conn_gen,
+                        }),
+                    )
+                    .await?;
+            };
+            self.finish_connect(peer_id, result);
         }
         Ok(())
     }
@@ -766,4 +907,15 @@ impl FullMesh {
     fn handle_error(&mut self, err: &Error) {
         error!("Error: {err:?}");
     }
+}
+
+fn new_session() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ COUNTER.fetch_add(1, Ordering::Relaxed).rotate_left(32)
 }

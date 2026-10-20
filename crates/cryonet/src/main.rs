@@ -146,6 +146,7 @@ async fn main() -> Result<()> {
                     args.ice_servers,
                     args.candidate_filter_prefixes,
                     args.encrypt_local_packets,
+                    vec![ConnectionType::Ice, ConnectionType::DataChannel],
                 )
                 .await?;
                 let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;

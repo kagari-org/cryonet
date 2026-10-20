@@ -167,6 +167,7 @@ impl Cryonet {
             ice_servers,
             Vec::new(),
             false,
+            vec![ConnectionType::DataChannel],
         )
         .await
         .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;

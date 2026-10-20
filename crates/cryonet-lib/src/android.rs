@@ -129,6 +129,7 @@ async fn run(args: Args) -> Result<Handles> {
         ice_servers,
         candidate_filter_prefixes,
         args.encrypt_local_packets,
+        vec![ConnectionType::Ice, ConnectionType::DataChannel],
     )
     .await?;
     Ok((mesh, igp, mgr, registry, fm))
