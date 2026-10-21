@@ -138,9 +138,9 @@ impl FullMesh {
             registry,
             dm,
             ice_servers,
-            jitter(Duration::from_secs(1), 0.2),
+            jitter(Duration::from_secs(10), 0.2),
             Duration::from_secs(12),
-            Duration::from_secs(10),
+            Duration::from_secs(30),
             Duration::from_secs(120),
             candidate_filter_prefixes,
             encrypt_local_packets,
@@ -246,6 +246,16 @@ impl FullMesh {
             } => {
                 let public_key = serde_json::from_str::<PublicKey>(public_key)?;
                 if !is_initiator(self.id, src) {
+                    if let Some(existing) = self.connections.get(&src)
+                        && existing.peer_session == *session
+                        && *conn_gen <= existing.conn_gen
+                    {
+                        debug!(
+                            "node {:X}: ignoring stale shake from {src:X}: gen {conn_gen} <= {}",
+                            self.id, existing.conn_gen
+                        );
+                        return Ok(());
+                    }
                     let ecdh_key = EphemeralSecret::generate();
                     let local_public_key = ecdh_key.public_key();
                     let mut key = [0; 16];
@@ -272,7 +282,7 @@ impl FullMesh {
                     connection.add_candidates(candidates);
                     connection.set_recv_key(key);
                     connection.set_send_key(key);
-                    self.connections.insert(
+                    let old = self.connections.insert(
                         src,
                         FullMeshConnection {
                             connection: Box::new(connection),
@@ -284,6 +294,9 @@ impl FullMesh {
                             ecdh_key,
                         },
                     );
+                    if old.is_some() {
+                        self.dm.lock().await.disconnected(src).await?;
+                    }
                     self.last_seen_gen.insert(src, *conn_gen);
                     self.mesh
                         .send_packet_reliable(
@@ -305,6 +318,13 @@ impl FullMesh {
                         );
                         return Ok(());
                     };
+                    if *conn_gen != conn.conn_gen {
+                        debug!(
+                            "node {:X}: ignoring stale shake reply from {src:X}: gen {conn_gen} != {}",
+                            self.id, conn.conn_gen
+                        );
+                        return Ok(());
+                    }
                     conn.peer_session = *session;
                     conn.last_rekey = Instant::now();
                     let mut key = [0; 16];
@@ -443,6 +463,16 @@ impl FullMesh {
                 session,
                 conn_gen,
             } => {
+                if let Some(existing) = self.connections.get(&src)
+                    && existing.peer_session == *session
+                    && *conn_gen <= existing.conn_gen
+                {
+                    debug!(
+                        "node {:X}: ignoring stale offer from {src:X}: gen {conn_gen} <= {}",
+                        self.id, existing.conn_gen
+                    );
+                    return Ok(());
+                }
                 let connection = ConnectionRustrtcDataChannel::new(
                     self.ice_servers.clone(),
                     self.candidate_filter_prefixes.clone(),
@@ -460,7 +490,7 @@ impl FullMesh {
                         }),
                     )
                     .await?;
-                self.connections.insert(
+                let old = self.connections.insert(
                     src,
                     FullMeshConnection {
                         connection: Box::new(connection),
@@ -472,6 +502,9 @@ impl FullMesh {
                         ecdh_key: EphemeralSecret::generate(),
                     },
                 );
+                if old.is_some() {
+                    self.dm.lock().await.disconnected(src).await?;
+                }
                 self.last_seen_gen.insert(src, *conn_gen);
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -574,6 +607,8 @@ impl FullMesh {
                 }
                 let stale = match self.connections.get(&src) {
                     None => true,
+                    // Still waiting for this attempt's Shake reply.
+                    Some(conn) if conn.peer_session == 0 => false,
                     Some(conn) => {
                         conn.peer_session != *responder_session
                             || last_seen_gen.is_some_and(|last| conn.conn_gen <= last)
@@ -643,12 +678,13 @@ impl FullMesh {
             if received != conn.last_received.0 {
                 conn.last_received = (received, time);
             }
-            let timeout =
-                if conn.once_connected || conn.connection.status() == ConnectionState::Connected {
-                    self.connection_timeout
-                } else {
-                    self.connect_timeout
-                };
+            // A transport can become Connected after connection_timeout has
+            // elapsed, so keep the connect budget until dm.connected runs.
+            let timeout = if conn.once_connected {
+                self.connection_timeout
+            } else {
+                self.connect_timeout
+            };
             let keep = time.duration_since(conn.last_received.1) < timeout;
             if !keep {
                 disconnected.push(*node_id);

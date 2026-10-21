@@ -180,14 +180,20 @@ impl Drop for ConnectionRustrtcIce {
 #[async_trait(?Send)]
 impl Connection for ConnectionRustrtcIce {
     async fn sender(&self) -> Result<Box<dyn ConnectionSender>> {
+        let key = self.send_key.subscribe();
+        // The key is already set; a fresh watch receiver does not report it.
+        let mut aes = Aes128Gcm::new(&[0u8; 16].into());
+        if let Some(key) = *key.borrow() {
+            aes = Aes128Gcm::new(&key.key);
+        }
         Ok(Box::new(ConnectionRustrtcIceSender {
             id: self.id,
             peer_id: self.peer_id,
             encrypt_local_packets: self.encrypt_local_packets,
             socket: self.ice.subscribe_selected_socket(),
             pair: self.ice.subscribe_selected_pair(),
-            key: self.send_key.subscribe(),
-            aes: Aes128Gcm::new(&[0u8; 16].into()),
+            key,
+            aes,
             // We use counter=0 to indicate unencrypted packets.
             counter: 1,
             sent: self.sent.clone(),
@@ -197,14 +203,20 @@ impl Connection for ConnectionRustrtcIce {
     async fn receiver(&self) -> Result<Box<dyn ConnectionReceiver>> {
         let (tx, rx) = mpsc::channel(16384);
         self.ice.set_data_receiver(Arc::new(MpscSender(tx))).await;
+        let key = self.recv_key.subscribe();
+        let mut aes = [
+            Aes128Gcm::new(&[0u8; 16].into()),
+            Aes128Gcm::new(&[0u8; 16].into()),
+        ];
+        // The key is already set; a fresh watch receiver does not report it.
+        if let Some(key) = *key.borrow() {
+            aes[if key.index { 1 } else { 0 }] = Aes128Gcm::new(&key.key);
+        }
         Ok(Box::new(ConnectionRustrtcIceReceiver {
             encrypt_local_packets: self.encrypt_local_packets,
             rx,
-            key: self.recv_key.subscribe(),
-            aes: [
-                Aes128Gcm::new(&[0u8; 16].into()),
-                Aes128Gcm::new(&[0u8; 16].into()),
-            ],
+            key,
+            aes,
             received: self.received.clone(),
         }))
     }
