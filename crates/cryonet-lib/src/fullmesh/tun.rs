@@ -16,7 +16,7 @@ use crate::{
     errors::CryonetError,
     fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
     mesh::packet::NodeId,
-    time::interval,
+    time::{delayed_interval, jitter},
 };
 
 pub struct TunManager {
@@ -134,7 +134,7 @@ async fn send_loop(
     mut stop: watch::Receiver<bool>,
 ) {
     let mut buf = [0u8; 2000];
-    let mut keepalive_ticker = interval(keepalive_interval);
+    let mut keepalive_ticker = delayed_interval(jitter(keepalive_interval, 0.1));
     // We use a single byte as keepalive packet, which is guaranteed to be smaller than any valid packet.
     let keepalive = Bytes::from_static(&[0u8; 1]);
     loop {

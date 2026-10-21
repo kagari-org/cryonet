@@ -20,7 +20,7 @@ use crate::mesh::{
     packet::{NodeId, Packet, Payload},
     seq::{Seq, SeqMetric},
 };
-use crate::time::{Instant, Interval, interval};
+use crate::time::{Instant, Interval, interval, jitter_down};
 
 pub struct Igp {
     handle: IgpHandle,
@@ -87,9 +87,14 @@ pub struct Route {
 #[sactor(pub)]
 impl Igp {
     pub async fn new(id: NodeId, mesh: MeshHandle) -> Result<IgpHandle> {
+        // RFC 8966 3.4.1 allows shortening the Hello interval at any time but
+        // increasing it only right before sending a Hello, and 3.7.1 requires
+        // each route to be advertised at least once per Update interval.
+        // Shortening keeps both upper bounds valid while still desynchronising
+        // independently started nodes.
         Self::new_with_parameters(
-            Duration::from_secs(4),
-            Duration::from_secs(16),
+            jitter_down(Duration::from_secs(4), 0.2),
+            jitter_down(Duration::from_secs(16), 0.2),
             Duration::from_secs(60),
             Duration::from_secs(56),
             Duration::from_secs(3 * 60),

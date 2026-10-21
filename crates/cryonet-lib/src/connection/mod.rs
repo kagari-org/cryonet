@@ -25,7 +25,7 @@ use tokio::net::TcpListener;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_tungstenite::accept_async;
 
-use crate::time::{Interval, interval, timeout};
+use crate::time::{Interval, delayed_interval, jitter, timeout};
 
 pub mod link;
 
@@ -90,7 +90,7 @@ impl ConnManager {
             token,
             servers,
             listen,
-            Duration::from_secs(2),
+            jitter(Duration::from_secs(2), 0.1),
             Duration::from_secs(10),
         )
         .await
@@ -119,7 +119,7 @@ impl ConnManager {
             token,
             servers,
             client,
-            connect_timer: interval(connect_interval),
+            connect_timer: delayed_interval(connect_interval),
             connect_timeout,
             servers_map: Arc::new(Mutex::new(HashMap::new())),
             connecting: Arc::new(Mutex::new(HashSet::new())),

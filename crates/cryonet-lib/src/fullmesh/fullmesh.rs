@@ -34,7 +34,7 @@ use crate::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
-    time::{Instant, Interval, interval},
+    time::{Instant, Interval, delayed_interval, jitter},
 };
 
 struct FullMeshConnection {
@@ -138,7 +138,7 @@ impl FullMesh {
             registry,
             dm,
             ice_servers,
-            Duration::from_secs(1),
+            jitter(Duration::from_secs(1), 0.2),
             Duration::from_secs(12),
             Duration::from_secs(10),
             Duration::from_secs(120),
@@ -191,7 +191,7 @@ impl FullMesh {
             candidate_filter_prefixes,
             encrypt_local_packets,
             packet_rx,
-            connect_ticker: interval(connect_interval),
+            connect_ticker: delayed_interval(connect_interval),
             connections: HashMap::new(),
             connect_backoff: HashMap::new(),
             notifier: Arc::new(Box::new(move || {
@@ -609,7 +609,7 @@ impl FullMesh {
                 delay.saturating_mul(2).min(Duration::from_secs(10))
             });
         self.connect_backoff
-            .insert(node_id, (Instant::now() + delay, delay));
+            .insert(node_id, (Instant::now() + jitter(delay, 0.2), delay));
     }
 
     #[skip]
@@ -739,7 +739,10 @@ impl FullMesh {
                 );
                 self.connect_backoff.insert(
                     peer_id,
-                    (time + self.connect_interval, self.connect_interval),
+                    (
+                        time + jitter(self.connect_interval, 0.2),
+                        self.connect_interval,
+                    ),
                 );
                 self.mesh
                     .send_packet_reliable(

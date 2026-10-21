@@ -18,7 +18,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     errors::CryonetError,
-    time::{Instant, Interval, interval},
+    time::{Instant, Interval, delayed_interval, jitter_up},
 };
 
 pub mod igp;
@@ -141,6 +141,7 @@ impl ReceivedWindow {
 }
 
 const RELIABLE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const RELIABLE_RETRY_JITTER: f64 = 0.2;
 const RELIABLE_RETRY_TICK: Duration = Duration::from_millis(250);
 const RELIABLE_MAX_ATTEMPTS: u32 = 10;
 
@@ -178,7 +179,7 @@ impl Mesh {
             pending: HashMap::new(),
             next_seq: initial_seq(),
             received: HashMap::new(),
-            retry_ticker: interval(RELIABLE_RETRY_TICK),
+            retry_ticker: delayed_interval(RELIABLE_RETRY_TICK),
             link_send: HashMap::new(),
             link_recv_stop: HashMap::new(),
             link_last_recv: HashMap::new(),
@@ -327,7 +328,8 @@ impl Mesh {
             PendingPacket {
                 payload: dyn_clone::clone_box(&*payload),
                 attempts: 1,
-                next_retry: Instant::now() + RELIABLE_RETRY_INTERVAL,
+                next_retry: Instant::now()
+                    + jitter_up(RELIABLE_RETRY_INTERVAL, RELIABLE_RETRY_JITTER),
             },
         );
         if let Err(err) = self.send_reliable_packet(seq, dst, payload).await {
@@ -404,7 +406,7 @@ impl Mesh {
                 return false;
             }
             pending.attempts += 1;
-            pending.next_retry = now + RELIABLE_RETRY_INTERVAL;
+            pending.next_retry = now + jitter_up(RELIABLE_RETRY_INTERVAL, RELIABLE_RETRY_JITTER);
             resend.push((*seq, *dst, dyn_clone::clone_box(&*pending.payload)));
             true
         });

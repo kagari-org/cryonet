@@ -22,7 +22,7 @@ use crate::{
         MeshEvent, MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
-    time::{Instant, Interval, interval},
+    time::{Instant, Interval, delayed_interval, jitter},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,7 +79,7 @@ impl Registry {
             mesh,
             dm,
             connection_types,
-            Duration::from_secs(30),
+            jitter(Duration::from_secs(30), 0.1),
             Duration::from_secs(120),
             ips,
         )
@@ -111,8 +111,8 @@ impl Registry {
             dm,
             connection_types,
             packet_rx,
-            announce_ticker: interval(announce_interval),
-            ip_ticker: interval(Duration::from_secs(1)),
+            announce_ticker: delayed_interval(announce_interval),
+            ip_ticker: delayed_interval(Duration::from_secs(1)),
             last_node: None,
             mesh_event_rx,
             node_timeout,
