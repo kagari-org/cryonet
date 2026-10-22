@@ -36,6 +36,15 @@ pub fn delayed_interval(period: Duration) -> Interval {
     interval
 }
 
+// Uniform value in `[0, bound)`, used for gossip peer and entry selection.
+pub(crate) fn random_below(bound: usize) -> usize {
+    if bound == 0 {
+        0
+    } else {
+        (random_unit() * bound as f64) as usize
+    }
+}
+
 // A cheap thread-local PRNG avoids pulling in another dependency on both
 // native and wasm; cryptographic quality is irrelevant for jitter.
 fn random_unit() -> f64 {

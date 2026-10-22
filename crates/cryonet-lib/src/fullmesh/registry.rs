@@ -1,6 +1,6 @@
 use std::{
     any::Any,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::IpAddr,
     sync::{Arc, Weak},
     time::Duration,
@@ -14,7 +14,7 @@ use tokio::sync::{
     broadcast::{self, error::RecvError},
     mpsc,
 };
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::{
     fullmesh::{DeviceManager, NotifyFn},
@@ -22,7 +22,7 @@ use crate::{
         MeshEvent, MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
-    time::{Instant, Interval, delayed_interval, jitter},
+    time::{Instant, Interval, delayed_interval, jitter, random_below},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,7 +39,10 @@ pub struct Node {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum RegistryPayload {
-    Node { id: NodeId, node: Node },
+    Gossip {
+        entries: Vec<(NodeId, Node)>,
+        hops: u8,
+    },
 }
 
 #[typetag::serde]
@@ -54,11 +57,15 @@ pub struct Registry {
     connection_types: Vec<ConnectionType>,
 
     packet_rx: mpsc::Receiver<Packet>,
-    announce_ticker: Interval,
+    gossip_ticker: Interval,
     ip_ticker: Interval,
     last_node: Option<Node>,
     mesh_event_rx: broadcast::Receiver<MeshEvent>,
     node_timeout: Duration,
+
+    fanout: usize,
+    gossip_batch: usize,
+    gossip_hops: u8,
 
     nodes: HashMap<NodeId, (Node, Instant)>,
     ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
@@ -79,7 +86,7 @@ impl Registry {
             mesh,
             dm,
             connection_types,
-            jitter(Duration::from_secs(30), 0.1),
+            jitter(Duration::from_secs(5), 0.1),
             Duration::from_secs(120),
             ips,
         )
@@ -91,7 +98,7 @@ impl Registry {
         mesh: MeshHandle,
         dm: Arc<Mutex<Box<dyn DeviceManager>>>,
         connection_types: Vec<ConnectionType>,
-        announce_interval: Duration,
+        gossip_interval: Duration,
         node_timeout: Duration,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
     ) -> Result<RegistryHandle> {
@@ -111,11 +118,14 @@ impl Registry {
             dm,
             connection_types,
             packet_rx,
-            announce_ticker: delayed_interval(announce_interval),
+            gossip_ticker: delayed_interval(gossip_interval),
             ip_ticker: delayed_interval(Duration::from_secs(1)),
             last_node: None,
             mesh_event_rx,
             node_timeout,
+            fanout: 4,
+            gossip_batch: 64,
+            gossip_hops: 6,
             nodes: HashMap::new(),
             ips,
             notifiers: Vec::new(),
@@ -129,7 +139,7 @@ impl Registry {
         vec![
             selection!(self.packet_rx.recv().await, handle_packet, it => it),
             selection!(self.mesh_event_rx.recv().await, handle_mesh_event, it => it),
-            selection!(self.announce_ticker.tick().await, announce_tick),
+            selection!(self.gossip_ticker.tick().await, gossip_tick),
             selection!(self.ip_ticker.tick().await, ip_tick),
         ]
     }
@@ -140,49 +150,50 @@ impl Registry {
             self.handle.stop();
             return Ok(());
         };
+        let src = packet.src;
         let payload = packet
             .payload
             .as_payload()
             .and_then(|payload| (payload as &dyn Any).downcast_ref::<RegistryPayload>())
             .unwrap();
         match payload {
-            RegistryPayload::Node { id, node } => {
+            RegistryPayload::Gossip { entries, hops } => {
                 let now = Instant::now();
-                let mut updated = self.nodes.insert(*id, (node.clone(), now)).is_none();
-                let mut ips = self.ips.lock().await;
-                for ip in &node.ips {
-                    if ips.insert(*ip, (*id, now)).is_none() {
-                        updated = true;
-                    }
-                }
-                if updated {
-                    for notify in &self.notifiers {
-                        if let Some(notify) = notify.upgrade() {
-                            tokio::task::spawn_local(async move {
-                                if let Err(err) = notify().await {
-                                    error!("Failed to notify registry change: {err:?}");
-                                }
-                            });
+                let mut changed = Vec::new();
+                {
+                    let mut ips = self.ips.lock().await;
+                    for (id, node) in entries {
+                        if *id == self.id {
+                            continue;
+                        }
+                        let is_changed = self.nodes.get(id).is_none_or(|(known, _)| known != node);
+                        self.nodes.insert(*id, (node.clone(), now));
+                        for ip in &node.ips {
+                            ips.insert(*ip, (*id, now));
+                        }
+                        if is_changed {
+                            changed.push((*id, node.clone()));
                         }
                     }
                 }
-                self.notifiers.retain(|notify| notify.strong_count() > 0);
+                if !changed.is_empty() {
+                    self.notify().await;
+                    if *hops > 0 {
+                        self.send_gossip(changed, *hops - 1, Some(src)).await?;
+                    }
+                }
             }
         }
         Ok(())
     }
 
     #[no_reply]
-    async fn announce_tick(&mut self) -> Result<()> {
-        // gc
-        let now = Instant::now();
-        self.nodes
-            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) < self.node_timeout);
-        self.ips
-            .lock()
-            .await
-            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) < self.node_timeout);
-        self.announce_routes().await?;
+    async fn gossip_tick(&mut self) -> Result<()> {
+        self.gc().await?;
+        let node = self.local_node().await?;
+        self.last_node = Some(node.clone());
+        self.send_gossip(vec![(self.id, node)], self.gossip_hops, None)
+            .await?;
         Ok(())
     }
 
@@ -192,8 +203,9 @@ impl Registry {
         if self.last_node.as_ref() == Some(&node) {
             return Ok(());
         }
-        self.announce_node_routes(&node).await?;
-        self.last_node = Some(node);
+        self.last_node = Some(node.clone());
+        self.send_gossip(vec![(self.id, node)], self.gossip_hops, None)
+            .await?;
         Ok(())
     }
 
@@ -202,7 +214,10 @@ impl Registry {
         let event = match event {
             Ok(event) => event,
             Err(RecvError::Lagged(_)) => {
-                self.announce_routes().await?;
+                // Push our own record again; the next gossip rounds repair the rest.
+                let node = self.local_node().await?;
+                self.send_gossip(vec![(self.id, node)], self.gossip_hops, None)
+                    .await?;
                 return Ok(());
             }
             Err(RecvError::Closed) => {
@@ -210,85 +225,114 @@ impl Registry {
                 return Ok(());
             }
         };
-        match event {
-            MeshEvent::LinkUp(dst) => {
-                if let Err(err) = self.dump_registry(dst).await {
-                    error!("Failed to dump registry to {dst}: {err:?}");
-                }
-            }
-            MeshEvent::RouteSet(dst, _) => {
-                if let Err(err) = self.announce_to(dst).await {
-                    error!("Failed to send registry packet to {dst}: {err:?}");
-                }
-            }
-            _ => {}
+        if let MeshEvent::LinkUp(dst) = event
+            && let Err(err) = self.send_seed(dst).await
+        {
+            error!("Failed to seed registry to {dst:X}: {err:?}");
         }
         Ok(())
     }
 
     #[skip]
     async fn local_node(&self) -> Result<Node> {
+        let mut ips = self.dm.lock().await.ips().await?;
+        ips.sort();
+        ips.dedup();
         Ok(Node {
             connection_types: self.connection_types.clone(),
-            ips: self.dm.lock().await.ips().await?,
+            ips,
         })
     }
 
     #[skip]
-    async fn dump_registry(&self, dst: NodeId) -> Result<()> {
-        let local = self.local_node().await?;
-        self.send_node(dst, self.id, &local).await?;
-        for (node_id, (node, _)) in &self.nodes {
-            if *node_id == dst {
-                continue;
+    async fn notify(&mut self) {
+        for notify in &self.notifiers {
+            if let Some(notify) = notify.upgrade() {
+                tokio::task::spawn_local(async move {
+                    if let Err(err) = notify().await {
+                        error!("Failed to notify registry change: {err:?}");
+                    }
+                });
             }
-            self.send_node(dst, *node_id, node).await?;
+        }
+        self.notifiers.retain(|notify| notify.strong_count() > 0);
+    }
+
+    #[skip]
+    async fn gc(&mut self) -> Result<()> {
+        let routes = self.mesh.get_routes().await?;
+        let now = Instant::now();
+        self.nodes.retain(|id, (_, last_seen)| {
+            routes.contains_key(id) || now.duration_since(*last_seen) < self.node_timeout
+        });
+        let live: HashSet<NodeId> = self.nodes.keys().copied().collect();
+        self.ips.lock().await.retain(|_, (id, last_seen)| {
+            live.contains(id) || now.duration_since(*last_seen) < self.node_timeout
+        });
+        Ok(())
+    }
+
+    #[skip]
+    async fn send_seed(&self, dst: NodeId) -> Result<()> {
+        let local = self.local_node().await?;
+        let mut entries = self
+            .nodes
+            .iter()
+            .filter(|(id, _)| **id != dst)
+            .map(|(id, (node, _))| (*id, node.clone()))
+            .collect::<Vec<_>>();
+        entries.push((self.id, local));
+        for chunk in entries.chunks(self.gossip_batch) {
+            self.mesh
+                .send_packet_reliable(
+                    dst,
+                    Box::new(RegistryPayload::Gossip {
+                        entries: chunk.to_vec(),
+                        hops: 0,
+                    }),
+                )
+                .await?;
         }
         Ok(())
     }
 
     #[skip]
-    async fn send_node(&self, dst: NodeId, node_id: NodeId, node: &Node) -> Result<()> {
-        let payload = Box::new(RegistryPayload::Node {
-            id: node_id,
-            node: node.clone(),
-        });
-        self.mesh.send_packet_reliable(dst, payload).await
-    }
-
-    #[skip]
-    async fn announce_to(&self, dst: NodeId) -> Result<()> {
-        let node = self.local_node().await?;
-        self.send_node(dst, self.id, &node).await
-    }
-
-    #[skip]
-    async fn announce_routes(&self) -> Result<()> {
-        let node = self.local_node().await?;
-        self.announce_node_routes(&node).await
-    }
-
-    #[skip]
-    async fn announce_node_routes(&self, node: &Node) -> Result<()> {
-        let peers = self
+    async fn send_gossip(
+        &self,
+        entries: Vec<(NodeId, Node)>,
+        hops: u8,
+        exclude: Option<NodeId>,
+    ) -> Result<()> {
+        if entries.is_empty() || hops == 0 {
+            return Ok(());
+        }
+        let mut peers = self
             .mesh
             .get_routes()
             .await?
-            .keys()
-            .cloned()
+            .into_keys()
+            .filter(|id| *id != self.id && Some(*id) != exclude)
             .collect::<Vec<_>>();
-        for peer in peers {
-            if let Err(err) = self.send_node(peer, self.id, node).await {
-                error!("Failed to send registry packet to {peer}: {err:?}");
+        let fanout = peers.len().min(self.fanout);
+        for i in 0..fanout {
+            let j = i + random_below(peers.len() - i);
+            peers.swap(i, j);
+        }
+        for peer in &peers[..fanout] {
+            for chunk in entries.chunks(self.gossip_batch) {
+                let payload: Box<dyn Payload> = Box::new(RegistryPayload::Gossip {
+                    entries: chunk.to_vec(),
+                    hops,
+                });
+                if let Err(err) = self.mesh.send_packet(*peer, payload).await {
+                    debug!("Failed to gossip registry to {peer:X}: {err:?}");
+                }
             }
         }
         Ok(())
     }
 
-    pub async fn register_notifier(
-        &mut self,
-        notify: Weak<NotifyFn>,
-    ) {
+    pub async fn register_notifier(&mut self, notify: Weak<NotifyFn>) {
         self.notifiers.push(notify);
     }
 
