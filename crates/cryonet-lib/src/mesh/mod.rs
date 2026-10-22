@@ -765,6 +765,7 @@ mod tests {
                     Duration::from_millis(100),
                     64,
                     1000,
+                    64,
                     id,
                     mesh,
                 )
@@ -895,6 +896,7 @@ mod tests {
                     Duration::from_millis(100),
                     64,
                     1000,
+                    64,
                     id,
                     mesh,
                 )

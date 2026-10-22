@@ -42,6 +42,7 @@ pub struct Igp {
     seqno_request_timeout: Duration,
     diameter: u16,
     update_threshold: u32,
+    dump_batch_size: usize,
 
     packet_rx: mpsc::Receiver<Packet>,
     mesh_event_rx: broadcast::Receiver<MeshEvent>,
@@ -57,6 +58,7 @@ enum IgpPayload {
     RouteDump,
     SequenceRequest { seq: Seq, dst: NodeId, ttl: u16 },
     Update { metric: SeqMetric, dst: NodeId },
+    Updates(Vec<(SeqMetric, NodeId)>),
 }
 
 struct Cost {
@@ -101,6 +103,7 @@ impl Igp {
             Duration::from_secs(8),
             64,
             1000,
+            64,
             id,
             mesh,
         )
@@ -117,6 +120,7 @@ impl Igp {
         seqno_request_timeout: Duration,
         diameter: u16,
         update_threshold: u32,
+        dump_batch_size: usize,
         id: NodeId,
         mesh: MeshHandle,
     ) -> Result<IgpHandle> {
@@ -164,6 +168,7 @@ impl Igp {
             seqno_request_timeout,
             diameter,
             update_threshold,
+            dump_batch_size: dump_batch_size.max(1),
             packet_rx,
             mesh_event_rx,
         });
@@ -242,6 +247,7 @@ impl Igp {
 
         self.select_route().await?;
 
+        let mut updates: Vec<(SeqMetric, NodeId)> = Vec::with_capacity(self.routes.len());
         for ((dst, _), route) in &self.routes {
             if !route.selected {
                 continue;
@@ -261,10 +267,14 @@ impl Igp {
                     warn!("Missing source for node {dst:X} during RouteDump, inserting");
                 }
             }
-            let update = generate_update(route);
+            updates.push((distance, route.dst));
+        }
+
+        for chunk in updates.chunks(self.dump_batch_size) {
+            let payload: Box<dyn Payload> = Box::new(IgpPayload::Updates(chunk.to_vec()));
             match neigh {
-                Some(neigh) => self.mesh.send_packet_link(neigh, update).await?,
-                None => self.mesh.broadcast_packet_local(update).await?,
+                Some(neigh) => self.mesh.send_packet_link(neigh, payload).await?,
+                None => self.mesh.broadcast_packet_local(payload).await?,
             }
         }
 
@@ -477,82 +487,94 @@ impl Igp {
             }
 
             IgpPayload::Update { metric, dst } => {
-                if dst == &self.id {
-                    // ignore updates about ourself
-                    return Ok(());
-                }
-                let computed_metric = match (self.costs.get(&src), metric.metric) {
-                    (_, u32::MAX) => u32::MAX,
-                    (None, _) => u32::MAX - 1,
-                    (Some(cost), metric) => metric.saturating_add(cost.cost),
-                };
+                self.apply_update(src, *metric, *dst).await?;
+            }
 
-                let source = self.sources.get(dst);
-                let entry = self.routes.entry((*dst, src));
-                match entry {
-                    Entry::Vacant(entry) => {
-                        if metric.metric == u32::MAX {
-                            // ignore
-                            return Ok(());
-                        }
-                        if let Some(source) = source
-                            && !metric.feasible(&source.0)
-                        {
-                            // ignore
-                            return Ok(());
-                        }
-                        entry.insert(Route {
-                            metric: *metric,
-                            computed_metric,
-                            dst: *dst,
-                            from: src,
-                            timeout: Instant::now() + self.route_timeout,
-                            selected: false,
-                        });
-                    }
-                    Entry::Occupied(mut entry) => {
-                        let route = entry.get_mut();
-                        // no FD left (e.g. source GC): accept and let select_route recreate it
-                        if let Some(source) = source
-                            && route.selected
-                            && !metric.feasible(&source.0)
-                        {
-                            // ignore
-                            return Ok(());
-                        }
-                        // ignore seq of retraction update
-                        if metric.metric == u32::MAX {
-                            route.metric.metric = u32::MAX;
-                        } else {
-                            route.metric = *metric;
-                        }
-                        route.computed_metric = computed_metric;
-                        if metric.metric != u32::MAX {
-                            route.timeout = Instant::now() + self.route_timeout;
-                        }
-                        if let Some(source) = source
-                            && !route.metric.feasible(&source.0)
-                        {
-                            route.selected = false;
-                        }
-                    }
+            IgpPayload::Updates(updates) => {
+                for (metric, dst) in updates {
+                    self.apply_update(src, *metric, *dst).await?;
                 }
-
-                // check seqno requests
-                let route = &self.routes[&(*dst, src)];
-                if let Some(seqno_request) = self.requests.get(dst)
-                    && metric.seq >= seqno_request.seq
-                {
-                    self.requests.remove(dst);
-                    // trigger update
-                    self.mesh
-                        .broadcast_packet_local(generate_update(route))
-                        .await?;
-                }
-
-                self.select_route().await?;
             }
         }
+        Ok(())
+    }
+
+    #[skip]
+    async fn apply_update(&mut self, src: NodeId, metric: SeqMetric, dst: NodeId) -> Result<()> {
+        if dst == self.id {
+            // ignore updates about ourself
+            return Ok(());
+        }
+        let computed_metric = match (self.costs.get(&src), metric.metric) {
+            (_, u32::MAX) => u32::MAX,
+            (None, _) => u32::MAX - 1,
+            (Some(cost), metric) => metric.saturating_add(cost.cost),
+        };
+
+        let source = self.sources.get(&dst);
+        let entry = self.routes.entry((dst, src));
+        match entry {
+            Entry::Vacant(entry) => {
+                if metric.metric == u32::MAX {
+                    // ignore
+                    return Ok(());
+                }
+                if let Some(source) = source
+                    && !metric.feasible(&source.0)
+                {
+                    // ignore
+                    return Ok(());
+                }
+                entry.insert(Route {
+                    metric,
+                    computed_metric,
+                    dst,
+                    from: src,
+                    timeout: Instant::now() + self.route_timeout,
+                    selected: false,
+                });
+            }
+            Entry::Occupied(mut entry) => {
+                let route = entry.get_mut();
+                // no FD left (e.g. source GC): accept and let select_route recreate it
+                if let Some(source) = source
+                    && route.selected
+                    && !metric.feasible(&source.0)
+                {
+                    // ignore
+                    return Ok(());
+                }
+                // ignore seq of retraction update
+                if metric.metric == u32::MAX {
+                    route.metric.metric = u32::MAX;
+                } else {
+                    route.metric = metric;
+                }
+                route.computed_metric = computed_metric;
+                if metric.metric != u32::MAX {
+                    route.timeout = Instant::now() + self.route_timeout;
+                }
+                if let Some(source) = source
+                    && !route.metric.feasible(&source.0)
+                {
+                    route.selected = false;
+                }
+            }
+        }
+
+        // check seqno requests
+        let route = &self.routes[&(dst, src)];
+        if let Some(seqno_request) = self.requests.get(&dst)
+            && metric.seq >= seqno_request.seq
+        {
+            self.requests.remove(&dst);
+            // trigger update
+            self.mesh
+                .broadcast_packet_local(generate_update(route))
+                .await?;
+        }
+
+        self.select_route().await?;
         Ok(())
     }
 
