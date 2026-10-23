@@ -11,6 +11,7 @@ use crate::{
 };
 use anyhow::{Error, Result, bail};
 use bytes::Bytes;
+use cryonet_uapi::ServerInfo;
 use futures::{SinkExt, StreamExt};
 use reqwest_websocket::{Message, Upgrade};
 use sactor::sactor;
@@ -191,7 +192,7 @@ impl ConnManager {
         servers_map: Arc<Mutex<HashMap<String, NodeId>>>,
         server: String,
     ) -> Result<()> {
-        let links = mesh.get_links().await?;
+        let links = mesh.get_link_ids().await?;
         {
             let servers_map = servers_map.lock().await;
             if let Some(neigh_id) = servers_map.get(&server)
@@ -310,6 +311,25 @@ impl ConnManager {
     #[allow(dead_code)]
     pub async fn disconnect(&mut self, id: NodeId) -> Result<()> {
         self.mesh.remove_link(id).await
+    }
+
+    pub async fn get_servers(&self) -> Vec<ServerInfo> {
+        let links = self.mesh.get_link_ids().await.unwrap_or_default();
+        let map = self.servers_map.lock().await;
+        let connecting = self.connecting.lock().await;
+        self.servers
+            .iter()
+            .filter(|server| !server.is_empty())
+            .map(|url| {
+                let node = map.get(url).copied();
+                ServerInfo {
+                    url: url.clone(),
+                    node,
+                    connecting: connecting.contains(url),
+                    connected: node.is_some_and(|node| links.contains(&node)),
+                }
+            })
+            .collect()
     }
 
     #[handle_error]

@@ -21,7 +21,7 @@ use cryonet_lib::{
     },
     mesh::{Mesh, igp::Igp},
 };
-use cryonet_uapi::NodeId;
+use cryonet_uapi::{DaemonInfo, NodeId};
 use tokio::{sync::Mutex, task::LocalSet};
 use tracing_subscriber::EnvFilter;
 
@@ -105,9 +105,43 @@ async fn main() -> Result<()> {
     LocalSet::new()
         .run_until(async move {
             let result: Result<()> = try {
+                let started_at = std::time::Instant::now();
+                let (mode, interface) = if args.tap_mode {
+                    ("tap".to_owned(), args.tap_interface_name.clone())
+                } else if args.single_tun_mode {
+                    (
+                        "single-tun".to_owned(),
+                        args.single_tun_interface_name.clone(),
+                    )
+                } else {
+                    ("tun".to_owned(), format!("{}<node>", args.interface_prefix))
+                };
+                let info = DaemonInfo {
+                    id: args.id,
+                    version: env!("CARGO_PKG_VERSION").to_owned(),
+                    uptime_ms: 0,
+                    mode,
+                    interface,
+                    mtu: 1280,
+                    listen: args.listen.to_string(),
+                    ctl_path: ctl_path.display().to_string(),
+                    encrypt_local_packets: args.encrypt_local_packets,
+                    packet_information: args.enable_packet_information,
+                    ice_servers: args
+                        .ice_servers
+                        .iter()
+                        .map(|server| server.url.clone())
+                        .collect(),
+                    candidate_filter_prefixes: args
+                        .candidate_filter_prefixes
+                        .iter()
+                        .map(|prefix| prefix.to_string())
+                        .collect(),
+                    local_ips: Vec::new(),
+                };
                 let mesh = Mesh::new(args.id);
                 let igp = Igp::new(args.id, mesh.clone()).await?;
-                let _mgr =
+                let mgr =
                     ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen)
                         .await?;
                 let ips = Arc::new(Mutex::new(HashMap::new()));
@@ -142,7 +176,7 @@ async fn main() -> Result<()> {
                 let fm = FullMesh::new(
                     args.id,
                     mesh.clone(),
-                    registry,
+                    registry.clone(),
                     dm.clone(),
                     args.ice_servers,
                     args.candidate_filter_prefixes,
@@ -150,7 +184,8 @@ async fn main() -> Result<()> {
                     vec![ConnectionType::Ice, ConnectionType::DataChannel],
                 )
                 .await?;
-                let _uapi = Uapi::new(mesh.clone(), igp.clone(), fm.clone(), ctl_path).await?;
+                let _uapi =
+                    Uapi::new(mesh, igp, fm, registry, mgr, info, started_at, ctl_path).await?;
 
                 pending().await
             };

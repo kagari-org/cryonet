@@ -2,7 +2,7 @@ use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Error, Result};
 use cidr::AnyIpCidr;
-use cryonet_uapi::{Conn, ConnState};
+use cryonet_uapi::{ConnState, FullMeshStatus, PeerInfo, PendingPeer};
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc};
@@ -713,7 +713,7 @@ impl FullMesh {
         for node_id in &disconnected {
             self.schedule_retry(*node_id);
         }
-        let nodes = self.registry.get_nodes().await?;
+        let nodes = self.registry.get_node_table().await?;
         self.connect_backoff
             .retain(|node_id, _| nodes.contains_key(node_id));
         // rekey
@@ -923,28 +923,69 @@ impl FullMesh {
         Ok(())
     }
 
-    pub async fn get_peers(&self) -> HashMap<NodeId, Conn> {
-        let mut result = HashMap::new();
+    pub async fn get_peers(&self) -> FullMeshStatus {
+        let now = Instant::now();
+        let mut peers = Vec::with_capacity(self.connections.len());
         for (node_id, conn) in &self.connections {
             let state = match conn.connection.status() {
                 ConnectionState::Connecting => ConnState::Connecting,
                 ConnectionState::Connected => ConnState::Connected,
                 ConnectionState::Closed => ConnState::Closed,
             };
-            let selected_candidate = conn.connection.selected_candidate().await;
-            let sent = conn.connection.sent();
-            let received = conn.connection.received();
-            result.insert(
-                *node_id,
-                Conn {
-                    state,
-                    selected_candidate,
-                    sent,
-                    received,
-                },
-            );
+            #[cfg(not(target_arch = "wasm32"))]
+            let (connection_type, key_index, last_rekey_ms) = {
+                let any = conn.connection.as_any();
+                let last_rekey_ms = now.duration_since(conn.last_rekey).as_millis() as i64;
+                if let Some(connection) = any.downcast_ref::<ConnectionRustrtcIce>() {
+                    (
+                        "ice".to_owned(),
+                        connection.key().map(|key| key.index),
+                        last_rekey_ms,
+                    )
+                } else if any.is::<ConnectionRustrtcDataChannel>() {
+                    ("datachannel".to_owned(), None, last_rekey_ms)
+                } else {
+                    ("unknown".to_owned(), None, last_rekey_ms)
+                }
+            };
+            #[cfg(target_arch = "wasm32")]
+            let (connection_type, key_index, last_rekey_ms) = ("datachannel".to_owned(), None, -1);
+            peers.push(PeerInfo {
+                node: *node_id,
+                state,
+                initiator: is_initiator(self.id, *node_id),
+                peer_session: conn.peer_session,
+                conn_gen: conn.conn_gen,
+                once_connected: conn.once_connected,
+                selected_candidate: conn.connection.selected_candidate().await,
+                sent: conn.connection.sent(),
+                received: conn.connection.received(),
+                last_recv_ms: now.duration_since(conn.last_received.1).as_millis() as i64,
+                last_rekey_ms,
+                key_index,
+                connection_type,
+            });
         }
-        result
+        peers.sort_by_key(|peer| peer.node);
+        let mut pending = self
+            .connect_backoff
+            .iter()
+            .map(|(node, (retry_at, backoff))| PendingPeer {
+                node: *node,
+                retry_in_ms: if *retry_at > now {
+                    retry_at.duration_since(now).as_millis() as i64
+                } else {
+                    -(now.duration_since(*retry_at).as_millis() as i64)
+                },
+                backoff_ms: backoff.as_millis() as u64,
+            })
+            .collect::<Vec<_>>();
+        pending.sort_by_key(|pending| pending.node);
+        FullMeshStatus {
+            session: self.session,
+            peers,
+            pending,
+        }
     }
 
     #[handle_error]

@@ -1,15 +1,23 @@
-use std::{any::Any, collections::HashMap, io, path::PathBuf, time::Duration};
+use std::{
+    any::Any,
+    collections::HashMap,
+    io,
+    path::{Path, PathBuf},
+    time::{Duration, Instant as StdInstant},
+};
 
 use anyhow::{Error, Result};
 use cryonet_lib::{
-    fullmesh::fullmesh::FullMeshHandle,
+    collect_stats,
+    connection::ConnManagerHandle,
+    fullmesh::{fullmesh::FullMeshHandle, registry::RegistryHandle},
     mesh::{
         MeshHandle,
         igp::IgpHandle,
         packet::{Packet, Payload},
     },
 };
-use cryonet_uapi::{CryonetUapi, IgpRoute};
+use cryonet_uapi::{CryonetUapi, DaemonInfo};
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -27,6 +35,10 @@ pub struct Uapi {
     mesh: MeshHandle,
     igp: IgpHandle,
     fm: FullMeshHandle,
+    registry: RegistryHandle,
+    mgr: ConnManagerHandle,
+    info: DaemonInfo,
+    started_at: StdInstant,
 
     socket: UnixDatagram,
     buf: [u8; 1024],
@@ -47,16 +59,25 @@ enum UapiPayload {
 
 #[sactor(pub)]
 impl Uapi {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         mesh: MeshHandle,
         igp: IgpHandle,
         fm: FullMeshHandle,
+        registry: RegistryHandle,
+        mgr: ConnManagerHandle,
+        info: DaemonInfo,
+        started_at: StdInstant,
         path: PathBuf,
     ) -> Result<UapiHandle> {
         Self::new_with_parameters(
             mesh,
             igp,
             fm,
+            registry,
+            mgr,
+            info,
+            started_at,
             path,
             Duration::from_secs(30),
             Duration::from_secs(60),
@@ -64,10 +85,15 @@ impl Uapi {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn new_with_parameters(
         mesh: MeshHandle,
         igp: IgpHandle,
         fm: FullMeshHandle,
+        registry: RegistryHandle,
+        mgr: ConnManagerHandle,
+        info: DaemonInfo,
+        started_at: StdInstant,
         path: PathBuf,
         gc_interval: Duration,
         ping_timeout: Duration,
@@ -92,6 +118,10 @@ impl Uapi {
             mesh,
             igp,
             fm,
+            registry,
+            mgr,
+            info,
+            started_at,
             socket,
             buf: [0u8; 1024],
             packet_rx,
@@ -131,9 +161,7 @@ impl Uapi {
             }
             Pong(uuid) => {
                 if let Some((path, _)) = self.ping.remove(uuid) {
-                    let response = CryonetUapi::Pong;
-                    let bytes = serde_json::to_vec(&response)?;
-                    self.socket.send_to(&bytes, path).await?;
+                    self.reply(&path, &CryonetUapi::Pong).await?;
                 } else {
                     debug!("Received unexpected pong with uuid {uuid}, dropping");
                 }
@@ -153,68 +181,76 @@ impl Uapi {
             return Ok(());
         };
         let path = path.to_owned();
-        let cmd: CryonetUapi = serde_json::from_slice(&self.buf[..len])?;
-        self.dispatch_message(cmd, path).await?;
+        let cmd: CryonetUapi = match serde_json::from_slice(&self.buf[..len]) {
+            Ok(cmd) => cmd,
+            Err(err) => {
+                self.reply(
+                    &path,
+                    &CryonetUapi::Error(format!("invalid request: {err}")),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+        match self.dispatch_message(cmd, &path).await {
+            Ok(Some(response)) => self.reply(&path, &response).await?,
+            Ok(None) => {}
+            Err(err) => {
+                self.reply(&path, &CryonetUapi::Error(format!("{err:#}")))
+                    .await?;
+            }
+        }
         Ok(())
     }
 
-    async fn dispatch_message(&mut self, cmd: CryonetUapi, path: PathBuf) -> Result<()> {
+    #[skip]
+    async fn dispatch_message(
+        &mut self,
+        cmd: CryonetUapi,
+        path: &Path,
+    ) -> Result<Option<CryonetUapi>> {
         use CryonetUapi::*;
-        match cmd {
-            GetLinks => {
-                let links = self.mesh.get_links().await?;
-                let response = GetLinksResponse(links);
-                let bytes = serde_json::to_vec(&response)?;
-                self.socket.send_to(&bytes, &path).await?;
+        let response = match cmd {
+            GetLinks => GetLinksResponse(self.mesh.get_links().await?),
+            GetRoutes => GetRoutesResponse(self.mesh.get_routes().await?),
+            GetIgpRoutes => GetIgpRoutesResponse(self.igp.get_routes().await?),
+            GetIgpStatus => GetIgpStatusResponse(self.igp.get_status().await?),
+            GetFullMeshPeers => GetFullMeshPeersResponse(self.fm.get_peers().await?),
+            GetNodes => GetNodesResponse(self.registry.get_nodes().await?),
+            GetServers => GetServersResponse(self.mgr.get_servers().await?),
+            GetInfo => {
+                let mut info = self.info.clone();
+                info.uptime_ms = self.started_at.elapsed().as_millis() as u64;
+                info.local_ips = self.registry.get_local_ips().await?;
+                GetInfoResponse(info)
             }
-            GetRoutes => {
-                let routes = self.mesh.get_routes().await?;
-                let response = GetRoutesResponse(routes);
-                let bytes = serde_json::to_vec(&response)?;
-                self.socket.send_to(&bytes, &path).await?;
-            }
-            GetIgpRoutes => {
-                let now = Instant::now();
-                let routes = self.igp.get_routes().await?;
-                let routes = routes
-                    .into_iter()
-                    .map(|route| {
-                        let timeout_remaining_ms = if route.timeout > now {
-                            route.timeout.duration_since(now).as_millis() as i64
-                        } else {
-                            -(now.duration_since(route.timeout).as_millis() as i64)
-                        };
-                        IgpRoute {
-                            seq: route.metric.seq.0,
-                            metric: route.metric.metric,
-                            computed_metric: route.computed_metric,
-                            dst: route.dst,
-                            from: route.from,
-                            selected: route.selected,
-                            timeout_remaining_ms,
-                        }
-                    })
-                    .collect();
-                let response = GetIgpRoutesResponse(routes);
-                let bytes = serde_json::to_vec(&response)?;
-                self.socket.send_to(&bytes, &path).await?;
-            }
-            GetFullMeshPeers => {
-                let peers = self.fm.get_peers().await?;
-                let response = GetFullMeshPeersResponse(peers);
-                let bytes = serde_json::to_vec(&response)?;
-                self.socket.send_to(&bytes, &path).await?;
-            }
+            GetStats => GetStatsResponse(
+                collect_stats(
+                    &self.mesh,
+                    &self.igp,
+                    &self.fm,
+                    &self.registry,
+                    self.started_at.elapsed().as_millis() as u64,
+                )
+                .await?,
+            ),
             Ping(dst) => {
                 let uuid = Uuid::new_v4();
-                let instant = Instant::now();
                 self.mesh
                     .send_packet(dst, Box::new(UapiPayload::Ping(uuid)))
                     .await?;
-                self.ping.insert(uuid, (path, instant));
+                self.ping.insert(uuid, (path.to_owned(), Instant::now()));
+                return Ok(None);
             }
-            _ => error!("Unexpected uapi command: {cmd:?}, dropping"),
+            other => Error(format!("unexpected request: {other:?}")),
         };
+        Ok(Some(response))
+    }
+
+    #[skip]
+    async fn reply(&self, path: &Path, response: &CryonetUapi) -> Result<()> {
+        let bytes = serde_json::to_vec(response)?;
+        self.socket.send_to(&bytes, path).await?;
         Ok(())
     }
 
@@ -222,14 +258,20 @@ impl Uapi {
     async fn gc(&mut self) -> Result<()> {
         let now = Instant::now();
         let ping_timeout = self.ping_timeout;
-        self.ping.retain(|uuid, (_, instant)| {
+        let mut expired = Vec::new();
+        self.ping.retain(|uuid, (path, instant)| {
             if now.duration_since(*instant) > ping_timeout {
-                debug!("Removing expired ping with uuid {uuid}, sent at {instant:?}",);
+                debug!("Removing expired ping with uuid {uuid}, sent at {instant:?}");
+                expired.push(path.clone());
                 false
             } else {
                 true
             }
         });
+        for path in expired {
+            self.reply(&path, &CryonetUapi::Error("ping timed out".to_owned()))
+                .await?;
+        }
         Ok(())
     }
 

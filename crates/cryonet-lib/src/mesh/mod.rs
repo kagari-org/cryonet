@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Error, Result};
 use async_trait::async_trait;
+use cryonet_uapi::{LinkInfo, MeshStats};
 use futures::future::join_all;
 use packet::{NodeId, Packet, PacketPayload, Payload};
 use sactor::sactor;
@@ -40,6 +41,7 @@ pub struct Mesh {
     link_recv_stop: HashMap<NodeId, watch::Sender<bool>>,
     link_last_recv: HashMap<NodeId, Instant>,
     routes: HashMap<NodeId, NodeId>,
+    stats: MeshCounters,
     #[allow(clippy::type_complexity)]
     dispatchees: Vec<(
         Box<dyn Fn(&Packet) -> bool + Send + Sync>,
@@ -82,6 +84,20 @@ struct PendingPacket {
     payload: Box<dyn Payload>,
     attempts: u32,
     next_retry: Instant,
+}
+
+#[derive(Default)]
+struct MeshCounters {
+    received: u64,
+    sent: u64,
+    forwarded: u64,
+    dropped_ttl: u64,
+    dropped_duplicate: u64,
+    dropped_unreachable: u64,
+    dropped_dispatch_full: u64,
+    reliable_retries: u64,
+    reliable_given_up: u64,
+    reliable_acked: u64,
 }
 
 // bit 0 is highest, bit n is highest - n
@@ -184,6 +200,7 @@ impl Mesh {
             link_recv_stop: HashMap::new(),
             link_last_recv: HashMap::new(),
             routes: HashMap::new(),
+            stats: MeshCounters::default(),
             dispatchees: Vec::new(),
             mesh_event_tx: broadcast::Sender::new(64),
         });
@@ -209,6 +226,7 @@ impl Mesh {
             res => res?,
         };
         debug!("Received packet: {packet:?}");
+        self.stats.received += 1;
         if packet.dst == self.id {
             let Packet {
                 src,
@@ -219,6 +237,7 @@ impl Mesh {
             let payload = match payload {
                 PacketPayload::Ack { seq } => {
                     debug!("Received ack {seq} from node {src:X}");
+                    self.stats.reliable_acked += 1;
                     self.pending.remove(&(src, seq));
                     return Ok(());
                 }
@@ -234,6 +253,7 @@ impl Mesh {
                         .accept(seq);
                     if !first {
                         debug!("Dropping duplicate reliable packet {seq} from node {src:X}");
+                        self.stats.dropped_duplicate += 1;
                         return Ok(());
                     }
                     payload
@@ -248,6 +268,7 @@ impl Mesh {
             for (filter, dispatch) in self.dispatchees.iter() {
                 if filter(&packet) {
                     if let Err(err) = dispatch.try_send(packet) {
+                        self.stats.dropped_dispatch_full += 1;
                         warn!("Failed to dispatch packet to handler: {err}");
                     }
                     break;
@@ -257,9 +278,11 @@ impl Mesh {
             // forward
             if packet.ttl == 0 {
                 debug!("Dropping packet to node {:X}: TTL expired", packet.dst);
+                self.stats.dropped_ttl += 1;
                 return Ok(());
             }
             packet.ttl -= 1;
+            self.stats.forwarded += 1;
             self.send_packet_internal(packet).await?;
         }
         Ok(())
@@ -267,15 +290,18 @@ impl Mesh {
 
     async fn send_packet_internal(&mut self, packet: Packet) -> Result<()> {
         let Some(next_hop) = self.routes.get(&packet.dst) else {
+            self.stats.dropped_unreachable += 1;
             return Err(CryonetError::Unreachable(packet.dst).into());
         };
         let Some(link) = self.link_send.get_mut(next_hop) else {
+            self.stats.dropped_unreachable += 1;
             return Err(CryonetError::Unreachable(packet.dst).into());
         };
         debug!(
             "Sending packet {packet:?} to {:X} via link {next_hop:X}",
             packet.dst,
         );
+        self.stats.sent += 1;
         let res = link.send(packet).await;
         if let Err(LinkError::Closed) = res {
             self.remove_link(*next_hop);
@@ -298,6 +324,7 @@ impl Mesh {
     #[no_reply]
     pub async fn send_packet_link(&mut self, dst: NodeId, payload: Box<dyn Payload>) -> Result<()> {
         let Some(link) = self.link_send.get_mut(&dst) else {
+            self.stats.dropped_unreachable += 1;
             return Err(CryonetError::NoSuchLink(dst).into());
         };
         let packet = Packet {
@@ -307,6 +334,7 @@ impl Mesh {
             payload: PacketPayload::Payload(payload),
         };
         debug!("Sending packet {packet:?} to {dst:X} via direct link");
+        self.stats.sent += 1;
         let res = link.send(packet).await;
         if let Err(LinkError::Closed) = res {
             self.remove_link(dst);
@@ -353,6 +381,7 @@ impl Mesh {
         };
         if let Some(link) = self.link_send.get_mut(&dst) {
             debug!("Sending reliable packet {seq} to {dst:X} via direct link");
+            self.stats.sent += 1;
             let res = link.send(packet).await;
             if let Err(LinkError::Closed) = res {
                 self.remove_link(dst);
@@ -374,6 +403,7 @@ impl Mesh {
         // the reverse path is valid for multi-hop packets and works before a
         // route back to the source is installed
         if let Some(link) = self.link_send.get_mut(&from) {
+            self.stats.sent += 1;
             let res = link.send(ack).await;
             if let Err(LinkError::Closed) = res {
                 self.remove_link(from);
@@ -394,6 +424,8 @@ impl Mesh {
     async fn retry(&mut self) -> Result<()> {
         let now = Instant::now();
         let mut resend = Vec::new();
+        let mut given_up = 0;
+        let mut retried = 0;
         self.pending.retain(|(dst, seq), pending| {
             if now < pending.next_retry {
                 return true;
@@ -403,13 +435,17 @@ impl Mesh {
                     "Giving up reliable packet {seq} to node {dst:X} after {} attempts",
                     pending.attempts
                 );
+                given_up += 1;
                 return false;
             }
             pending.attempts += 1;
             pending.next_retry = now + jitter_up(RELIABLE_RETRY_INTERVAL, RELIABLE_RETRY_JITTER);
             resend.push((*seq, *dst, dyn_clone::clone_box(&*pending.payload)));
+            retried += 1;
             true
         });
+        self.stats.reliable_given_up += given_up;
+        self.stats.reliable_retries += retried;
         for (seq, dst, payload) in resend {
             if let Err(err) = self.send_reliable_packet(seq, dst, payload).await {
                 debug!("Reliable packet {seq} to {dst:X} is still unreachable: {err:?}");
@@ -421,6 +457,7 @@ impl Mesh {
     #[no_reply]
     pub async fn broadcast_packet_local(&mut self, payload: Box<dyn Payload>) -> Result<()> {
         debug!("Broadcasting packet {payload:?} to all links");
+        self.stats.sent += self.link_send.len() as u64;
         let futures = self
             .link_send
             .iter_mut()
@@ -550,8 +587,46 @@ impl Mesh {
         }
     }
 
-    pub fn get_links(&self) -> Vec<NodeId> {
+    pub fn get_link_ids(&self) -> Vec<NodeId> {
         self.link_send.keys().cloned().collect()
+    }
+
+    pub fn get_links(&self) -> Vec<LinkInfo> {
+        let now = Instant::now();
+        let idle_timeout_ms = self.link_idle_timeout.as_millis() as i64;
+        let mut links = self
+            .link_send
+            .keys()
+            .map(|node| LinkInfo {
+                node: *node,
+                alive: self.link_is_alive(*node),
+                last_recv_ms: self
+                    .link_last_recv
+                    .get(node)
+                    .map_or(-1, |last| now.duration_since(*last).as_millis() as i64),
+                idle_timeout_ms,
+            })
+            .collect::<Vec<_>>();
+        links.sort_by_key(|link| link.node);
+        links
+    }
+
+    pub fn get_stats(&self) -> MeshStats {
+        MeshStats {
+            links: self.link_send.len() as u64,
+            routes: self.routes.len() as u64,
+            received: self.stats.received,
+            sent: self.stats.sent,
+            forwarded: self.stats.forwarded,
+            dropped_ttl: self.stats.dropped_ttl,
+            dropped_duplicate: self.stats.dropped_duplicate,
+            dropped_unreachable: self.stats.dropped_unreachable,
+            dropped_dispatch_full: self.stats.dropped_dispatch_full,
+            reliable_pending: self.pending.len() as u64,
+            reliable_retries: self.stats.reliable_retries,
+            reliable_given_up: self.stats.reliable_given_up,
+            reliable_acked: self.stats.reliable_acked,
+        }
     }
 
     pub fn set_route(&mut self, dst: NodeId, next_hop: NodeId) {
@@ -614,11 +689,12 @@ mod tests {
     };
 
     use async_trait::async_trait;
+    use cryonet_uapi::IgpRoute;
     use serde::{Deserialize, Serialize};
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::mesh::igp::{Igp, Route};
+    use crate::mesh::igp::Igp;
 
     struct ChannelSend(mpsc::Sender<Packet>);
     struct ChannelRecv(mpsc::Receiver<Packet>);
@@ -850,13 +926,13 @@ mod tests {
         });
     }
 
-    fn has_route(routes: &[Route], dst: NodeId, from: NodeId) -> bool {
+    fn has_route(routes: &[IgpRoute], dst: NodeId, from: NodeId) -> bool {
         routes
             .iter()
             .any(|route| route.dst == dst && route.from == from && route.selected)
     }
 
-    fn no_route(routes: &[Route], dst: NodeId) -> bool {
+    fn no_route(routes: &[IgpRoute], dst: NodeId) -> bool {
         !routes
             .iter()
             .any(|route| route.dst == dst && route.selected)

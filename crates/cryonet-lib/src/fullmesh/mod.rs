@@ -89,8 +89,7 @@ define_sender_receiver!(Send, Sync);
 define_sender_receiver!();
 
 #[cfg(not(target_arch = "wasm32"))]
-pub type NotifyFn =
-    Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
+pub type NotifyFn = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
 #[cfg(target_arch = "wasm32")]
 pub type NotifyFn = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>>>>>;
 

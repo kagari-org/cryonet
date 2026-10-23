@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::Result;
+use cryonet_uapi::{NodeInfo, RegistryStats};
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{
@@ -14,7 +15,7 @@ use tokio::sync::{
     broadcast::{self, error::RecvError},
     mpsc,
 };
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::{
     fullmesh::{DeviceManager, NotifyFn},
@@ -336,7 +337,50 @@ impl Registry {
         self.notifiers.push(notify);
     }
 
-    pub fn get_nodes(&self) -> HashMap<NodeId, (Node, Instant)> {
+    pub fn get_node_table(&self) -> HashMap<NodeId, (Node, Instant)> {
         self.nodes.clone()
+    }
+
+    pub fn get_nodes(&self) -> Vec<NodeInfo> {
+        let now = Instant::now();
+        let mut nodes = self
+            .nodes
+            .iter()
+            .map(|(id, (node, last_seen))| NodeInfo {
+                id: *id,
+                ips: node.ips.iter().map(|ip| ip.to_string()).collect(),
+                connection_types: node
+                    .connection_types
+                    .iter()
+                    .map(|connection_type| connection_type_name(connection_type).to_owned())
+                    .collect(),
+                last_seen_ms: now.duration_since(*last_seen).as_millis() as i64,
+            })
+            .collect::<Vec<_>>();
+        nodes.sort_by_key(|node| node.id);
+        nodes
+    }
+
+    pub async fn get_stats(&self) -> RegistryStats {
+        let nodes = self.nodes.len() as u64;
+        let ips = self.ips.lock().await.len() as u64;
+        RegistryStats { nodes, ips }
+    }
+
+    pub async fn get_local_ips(&self) -> Vec<String> {
+        match self.local_node().await {
+            Ok(node) => node.ips.iter().map(|ip| ip.to_string()).collect(),
+            Err(err) => {
+                warn!("Failed to read local IP addresses: {err:?}");
+                Vec::new()
+            }
+        }
+    }
+}
+
+fn connection_type_name(connection_type: &ConnectionType) -> &'static str {
+    match connection_type {
+        ConnectionType::Ice => "ice",
+        ConnectionType::DataChannel => "datachannel",
     }
 }

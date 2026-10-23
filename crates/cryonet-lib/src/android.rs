@@ -4,9 +4,11 @@ use std::{
     os::fd::{BorrowedFd, IntoRawFd},
     str::FromStr,
     sync::{Arc, Mutex as StdMutex},
+    time::Instant,
 };
 
 use crate::{
+    collect_stats,
     connection::{ConnManager, ConnManagerHandle},
     fullmesh::{
         DeviceManager, IceServer as FullMeshIceServer,
@@ -17,13 +19,13 @@ use crate::{
     mesh::{
         Mesh, MeshHandle,
         igp::{Igp, IgpHandle},
-        packet::NodeId,
     },
-    time::Instant,
 };
 use anyhow::Result;
 use cidr::AnyIpCidr;
-use cryonet_uapi::{Conn, IgpRoute};
+use cryonet_uapi::{
+    DaemonInfo, FullMeshStatus, IgpRoute, IgpStatus, LinkInfo, NodeId, NodeInfo, ServerInfo, Stats,
+};
 use tokio::{
     sync::{Mutex, oneshot},
     task::LocalSet,
@@ -61,13 +63,14 @@ pub struct Args {
     pub tun_fd: i32,
 }
 
-type Handles = (
-    MeshHandle,
-    IgpHandle,
-    ConnManagerHandle,
-    RegistryHandle,
-    FullMeshHandle,
-);
+struct Handles {
+    mesh: MeshHandle,
+    igp: IgpHandle,
+    mgr: ConnManagerHandle,
+    registry: RegistryHandle,
+    fm: FullMeshHandle,
+    info: DaemonInfo,
+}
 
 async fn run(args: Args) -> Result<Handles> {
     let candidate_filter_prefixes = args
@@ -80,6 +83,25 @@ async fn run(args: Args) -> Result<Handles> {
         .iter()
         .map(|address| IpAddr::from_str(address))
         .collect::<Result<Vec<_>, _>>()?;
+    let info = DaemonInfo {
+        id: args.id,
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        uptime_ms: 0,
+        mode: "single-tun".to_owned(),
+        interface: "tun".to_owned(),
+        mtu: 1280,
+        listen: "-".to_owned(),
+        ctl_path: "-".to_owned(),
+        encrypt_local_packets: args.encrypt_local_packets,
+        packet_information: args.enable_packet_information,
+        ice_servers: args
+            .ice_servers
+            .iter()
+            .map(|server| server.url.clone())
+            .collect(),
+        candidate_filter_prefixes: args.candidate_filter_prefixes.clone(),
+        local_ips: Vec::new(),
+    };
     let ice_servers = args
         .ice_servers
         .into_iter()
@@ -133,16 +155,25 @@ async fn run(args: Args) -> Result<Handles> {
         vec![ConnectionType::Ice, ConnectionType::DataChannel],
     )
     .await?;
-    Ok((mesh, igp, mgr, registry, fm))
+    Ok(Handles {
+        mesh,
+        igp,
+        mgr,
+        registry,
+        fm,
+        info,
+    })
 }
 
 #[derive(uniffi::Object)]
 pub struct Cryonet {
     mesh: MeshHandle,
     igp: IgpHandle,
-    _mgr: ConnManagerHandle,
-    _registry: RegistryHandle,
+    mgr: ConnManagerHandle,
+    registry: RegistryHandle,
     fm: FullMeshHandle,
+    info: DaemonInfo,
+    started_at: Instant,
     stop: StdMutex<Option<oneshot::Sender<()>>>,
     thread: StdMutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -172,6 +203,7 @@ impl Cryonet {
     pub async fn init(args: Args) -> std::result::Result<Arc<Self>, AndroidError> {
         let (ready_tx, ready_rx) = oneshot::channel::<std::result::Result<Handles, String>>();
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let started_at = Instant::now();
         let thread = std::thread::Builder::new()
             .name("cryonet".to_owned())
             .spawn(move || {
@@ -204,7 +236,14 @@ impl Cryonet {
             .map_err(|err| AndroidError::Error {
                 reason: err.to_string(),
             })?;
-        let (mesh, igp, _mgr, _registry, fm) = ready_rx
+        let Handles {
+            mesh,
+            igp,
+            mgr,
+            registry,
+            fm,
+            info,
+        } = ready_rx
             .await
             .map_err(|_| AndroidError::Error {
                 reason: "cryonet thread exited".to_owned(),
@@ -213,9 +252,11 @@ impl Cryonet {
         Ok(Arc::new(Cryonet {
             mesh,
             igp,
-            _mgr,
-            _registry,
+            mgr,
+            registry,
             fm,
+            info,
+            started_at,
             stop: StdMutex::new(Some(stop_tx)),
             thread: StdMutex::new(Some(thread)),
         }))
@@ -226,7 +267,21 @@ impl Cryonet {
         self.signal_stop();
     }
 
-    pub async fn get_links(&self) -> std::result::Result<Vec<NodeId>, AndroidError> {
+    pub async fn get_info(&self) -> std::result::Result<DaemonInfo, AndroidError> {
+        let mut info = self.info.clone();
+        info.uptime_ms = self.started_at.elapsed().as_millis() as u64;
+        info.local_ips = self.registry.get_local_ips().await.map_err(android_error)?;
+        Ok(info)
+    }
+
+    pub async fn get_stats(&self) -> std::result::Result<Stats, AndroidError> {
+        let uptime_ms = self.started_at.elapsed().as_millis() as u64;
+        collect_stats(&self.mesh, &self.igp, &self.fm, &self.registry, uptime_ms)
+            .await
+            .map_err(android_error)
+    }
+
+    pub async fn get_links(&self) -> std::result::Result<Vec<LinkInfo>, AndroidError> {
         self.mesh.get_links().await.map_err(android_error)
     }
 
@@ -235,30 +290,23 @@ impl Cryonet {
     }
 
     pub async fn get_igp_routes(&self) -> std::result::Result<Vec<IgpRoute>, AndroidError> {
-        let routes = self.igp.get_routes().await.map_err(android_error)?;
-        let now = Instant::now();
-        Ok(routes
-            .into_iter()
-            .map(|route| IgpRoute {
-                seq: route.metric.seq.0,
-                metric: route.metric.metric,
-                computed_metric: route.computed_metric,
-                dst: route.dst,
-                from: route.from,
-                selected: route.selected,
-                timeout_remaining_ms: if route.timeout > now {
-                    route.timeout.duration_since(now).as_millis() as i64
-                } else {
-                    -(now.duration_since(route.timeout).as_millis() as i64)
-                },
-            })
-            .collect())
+        self.igp.get_routes().await.map_err(android_error)
     }
 
-    pub async fn get_full_mesh_peers(
-        &self,
-    ) -> std::result::Result<HashMap<NodeId, Conn>, AndroidError> {
+    pub async fn get_igp_status(&self) -> std::result::Result<IgpStatus, AndroidError> {
+        self.igp.get_status().await.map_err(android_error)
+    }
+
+    pub async fn get_full_mesh_peers(&self) -> std::result::Result<FullMeshStatus, AndroidError> {
         self.fm.get_peers().await.map_err(android_error)
+    }
+
+    pub async fn get_nodes(&self) -> std::result::Result<Vec<NodeInfo>, AndroidError> {
+        self.registry.get_nodes().await.map_err(android_error)
+    }
+
+    pub async fn get_servers(&self) -> std::result::Result<Vec<ServerInfo>, AndroidError> {
+        self.mgr.get_servers().await.map_err(android_error)
     }
 }
 

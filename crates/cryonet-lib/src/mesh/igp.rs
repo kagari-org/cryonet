@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Error, Result};
+use cryonet_uapi::{IgpNeighbor, IgpRequest, IgpRoute, IgpSource, IgpStats, IgpStatus};
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{
@@ -37,12 +38,16 @@ pub struct Igp {
     hello_ticker: Interval,
     dump_ticker: Interval,
     gc_ticker: Interval,
+    hello_interval: Duration,
+    dump_interval: Duration,
+    gc_interval: Duration,
     route_timeout: Duration,
     source_timeout: Duration,
     seqno_request_timeout: Duration,
     diameter: u16,
     update_threshold: u32,
     dump_batch_size: usize,
+    stats: IgpCounters,
 
     packet_rx: mpsc::Receiver<Packet>,
     mesh_event_rx: broadcast::Receiver<MeshEvent>,
@@ -71,6 +76,16 @@ struct RouteRequest {
     seq: Seq,
     expiry: Instant,
     retries: u8,
+}
+
+#[derive(Default)]
+struct IgpCounters {
+    hellos_sent: u64,
+    hellos_received: u64,
+    updates_sent: u64,
+    updates_received: u64,
+    route_requests: u64,
+    seqno_requests: u64,
 }
 
 // RFC 8966 3.2.7: retry pending seqno requests a small number of times
@@ -163,12 +178,16 @@ impl Igp {
             hello_ticker: interval(hello_interval),
             dump_ticker: interval(dump_interval),
             gc_ticker: interval(gc_interval),
+            hello_interval,
+            dump_interval,
+            gc_interval,
             route_timeout,
             source_timeout,
             seqno_request_timeout,
             diameter,
             update_threshold,
             dump_batch_size: dump_batch_size.max(1),
+            stats: IgpCounters::default(),
             packet_rx,
             mesh_event_rx,
         });
@@ -204,12 +223,13 @@ impl Igp {
         self.mesh
             .send_packet_link(link, Box::new(IgpPayload::Hello { seq: cost.seq }))
             .await?;
+        self.stats.hellos_sent += 1;
         Ok(())
     }
 
     #[no_reply]
     async fn hello(&mut self) -> Result<()> {
-        for link in self.mesh.get_links().await? {
+        for link in self.mesh.get_link_ids().await? {
             self.hello_link(link).await?;
         }
         Ok(())
@@ -277,6 +297,7 @@ impl Igp {
                 None => self.mesh.broadcast_packet_local(payload).await?,
             }
         }
+        self.stats.updates_sent += updates.len() as u64;
 
         Ok(())
     }
@@ -322,6 +343,7 @@ impl Igp {
             .unwrap();
         match payload {
             IgpPayload::Hello { seq } => {
+                self.stats.hellos_received += 1;
                 self.mesh
                     .send_packet_link(src, Box::new(IgpPayload::HelloReply { seq: *seq }))
                     .await?;
@@ -356,17 +378,20 @@ impl Igp {
             }
 
             IgpPayload::RouteRequest { dst } => {
+                self.stats.route_requests += 1;
                 let route = self
                     .routes
                     .iter()
                     .find(|((d, _), r)| d == dst && r.selected);
                 match route {
                     Some((_, route)) => {
+                        self.stats.updates_sent += 1;
                         self.mesh
                             .broadcast_packet_local(generate_update(route))
                             .await?;
                     }
                     None => {
+                        self.stats.updates_sent += 1;
                         self.mesh
                             .broadcast_packet_local(generate_retraction(*dst))
                             .await?;
@@ -394,6 +419,7 @@ impl Igp {
                     }
                 };
                 if *seq <= route.metric.seq {
+                    self.stats.updates_sent += 1;
                     self.mesh
                         .broadcast_packet_local(generate_update(route))
                         .await?;
@@ -412,6 +438,7 @@ impl Igp {
                     // +1 behaviour, not a spontaneous increment.
                     route.metric.seq = self_seq_after_request(route.metric.seq, *seq);
 
+                    self.stats.updates_sent += 1;
                     self.mesh
                         .broadcast_packet_local(generate_update(route))
                         .await?;
@@ -501,6 +528,7 @@ impl Igp {
 
     #[skip]
     async fn apply_update(&mut self, src: NodeId, metric: SeqMetric, dst: NodeId) -> Result<()> {
+        self.stats.updates_received += 1;
         if dst == self.id {
             // ignore updates about ourself
             return Ok(());
@@ -569,6 +597,7 @@ impl Igp {
         {
             self.requests.remove(&dst);
             // trigger update
+            self.stats.updates_sent += 1;
             self.mesh
                 .broadcast_packet_local(generate_update(route))
                 .await?;
@@ -672,6 +701,7 @@ impl Igp {
                 }
             }
             if significant {
+                self.stats.updates_sent += 1;
                 self.mesh
                     .broadcast_packet_local(generate_update(best))
                     .await?;
@@ -708,6 +738,7 @@ impl Igp {
                 retries,
             },
         );
+        self.stats.seqno_requests += 1;
         self.mesh
             .broadcast_packet_local(Box::new(IgpPayload::SequenceRequest {
                 seq,
@@ -742,8 +773,90 @@ impl Igp {
         Ok(())
     }
 
-    pub fn get_routes(&self) -> Vec<Route> {
-        self.routes.values().cloned().collect()
+    pub fn get_routes(&self) -> Vec<IgpRoute> {
+        let now = Instant::now();
+        self.routes
+            .values()
+            .map(|route| IgpRoute {
+                seq: route.metric.seq.0,
+                metric: route.metric.metric,
+                computed_metric: route.computed_metric,
+                dst: route.dst,
+                from: route.from,
+                selected: route.selected,
+                timeout_remaining_ms: remaining_ms(now, route.timeout),
+            })
+            .collect()
+    }
+
+    pub fn get_status(&self) -> IgpStatus {
+        let now = Instant::now();
+        let mut neighbors = self
+            .costs
+            .iter()
+            .map(|(node, cost)| IgpNeighbor {
+                node: *node,
+                cost: cost.cost,
+                last_hello_ms: now.duration_since(cost.start).as_millis() as i64,
+            })
+            .collect::<Vec<_>>();
+        neighbors.sort_by_key(|neighbor| neighbor.node);
+        let mut sources = self
+            .sources
+            .iter()
+            .map(|(dst, (metric, expiry))| IgpSource {
+                dst: *dst,
+                seq: metric.seq.0,
+                metric: metric.metric,
+                expires_in_ms: remaining_ms(now, *expiry),
+            })
+            .collect::<Vec<_>>();
+        sources.sort_by_key(|source| source.dst);
+        let mut requests = self
+            .requests
+            .iter()
+            .map(|(dst, request)| IgpRequest {
+                dst: *dst,
+                seq: request.seq.0,
+                retries: request.retries,
+                expires_in_ms: remaining_ms(now, request.expiry),
+            })
+            .collect::<Vec<_>>();
+        requests.sort_by_key(|request| request.dst);
+        IgpStatus {
+            self_seq: self
+                .routes
+                .get(&(self.id, self.id))
+                .map_or(0, |route| route.metric.seq.0),
+            neighbors,
+            sources,
+            requests,
+            hello_interval_ms: self.hello_interval.as_millis() as u64,
+            dump_interval_ms: self.dump_interval.as_millis() as u64,
+            gc_interval_ms: self.gc_interval.as_millis() as u64,
+            route_timeout_ms: self.route_timeout.as_millis() as u64,
+            source_timeout_ms: self.source_timeout.as_millis() as u64,
+            seqno_request_timeout_ms: self.seqno_request_timeout.as_millis() as u64,
+            diameter: self.diameter,
+            update_threshold: self.update_threshold,
+            dump_batch_size: self.dump_batch_size as u64,
+        }
+    }
+
+    pub fn get_stats(&self) -> IgpStats {
+        IgpStats {
+            routes: self.routes.len() as u64,
+            selected: self.routes.values().filter(|route| route.selected).count() as u64,
+            neighbors: self.costs.len() as u64,
+            sources: self.sources.len() as u64,
+            requests: self.requests.len() as u64,
+            hellos_sent: self.stats.hellos_sent,
+            hellos_received: self.stats.hellos_received,
+            updates_sent: self.stats.updates_sent,
+            updates_received: self.stats.updates_received,
+            route_requests: self.stats.route_requests,
+            seqno_requests: self.stats.seqno_requests,
+        }
     }
 
     #[handle_error]
@@ -756,6 +869,14 @@ fn route_distance(route: &Route) -> SeqMetric {
     SeqMetric {
         seq: route.metric.seq,
         metric: route.computed_metric,
+    }
+}
+
+fn remaining_ms(now: Instant, instant: Instant) -> i64 {
+    if instant > now {
+        instant.duration_since(now).as_millis() as i64
+    } else {
+        -(now.duration_since(instant).as_millis() as i64)
     }
 }
 
