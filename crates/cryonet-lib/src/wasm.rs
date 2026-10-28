@@ -44,6 +44,7 @@ pub struct Args {
     pub mac: [u8; 6],
     pub addresses: Vec<IpAddr>,
     pub ipv6_subnet: Option<String>,
+    pub name: Option<String>,
 }
 
 pub struct AsyncDevice {
@@ -123,7 +124,10 @@ impl Cryonet {
             mac,
             addresses,
             ipv6_subnet,
+            name,
         } = serde_wasm_bindgen::from_value(args)?;
+
+        let name = name.unwrap_or_default();
 
         let mut addresses = addresses;
         if let Some(subnet) = ipv6_subnet.filter(|subnet| !subnet.is_empty()) {
@@ -170,6 +174,7 @@ impl Cryonet {
             mesh.clone(),
             dm.clone(),
             vec![ConnectionType::DataChannel],
+            name,
             ips,
         )
         .await

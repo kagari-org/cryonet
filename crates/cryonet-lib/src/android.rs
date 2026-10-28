@@ -85,6 +85,7 @@ async fn run(args: Args) -> Result<Handles> {
         .collect::<Result<Vec<_>, _>>()?;
     let info = DaemonInfo {
         id: args.id,
+        name: String::new(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         uptime_ms: 0,
         mode: "single-tun".to_owned(),
@@ -141,6 +142,7 @@ async fn run(args: Args) -> Result<Handles> {
         mesh.clone(),
         dm.clone(),
         vec![ConnectionType::Ice, ConnectionType::DataChannel],
+        String::new(),
         ips,
     )
     .await?;

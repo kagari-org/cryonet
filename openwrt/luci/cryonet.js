@@ -46,6 +46,10 @@ return network.registerProtocol('cryonet', {
 	renderFormOptions(s) {
 		let o;
 
+		o = s.taboption('general', form.Value, 'name', _('Display name'),
+			_('Optional name shown by cryoc. Defaults to the system hostname.'));
+		o.rmempty = true;
+
 		o = s.taboption('general', form.Value, 'token', _('Token'));
 		o.password = true;
 		o.rmempty = true;

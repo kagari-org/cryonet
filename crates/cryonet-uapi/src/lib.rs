@@ -31,6 +31,7 @@ pub enum ConnState {
 #[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct DaemonInfo {
     pub id: NodeId,
+    pub name: String,
     pub version: String,
     pub uptime_ms: u64,
     pub mode: String,
@@ -58,6 +59,7 @@ pub struct LinkInfo {
 #[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct NodeInfo {
     pub id: NodeId,
+    pub name: String,
     pub ips: Vec<String>,
     pub connection_types: Vec<String>,
     pub last_seen_ms: i64,

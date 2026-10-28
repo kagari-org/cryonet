@@ -35,6 +35,8 @@ mod uapi;
 
 #[derive(Debug, Parser)]
 struct Args {
+    #[clap(env = "NODE_NAME", long)]
+    name: Option<String>,
     #[clap(env, long, short)]
     token: Option<String>,
     #[clap(env, long, short, default_value = "0.0.0.0:2333")]
@@ -84,6 +86,12 @@ fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
     }
 }
 
+fn default_name() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|name| name.trim().to_owned())
+        .unwrap_or_default()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -109,6 +117,11 @@ async fn main() -> Result<()> {
             let result: Result<()> = try {
                 let started_at = std::time::Instant::now();
                 let id = random_node_id();
+                let name = args
+                    .name
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(default_name);
+                let name: String = name.trim().chars().take(64).collect();
                 let ipv6 = args
                     .ipv6_subnet
                     .map(|subnet| -> Result<Ipv6Addr> {
@@ -132,6 +145,7 @@ async fn main() -> Result<()> {
                 };
                 let info = DaemonInfo {
                     id,
+                    name: name.clone(),
                     version: env!("CARGO_PKG_VERSION").to_owned(),
                     uptime_ms: 0,
                     mode,
@@ -184,6 +198,7 @@ async fn main() -> Result<()> {
                     mesh.clone(),
                     dm.clone(),
                     vec![ConnectionType::Ice, ConnectionType::DataChannel],
+                    name,
                     ips,
                 )
                 .await?;

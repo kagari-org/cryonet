@@ -40,6 +40,7 @@ pub enum ConnectionType {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
+    pub name: String,
     pub connection_types: Vec<ConnectionType>,
     pub ips: Vec<IpAddr>,
     pub claimed_at: u64,
@@ -60,6 +61,7 @@ pub struct Registry {
     handle: RegistryHandle,
 
     id: NodeId,
+    name: String,
     mesh: MeshHandle,
     dm: Arc<Mutex<Box<dyn DeviceManager>>>,
     connection_types: Vec<ConnectionType>,
@@ -91,6 +93,7 @@ impl Registry {
         mesh: MeshHandle,
         dm: Arc<Mutex<Box<dyn DeviceManager>>>,
         connection_types: Vec<ConnectionType>,
+        name: String,
         ips: Arc<Mutex<IpMap>>,
     ) -> Result<RegistryHandle> {
         Self::new_with_parameters(
@@ -98,6 +101,7 @@ impl Registry {
             mesh,
             dm,
             connection_types,
+            name,
             jitter(Duration::from_secs(5), 0.1),
             Duration::from_secs(120),
             ips,
@@ -105,11 +109,13 @@ impl Registry {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn new_with_parameters(
         id: NodeId,
         mesh: MeshHandle,
         dm: Arc<Mutex<Box<dyn DeviceManager>>>,
         connection_types: Vec<ConnectionType>,
+        name: String,
         gossip_interval: Duration,
         node_timeout: Duration,
         ips: Arc<Mutex<IpMap>>,
@@ -126,6 +132,7 @@ impl Registry {
         let (future, registry) = Registry::run(move |handle| Registry {
             handle,
             id,
+            name,
             mesh,
             dm,
             connection_types,
@@ -371,6 +378,7 @@ impl Registry {
             self.claimed_at = now_ms().max(self.claimed_at.saturating_add(1));
         }
         Ok(Node {
+            name: self.name.clone(),
             connection_types: self.connection_types.clone(),
             ips,
             claimed_at: self.claimed_at,
@@ -483,6 +491,7 @@ impl Registry {
             .iter()
             .map(|(id, (node, last_seen))| NodeInfo {
                 id: *id,
+                name: node.name.clone(),
                 ips: node.ips.iter().map(|ip| ip.to_string()).collect(),
                 connection_types: node
                     .connection_types

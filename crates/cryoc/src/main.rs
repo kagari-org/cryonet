@@ -430,7 +430,13 @@ async fn main() -> Result<()> {
                 let rows = nodes
                     .iter()
                     .map(|node| {
+                        let name = if node.name.is_empty() {
+                            "-".to_owned()
+                        } else {
+                            node.name.clone()
+                        };
                         vec![
+                            name,
                             format!("{:X}", node.id),
                             format_ms(node.last_seen_ms),
                             join_or_dash(&node.connection_types),
@@ -438,7 +444,7 @@ async fn main() -> Result<()> {
                         ]
                     })
                     .collect::<Vec<_>>();
-                table(&["NODE", "LAST SEEN", "TRANSPORTS", "IPS"], &rows);
+                table(&["NAME", "NODE", "LAST SEEN", "TRANSPORTS", "IPS"], &rows);
             }
         }
         CryonetUapi::GetServersResponse(servers) => {
@@ -473,6 +479,14 @@ async fn main() -> Result<()> {
         CryonetUapi::GetInfoResponse(info) => {
             println!("CRYONET {}", info.version);
             kv("NODE", format!("{} (0x{:X})", info.id, info.id));
+            kv(
+                "NAME",
+                if info.name.is_empty() {
+                    "-"
+                } else {
+                    info.name.as_str()
+                },
+            );
             kv("UPTIME", format_ms(info.uptime_ms as i64));
             kv("MODE", info.mode);
             kv("INTERFACE", info.interface);

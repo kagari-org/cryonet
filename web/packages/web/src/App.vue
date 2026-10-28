@@ -33,6 +33,7 @@ interface CryonetConfig {
   enable_packet_information: boolean
   addresses: string[]
   ipv6_subnet?: string
+  name?: string
 }
 
 interface Config {
@@ -52,6 +53,7 @@ const Config = Schema.object({
     enable_packet_information: Schema.boolean().required(),
     addresses: Schema.array(Schema.string()),
     ipv6_subnet: Schema.string(),
+    name: Schema.string(),
   }),
 }).description('cryonet')
 
@@ -77,6 +79,7 @@ const config = ref<Config>({
     enable_packet_information: false,
     addresses: [ipv4, ipv6],
     ipv6_subnet: '',
+    name: '',
   },
 })
 
