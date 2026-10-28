@@ -23,13 +23,11 @@ use crate::{
         MeshEvent, MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
-    utils::{Instant, Interval, delayed_interval, jitter, now_ms, random_below},
+    utils::{Instant, Interval, delayed_interval, jitter, random_below},
 };
 
-const MAX_CLAIM_SKEW_MS: u64 = 5 * 60 * 1000;
-
-fn claim_wins(current: &IpEntry, node: NodeId, claimed_at: u64) -> bool {
-    claimed_at > current.claimed_at || (claimed_at == current.claimed_at && node < current.node)
+fn claim_wins(current: &IpEntry, node: NodeId, claim: u64) -> bool {
+    claim > current.claim || (claim == current.claim && node < current.node)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,7 +41,7 @@ pub struct Node {
     pub name: String,
     pub connection_types: Vec<ConnectionType>,
     pub ips: Vec<IpAddr>,
-    pub claimed_at: u64,
+    pub claim: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,7 +78,7 @@ pub struct Registry {
 
     nodes: HashMap<NodeId, (Node, Instant)>,
     ips: Arc<Mutex<IpMap>>,
-    claimed_at: u64,
+    claim: u64,
     last_ips: Option<Vec<IpAddr>>,
     conflicts: HashSet<(IpAddr, NodeId)>,
     notifiers: Vec<Weak<NotifyFn>>,
@@ -148,7 +146,7 @@ impl Registry {
             gossip_hops: 6,
             nodes: HashMap::new(),
             ips,
-            claimed_at: 0,
+            claim: 0,
             last_ips: None,
             conflicts: HashSet::new(),
             notifiers: Vec::new(),
@@ -187,17 +185,17 @@ impl Registry {
                 let mut moved = Vec::new();
                 {
                     let mut ips = self.ips.lock().await;
-                    let wall_now = now_ms();
                     for (id, node) in entries {
                         if *id == self.id {
                             continue;
                         }
+                        self.claim = self.claim.max(node.claim);
                         if let Some((known, _)) = self.nodes.get(id)
-                            && node.claimed_at < known.claimed_at
+                            && node.claim < known.claim
                         {
                             debug!(
                                 "Ignoring stale registry entry for {id:X}: claim {} < {}",
-                                node.claimed_at, known.claimed_at
+                                node.claim, known.claim
                             );
                             continue;
                         }
@@ -218,15 +216,7 @@ impl Registry {
                             }
                         }
                         for ip in &node.ips {
-                            let claim = node.claimed_at;
-                            if claim > wall_now.saturating_add(MAX_CLAIM_SKEW_MS) {
-                                if self.conflicts.insert((*ip, *id)) {
-                                    warn!(
-                                        "Ignoring claim for {ip} from {id:X}: {claim} is too far in the future"
-                                    );
-                                }
-                                continue;
-                            }
+                            let claim = node.claim;
                             let current = ips.get(ip).copied();
                             let wins = match current {
                                 Some(current) => claim_wins(&current, *id, claim),
@@ -237,11 +227,11 @@ impl Registry {
                                 if current.node != *id && self.conflicts.insert((*ip, *id)) {
                                     warn!(
                                         "Ignoring claim for {ip} from {id:X}: owned by {:X} (claim {}, ours {claim})",
-                                        current.node, current.claimed_at
+                                        current.node, current.claim
                                     );
                                 }
                                 if current.node == *id
-                                    && current.claimed_at == claim
+                                    && current.claim == claim
                                     && *hops > 0
                                     && let Some(current) = ips.get_mut(ip)
                                 {
@@ -253,7 +243,7 @@ impl Registry {
                                 *ip,
                                 IpEntry {
                                     node: *id,
-                                    claimed_at: claim,
+                                    claim,
                                     seen: now,
                                 },
                             );
@@ -373,15 +363,27 @@ impl Registry {
     #[skip]
     async fn refresh_local_node(&mut self) -> Result<Node> {
         let ips = self.device_ips().await?;
-        if self.last_ips.as_ref() != Some(&ips) {
+        let changed = self.last_ips.as_ref() != Some(&ips);
+        let observed = {
+            let ips_map = self.ips.lock().await;
+            ips_map
+                .iter()
+                .filter(|(ip, _)| ips.contains(ip))
+                .map(|(_, entry)| entry.claim)
+                .max()
+                .unwrap_or(0)
+        };
+        if changed {
             self.last_ips = Some(ips.clone());
-            self.claimed_at = now_ms().max(self.claimed_at.saturating_add(1));
+        }
+        if changed || self.claim <= observed {
+            self.claim = self.claim.max(observed).saturating_add(1);
         }
         Ok(Node {
             name: self.name.clone(),
             connection_types: self.connection_types.clone(),
             ips,
-            claimed_at: self.claimed_at,
+            claim: self.claim,
         })
     }
 
@@ -533,16 +535,16 @@ fn connection_type_name(connection_type: &ConnectionType) -> &'static str {
 mod tests {
     use super::*;
 
-    fn entry(node: NodeId, claimed_at: u64) -> IpEntry {
+    fn entry(node: NodeId, claim: u64) -> IpEntry {
         IpEntry {
             node,
-            claimed_at,
+            claim,
             seen: Instant::now(),
         }
     }
 
     #[test]
-    fn claim_wins_prefers_newer_claim() {
+    fn claim_wins_prefers_higher_claim() {
         assert!(claim_wins(&entry(2, 100), 1, 101));
         assert!(!claim_wins(&entry(2, 100), 1, 99));
     }

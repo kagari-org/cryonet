@@ -39,7 +39,7 @@ pub struct IceServer {
 #[derive(Clone, Copy)]
 pub struct IpEntry {
     pub node: NodeId,
-    pub claimed_at: u64,
+    pub claim: u64,
     pub seen: Instant,
 }
 
