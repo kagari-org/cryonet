@@ -18,7 +18,7 @@ use crate::{
     mesh::{
         Mesh, MeshHandle,
         igp::{Igp, IgpHandle},
-        packet::NodeId,
+        packet::{NodeId, random_u64},
     },
 };
 use anyhow::{Result, anyhow, bail};
@@ -138,7 +138,7 @@ impl Cryonet {
                 return Err(JsValue::from_str("IPv6 subnet must be a /64"));
             }
             let mut octets = subnet.first_address().octets();
-            octets[8..].copy_from_slice(&id.to_be_bytes());
+            octets[8..].copy_from_slice(&random_u64().max(1).to_be_bytes());
             addresses.push(IpAddr::V6(Ipv6Addr::from(octets)));
         }
 

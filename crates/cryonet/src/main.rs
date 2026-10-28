@@ -23,7 +23,11 @@ use cryonet_lib::{
         tap::TapManager,
         tun::TunManager,
     },
-    mesh::{Mesh, igp::Igp, packet::random_node_id},
+    mesh::{
+        Mesh,
+        igp::Igp,
+        packet::{random_node_id, random_u64},
+    },
 };
 use cryonet_uapi::DaemonInfo;
 use tokio::{sync::Mutex, task::LocalSet};
@@ -129,7 +133,7 @@ async fn main() -> Result<()> {
                             bail!("IPv6 subnet must be a /64");
                         }
                         let mut octets = subnet.first_address().octets();
-                        octets[8..].copy_from_slice(&id.to_be_bytes());
+                        octets[8..].copy_from_slice(&random_u64().max(1).to_be_bytes());
                         Ok(Ipv6Addr::from(octets))
                     })
                     .transpose()?;

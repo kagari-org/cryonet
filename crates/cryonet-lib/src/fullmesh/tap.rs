@@ -47,10 +47,12 @@ impl TapManager {
         ips: Arc<Mutex<IpMap>>,
         ipv6: Option<Ipv6Addr>,
     ) -> Result<TapManager> {
+        let tap_mac = random_mac();
         let mut builder = DeviceBuilder::new()
             .mtu(1280)
             .layer(Layer::L2)
             .name(&tap_interface_name)
+            .mac_addr(tap_mac)
             .enable(true);
         if let Some(ipv6) = ipv6 {
             builder = builder.ipv6(ipv6, 64u8);

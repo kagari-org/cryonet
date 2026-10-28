@@ -67,9 +67,19 @@ const id = (() => {
   }
   return ((words[0] & 0x1fffff) * 0x100000000 + words[1]) || 1
 })()
-const suffix = (id % 254) + 1
-const ipv4 = `10.114.0.${suffix}`
-const ipv6 = `fd72::${suffix.toString(16)}`
+const addressRand = (() => {
+  const bytes = new Uint8Array(9)
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256)
+    }
+  }
+  return bytes
+})()
+const ipv4 = `10.114.0.${(addressRand[0] % 254) + 1}`
+const ipv6 = `fd72::${Array.from(addressRand.slice(1), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
 
 const config = ref<Config>({
   cryonet: {
