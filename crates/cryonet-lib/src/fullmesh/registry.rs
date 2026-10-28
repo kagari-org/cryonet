@@ -177,6 +177,7 @@ impl Registry {
             RegistryPayload::Gossip { entries, hops } => {
                 let now = Instant::now();
                 let mut changed = Vec::new();
+                let mut moved = Vec::new();
                 {
                     let mut ips = self.ips.lock().await;
                     let wall_now = now_ms();
@@ -249,6 +250,9 @@ impl Registry {
                                     seen: now,
                                 },
                             );
+                            if previous.is_none_or(|previous| previous.node != *id) {
+                                moved.push(*ip);
+                            }
                             if let Some(previous) = previous
                                 && previous.node != *id
                             {
@@ -261,6 +265,16 @@ impl Registry {
                         }
                         if is_changed {
                             changed.push((*id, node.clone()));
+                        }
+                    }
+                }
+                if !moved.is_empty() {
+                    moved.sort();
+                    moved.dedup();
+                    let mut dm = self.dm.lock().await;
+                    for ip in moved {
+                        if let Err(err) = dm.neighbor_changed(ip).await {
+                            warn!("Failed to invalidate neighbor for {ip}: {err:?}");
                         }
                     }
                 }

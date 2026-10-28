@@ -94,6 +94,11 @@ impl DeviceManager for TapManager {
     async fn ips(&self) -> Result<Vec<IpAddr>> {
         self.handle.ips().await?
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn neighbor_changed(&mut self, ip: IpAddr) -> Result<()> {
+        self.handle.neighbor_changed(ip).await?
+    }
 }
 
 struct TapManagerInner {
@@ -102,6 +107,8 @@ struct TapManagerInner {
     device: Arc<AsyncDevice>,
     tap_mac: [u8; 6],
     macs: HashMap<NodeId, [u8; 6]>,
+    #[cfg(target_os = "linux")]
+    if_index: Option<u32>,
     send_msg_tx: mpsc::UnboundedSender<SendLoopMessage>,
     recv_tasks: HashMap<NodeId, watch::Sender<bool>>,
 }
@@ -115,6 +122,13 @@ impl TapManagerInner {
         ips: Arc<Mutex<IpMap>>,
         device: Arc<AsyncDevice>,
     ) -> Result<TapManagerInnerHandle> {
+        #[cfg(target_os = "linux")]
+        let if_index = device.name().ok().and_then(|name| {
+            let name = std::ffi::CString::new(name).ok()?;
+            let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+            (index != 0).then_some(index)
+        });
+
         let device2 = device.clone();
 
         let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
@@ -122,6 +136,8 @@ impl TapManagerInner {
             device,
             tap_mac,
             macs: HashMap::new(),
+            #[cfg(target_os = "linux")]
+            if_index,
             enable_packet_information,
             send_msg_tx,
             recv_tasks: HashMap::new(),
@@ -180,6 +196,14 @@ impl TapManagerInner {
         Ok(())
     }
 
+    async fn neighbor_changed(&mut self, _ip: IpAddr) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(if_index) = self.if_index {
+            delete_neighbor(if_index, _ip);
+        }
+        Ok(())
+    }
+
     fn mac(&mut self, node_id: NodeId) -> [u8; 6] {
         if let Some(mac) = self.macs.get(&node_id) {
             return *mac;
@@ -214,6 +238,40 @@ enum SendLoopMessage {
     Disconnected(NodeId),
 }
 
+#[cfg(target_os = "linux")]
+fn delete_neighbor(if_index: u32, ip: IpAddr) {
+    use netlink_packet_core::{NLM_F_REQUEST, NetlinkHeader, NetlinkMessage, NetlinkPayload};
+    use netlink_packet_route::{
+        AddressFamily, RouteNetlinkMessage,
+        neighbour::{NeighbourAddress, NeighbourAttribute, NeighbourMessage},
+    };
+    use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
+
+    let mut neighbour = NeighbourMessage::default();
+    neighbour.header.family = match ip {
+        IpAddr::V4(_) => AddressFamily::Inet,
+        IpAddr::V6(_) => AddressFamily::Inet6,
+    };
+    neighbour.header.ifindex = if_index;
+    neighbour
+        .attributes
+        .push(NeighbourAttribute::Destination(NeighbourAddress::from(ip)));
+
+    let mut message = NetlinkMessage::new(
+        NetlinkHeader::default(),
+        NetlinkPayload::InnerMessage(RouteNetlinkMessage::DelNeighbour(neighbour)),
+    );
+    message.header.flags = NLM_F_REQUEST;
+    message.header.sequence_number = 1;
+    message.finalize();
+
+    let mut buf = vec![0; message.buffer_len()];
+    message.serialize(&mut buf);
+    if let Ok(socket) = Socket::new(NETLINK_ROUTE) {
+        let _ = socket.send_to(&buf, &SocketAddr::new(0, 0), 0);
+    }
+}
+
 async fn send_loop(
     keepalive_interval: Duration,
     enable_packet_information: bool,
@@ -239,6 +297,9 @@ async fn send_loop(
                     senders.insert(node_id, sender);
                 }
                 Some(SendLoopMessage::Disconnected(node_id)) => {
+                    if let Some(mac) = by_node.remove(&node_id) {
+                        by_mac.remove(&mac);
+                    }
                     senders.remove(&node_id);
                 }
             },

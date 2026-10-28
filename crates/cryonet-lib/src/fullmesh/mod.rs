@@ -55,6 +55,9 @@ pub trait DeviceManager {
     ) -> Result<()>;
     async fn disconnected(&mut self, node_id: NodeId) -> Result<()>;
     async fn ips(&self) -> Result<Vec<IpAddr>>;
+    async fn neighbor_changed(&mut self, _ip: IpAddr) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
