@@ -3,7 +3,6 @@
 'require network';
 'require uci';
 
-network.registerErrorCode('missing id', _('A node ID is required.'));
 network.registerErrorCode('INVALID_INTERFACE', _('Use an interface section name containing 1–60 ASCII letters, digits or underscores.'));
 network.registerErrorCode('INVALID_DEVICE', _('Invalid TAP device name.'));
 network.registerErrorCode('DEVICE_IN_USE', _('The TAP device already exists. Choose another name or stop its owner.'));
@@ -48,11 +47,17 @@ return network.registerProtocol('cryonet', {
 		let o;
 
 		o = s.taboption('general', form.Value, 'id', _('Node ID'),
-			_('Unique within the mesh. Enter a 32-bit unsigned decimal number or a hexadecimal number prefixed with 0x.'));
-		o.rmempty = false;
+			_('Unique within the mesh. Enter a 64-bit unsigned decimal number or a hexadecimal number prefixed with 0x. Leave empty to generate a random ID on each start.'));
+		o.rmempty = true;
 		o.validate = (section_id, value) => {
-			return /^(?:[0-9]+|0x[0-9a-f]+)$/i.test(value || '') && Number(value) <= 4294967295
-				? true : _('Enter a node ID between 0 and 4294967295 (hexadecimal with 0x is also accepted).');
+			if (!value) {
+				return true;
+			}
+			const invalid = _('Enter a node ID between 0 and 18446744073709551615 (hexadecimal with 0x is also accepted).');
+			if (!/^(?:[0-9]+|0x[0-9a-f]+)$/i.test(value)) {
+				return invalid;
+			}
+			return BigInt(value) <= 0xffffffffffffffffn ? true : invalid;
 		};
 
 		o = s.taboption('general', form.Value, 'token', _('Token'));

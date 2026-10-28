@@ -3,7 +3,13 @@ use std::{any::Any, fmt::Debug};
 use dyn_clone::{DynClone, clone_trait_object};
 use serde::{Deserialize, Serialize};
 
-pub type NodeId = u32;
+pub use cryonet_uapi::NodeId;
+
+pub fn random_node_id() -> NodeId {
+    let value = uuid::Uuid::new_v4().as_u128();
+    let id = (value as u64) ^ ((value >> 64) as u64);
+    id.max(1)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Packet {

@@ -53,9 +53,10 @@ const Config = Schema.object({
   }),
 }).description('cryonet')
 
-const id = Math.floor(Math.random() * 254) + 1
-const ipv4 = `10.114.0.${id}`
-const ipv6 = `fd72::${id.toString(16)}`
+const id = Math.floor(Math.random() * 0xffffffff) + 1
+const suffix = (id % 254) + 1
+const ipv4 = `10.114.0.${suffix}`
+const ipv6 = `fd72::${suffix.toString(16)}`
 
 const config = ref<Config>({
   cryonet: {

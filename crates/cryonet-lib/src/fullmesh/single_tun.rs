@@ -14,9 +14,9 @@ use tun_rs::DeviceBuilder;
 
 use crate::{
     errors::CryonetError,
-    fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
+    fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager, IpMap},
     mesh::packet::NodeId,
-    utils::{Instant, delayed_interval, jitter},
+    utils::{delayed_interval, jitter},
 };
 
 pub struct SingleTunManager {
@@ -35,7 +35,7 @@ impl SingleTunManager {
     pub fn new(
         interface_name: String,
         enable_packet_information: bool,
-        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        ips: Arc<Mutex<IpMap>>,
     ) -> Result<SingleTunManager> {
         let mut builder = DeviceBuilder::new()
             .mtu(1280)
@@ -58,7 +58,7 @@ impl SingleTunManager {
     pub unsafe fn new_from_fd(
         fd: RawFd,
         enable_packet_information: bool,
-        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        ips: Arc<Mutex<IpMap>>,
         addresses: Vec<IpAddr>,
     ) -> Result<SingleTunManager> {
         Self::new_with_parameters(
@@ -74,7 +74,7 @@ impl SingleTunManager {
         device: Arc<AsyncDevice>,
         enable_packet_information: bool,
         keepalive_interval: Duration,
-        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        ips: Arc<Mutex<IpMap>>,
         #[cfg(target_os = "android")] addresses: Vec<IpAddr>,
     ) -> Result<SingleTunManager> {
         let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
@@ -149,7 +149,7 @@ enum SendLoopMessage {
 async fn send_loop(
     keepalive_interval: Duration,
     enable_packet_information: bool,
-    ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+    ips: Arc<Mutex<IpMap>>,
     device: Arc<AsyncDevice>,
     mut msg_rx: mpsc::UnboundedReceiver<SendLoopMessage>,
 ) {
@@ -209,7 +209,7 @@ async fn send_loop(
                 let node_id = {
                     let ips = ips.lock().await;
                     match ips.get(&dst) {
-                        Some((node_id, _)) => *node_id,
+                        Some(entry) => entry.node,
                         None => {
                             warn!("Received packet for unknown destination address: {dst}");
                             continue;

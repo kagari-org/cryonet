@@ -29,6 +29,19 @@ pub fn delayed_interval(period: Duration) -> Interval {
     interval
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn now_ms() -> u64 {
+    web_sys::js_sys::Date::now() as u64
+}
+
 pub(crate) fn random_u64() -> u64 {
     thread_local! {
         static STATE: Cell<u64> = Cell::new(seed());

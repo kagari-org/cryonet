@@ -30,9 +30,9 @@ use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
 
 use crate::{
     errors::CryonetError,
-    fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
+    fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager, IpMap},
     mesh::packet::NodeId,
-    utils::{Instant, delayed_interval, jitter, random_mac},
+    utils::{delayed_interval, jitter, random_mac},
 };
 
 pub struct TapManager {
@@ -44,7 +44,7 @@ impl TapManager {
     pub fn new(
         tap_interface_name: String,
         enable_packet_information: bool,
-        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        ips: Arc<Mutex<IpMap>>,
     ) -> Result<TapManager> {
         let device = Arc::new(
             DeviceBuilder::new()
@@ -61,7 +61,7 @@ impl TapManager {
     pub fn new_with_device(
         tap_mac: [u8; 6],
         enable_packet_information: bool,
-        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        ips: Arc<Mutex<IpMap>>,
         device: Arc<AsyncDevice>,
     ) -> Result<TapManager> {
         Ok(TapManager {
@@ -112,7 +112,7 @@ impl TapManagerInner {
         tap_mac: [u8; 6],
         keepalive_interval: Duration,
         enable_packet_information: bool,
-        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        ips: Arc<Mutex<IpMap>>,
         device: Arc<AsyncDevice>,
     ) -> Result<TapManagerInnerHandle> {
         let device2 = device.clone();
@@ -217,7 +217,7 @@ enum SendLoopMessage {
 async fn send_loop(
     keepalive_interval: Duration,
     enable_packet_information: bool,
-    ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+    ips: Arc<Mutex<IpMap>>,
     device: Arc<AsyncDevice>,
     device_mac: [u8; 6],
     mut msg_rx: mpsc::UnboundedReceiver<SendLoopMessage>,
@@ -298,7 +298,7 @@ async fn send_loop(
                         let src_ip = arp.get_target_proto_addr();
                         let node_id = {
                             let ips = ips.lock().await;
-                            ips.get(&IpAddr::V4(src_ip)).map(|(node_id, _)| *node_id)
+                            ips.get(&IpAddr::V4(src_ip)).map(|entry| entry.node)
                         };
                         let Some(node_id) = node_id else {
                             warn!("Received ARP packet for unknown IP address: {src_ip}");
@@ -325,7 +325,7 @@ async fn send_loop(
                         let src_ip = ns.get_target_addr();
                         let node_id = {
                             let ips = ips.lock().await;
-                            ips.get(&IpAddr::V6(src_ip)).map(|(node_id, _)| *node_id)
+                            ips.get(&IpAddr::V6(src_ip)).map(|entry| entry.node)
                         };
                         let Some(node_id) = node_id else {
                             warn!("Received NDP Neighbor Solicitation packet for unknown IP address: {src_ip}");

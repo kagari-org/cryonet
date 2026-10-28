@@ -1,5 +1,6 @@
 use std::{
     any::Any,
+    collections::HashMap,
     future::Future,
     net::{IpAddr, SocketAddr},
     pin::Pin,
@@ -10,7 +11,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use crate::mesh::packet::NodeId;
+use crate::{mesh::packet::NodeId, utils::Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod conn_rustrtc_dc;
@@ -34,6 +35,15 @@ pub struct IceServer {
     pub username: Option<String>,
     pub credential: Option<String>,
 }
+
+#[derive(Clone, Copy)]
+pub struct IpEntry {
+    pub node: NodeId,
+    pub claimed_at: u64,
+    pub seen: Instant,
+}
+
+pub type IpMap = HashMap<IpAddr, IpEntry>;
 
 #[async_trait(?Send)]
 pub trait DeviceManager {
@@ -96,7 +106,7 @@ pub type NotifyFn = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<()>>>>>;
 // Pick one side of the pair deterministically so both peers agree.
 fn pair_initiator(a: NodeId, b: NodeId) -> NodeId {
     let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-    let mut hash = ((lo as u64) << 32) | hi as u64;
+    let mut hash = lo ^ hi.rotate_left(32);
     // splitmix64 finalizer, stable across runs and versions
     hash ^= hash >> 30;
     hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -118,6 +128,27 @@ mod tests {
     fn pair_initiator_is_symmetric() {
         for a in 0..256 {
             for b in 0..256 {
+                let initiator = pair_initiator(a, b);
+                assert_eq!(initiator, pair_initiator(b, a));
+                assert!(initiator == a || initiator == b);
+                if a != b {
+                    assert_ne!(is_initiator(a, b), is_initiator(b, a));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pair_initiator_handles_wide_ids() {
+        let ids = [
+            1u64,
+            0x1234_5678_9abc_def0,
+            0x8000_0000_0000_0001,
+            0xffff_ffff_ffff_fffe,
+            0x0000_0001_0000_0000,
+        ];
+        for &a in &ids {
+            for &b in &ids {
                 let initiator = pair_initiator(a, b);
                 assert_eq!(initiator, pair_initiator(b, a));
                 assert!(initiator == a || initiator == b);

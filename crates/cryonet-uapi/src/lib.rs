@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "android")]
 uniffi::setup_scaffolding!();
 
-pub type NodeId = u32;
+pub type NodeId = u64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(target_os = "android", derive(uniffi::Record))]

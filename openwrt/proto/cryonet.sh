@@ -28,7 +28,6 @@ proto_cryonet_setup() {
 	json_get_vars id token listen servers ice_servers candidate_filter_prefixes \
 		tap_interface_name encrypt_local_packets enable_packet_information ipaddr ip6addr
 
-	[ -n "$id" ] || { proto_notify_error "$config" "missing id"; proto_block_restart "$config"; return 1; }
 	case "$config" in
 		''|*[!a-zA-Z0-9_]*) proto_notify_error "$config" INVALID_INTERFACE; proto_block_restart "$config"; return 1 ;;
 	esac
@@ -63,7 +62,11 @@ proto_cryonet_setup() {
 		proto_notify_error "$config" SOCKET_CLEANUP_FAILED
 		return 1
 	}
-	set -- /usr/bin/cryonet "$id" --tap-mode --ctl-path "/var/run/cryonet-$config.ctl"
+	if [ -n "$id" ]; then
+		set -- /usr/bin/cryonet "$id" --tap-mode --ctl-path "/var/run/cryonet-$config.ctl"
+	else
+		set -- /usr/bin/cryonet --tap-mode --ctl-path "/var/run/cryonet-$config.ctl"
+	fi
 	[ -n "$token" ] && set -- "$@" --token "$token"
 	[ -n "$listen" ] && set -- "$@" --listen "$listen"
 	[ -n "$servers" ] && set -- "$@" --servers "$servers"

@@ -19,7 +19,7 @@ use cryonet_lib::{
         tap::TapManager,
         tun::TunManager,
     },
-    mesh::{Mesh, igp::Igp},
+    mesh::{Mesh, igp::Igp, packet::random_node_id},
 };
 use cryonet_uapi::{DaemonInfo, NodeId};
 use tokio::{sync::Mutex, task::LocalSet};
@@ -32,7 +32,7 @@ mod uapi;
 #[derive(Debug, Parser)]
 struct Args {
     #[clap(env, value_parser = maybe_hex::<NodeId>)]
-    id: NodeId,
+    id: Option<NodeId>,
     #[clap(env, long, short)]
     token: Option<String>,
     #[clap(env, long, short, default_value = "0.0.0.0:2333")]
@@ -104,6 +104,7 @@ async fn main() -> Result<()> {
         .run_until(async move {
             let result: Result<()> = try {
                 let started_at = std::time::Instant::now();
+                let id = args.id.unwrap_or_else(random_node_id);
                 let (mode, interface) = if args.tap_mode {
                     ("tap".to_owned(), args.tap_interface_name.clone())
                 } else if args.single_tun_mode {
@@ -115,7 +116,7 @@ async fn main() -> Result<()> {
                     ("tun".to_owned(), format!("{}<node>", args.interface_prefix))
                 };
                 let info = DaemonInfo {
-                    id: args.id,
+                    id,
                     version: env!("CARGO_PKG_VERSION").to_owned(),
                     uptime_ms: 0,
                     mode,
@@ -137,11 +138,10 @@ async fn main() -> Result<()> {
                         .collect(),
                     local_ips: Vec::new(),
                 };
-                let mesh = Mesh::new(args.id);
-                let igp = Igp::new(args.id, mesh.clone()).await?;
-                let mgr =
-                    ConnManager::new(args.id, mesh.clone(), args.token, args.servers, args.listen)
-                        .await?;
+                let mesh = Mesh::new(id);
+                let igp = Igp::new(id, mesh.clone()).await?;
+                let mgr = ConnManager::new(id, mesh.clone(), args.token, args.servers, args.listen)
+                    .await?;
                 let ips = Arc::new(Mutex::new(HashMap::new()));
                 let dm: Arc<Mutex<Box<dyn DeviceManager>>> = if args.tap_mode {
                     Arc::new(Mutex::new(Box::new(TapManager::new(
@@ -162,7 +162,7 @@ async fn main() -> Result<()> {
                     ))))
                 };
                 let registry = Registry::new(
-                    args.id,
+                    id,
                     mesh.clone(),
                     dm.clone(),
                     vec![ConnectionType::Ice, ConnectionType::DataChannel],
@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
                 )
                 .await?;
                 let fm = FullMesh::new(
-                    args.id,
+                    id,
                     mesh.clone(),
                     registry.clone(),
                     dm.clone(),

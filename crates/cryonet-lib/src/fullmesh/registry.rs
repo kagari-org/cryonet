@@ -18,13 +18,19 @@ use tokio::sync::{
 use tracing::{debug, error, warn};
 
 use crate::{
-    fullmesh::{DeviceManager, NotifyFn},
+    fullmesh::{DeviceManager, IpEntry, IpMap, NotifyFn},
     mesh::{
         MeshEvent, MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
-    utils::{Instant, Interval, delayed_interval, jitter, random_below},
+    utils::{Instant, Interval, delayed_interval, jitter, now_ms, random_below},
 };
+
+const MAX_CLAIM_SKEW_MS: u64 = 5 * 60 * 1000;
+
+fn claim_wins(current: &IpEntry, node: NodeId, claimed_at: u64) -> bool {
+    claimed_at > current.claimed_at || (claimed_at == current.claimed_at && node < current.node)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionType {
@@ -36,6 +42,7 @@ pub enum ConnectionType {
 pub struct Node {
     pub connection_types: Vec<ConnectionType>,
     pub ips: Vec<IpAddr>,
+    pub claimed_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,7 +76,10 @@ pub struct Registry {
     gossip_hops: u8,
 
     nodes: HashMap<NodeId, (Node, Instant)>,
-    ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+    ips: Arc<Mutex<IpMap>>,
+    claimed_at: u64,
+    last_ips: Option<Vec<IpAddr>>,
+    conflicts: HashSet<(IpAddr, NodeId)>,
     notifiers: Vec<Weak<NotifyFn>>,
 }
 
@@ -80,7 +90,7 @@ impl Registry {
         mesh: MeshHandle,
         dm: Arc<Mutex<Box<dyn DeviceManager>>>,
         connection_types: Vec<ConnectionType>,
-        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        ips: Arc<Mutex<IpMap>>,
     ) -> Result<RegistryHandle> {
         Self::new_with_parameters(
             id,
@@ -101,7 +111,7 @@ impl Registry {
         connection_types: Vec<ConnectionType>,
         gossip_interval: Duration,
         node_timeout: Duration,
-        ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
+        ips: Arc<Mutex<IpMap>>,
     ) -> Result<RegistryHandle> {
         let packet_rx = mesh
             .add_dispatchee(Box::new(|packet| {
@@ -129,6 +139,9 @@ impl Registry {
             gossip_hops: 6,
             nodes: HashMap::new(),
             ips,
+            claimed_at: 0,
+            last_ips: None,
+            conflicts: HashSet::new(),
             notifiers: Vec::new(),
         });
         tokio::task::spawn_local(future);
@@ -163,6 +176,7 @@ impl Registry {
                 let mut changed = Vec::new();
                 {
                     let mut ips = self.ips.lock().await;
+                    let wall_now = now_ms();
                     for (id, node) in entries {
                         if *id == self.id {
                             continue;
@@ -170,7 +184,53 @@ impl Registry {
                         let is_changed = self.nodes.get(id).is_none_or(|(known, _)| known != node);
                         self.nodes.insert(*id, (node.clone(), now));
                         for ip in &node.ips {
-                            ips.insert(*ip, (*id, now));
+                            let claim = node.claimed_at;
+                            if claim > wall_now.saturating_add(MAX_CLAIM_SKEW_MS) {
+                                if self.conflicts.insert((*ip, *id)) {
+                                    warn!(
+                                        "Ignoring claim for {ip} from {id:X}: {claim} is too far in the future"
+                                    );
+                                }
+                                continue;
+                            }
+                            let current = ips.get(ip).copied();
+                            let wins = match current {
+                                Some(current) => claim_wins(&current, *id, claim),
+                                None => true,
+                            };
+                            if !wins {
+                                let current = current.unwrap();
+                                if current.node != *id && self.conflicts.insert((*ip, *id)) {
+                                    warn!(
+                                        "Ignoring claim for {ip} from {id:X}: owned by {:X} (claim {}, ours {claim})",
+                                        current.node, current.claimed_at
+                                    );
+                                }
+                                if current.node == *id
+                                    && current.claimed_at == claim
+                                    && let Some(current) = ips.get_mut(ip)
+                                {
+                                    current.seen = now;
+                                }
+                                continue;
+                            }
+                            let previous = ips.insert(
+                                *ip,
+                                IpEntry {
+                                    node: *id,
+                                    claimed_at: claim,
+                                    seen: now,
+                                },
+                            );
+                            if let Some(previous) = previous
+                                && previous.node != *id
+                            {
+                                warn!(
+                                    "{ip} moved from {:X} to {id:X} (claim {claim})",
+                                    previous.node
+                                );
+                            }
+                            self.conflicts.remove(&(*ip, *id));
                         }
                         if is_changed {
                             changed.push((*id, node.clone()));
@@ -191,7 +251,7 @@ impl Registry {
     #[no_reply]
     async fn gossip_tick(&mut self) -> Result<()> {
         self.gc().await?;
-        let node = self.local_node().await?;
+        let node = self.refresh_local_node().await?;
         self.last_node = Some(node.clone());
         self.send_gossip(vec![(self.id, node)], self.gossip_hops, None)
             .await?;
@@ -200,7 +260,7 @@ impl Registry {
 
     #[no_reply]
     async fn ip_tick(&mut self) -> Result<()> {
-        let node = self.local_node().await?;
+        let node = self.refresh_local_node().await?;
         if self.last_node.as_ref() == Some(&node) {
             return Ok(());
         }
@@ -216,7 +276,7 @@ impl Registry {
             Ok(event) => event,
             Err(RecvError::Lagged(_)) => {
                 // Push our own record again; the next gossip rounds repair the rest.
-                let node = self.local_node().await?;
+                let node = self.refresh_local_node().await?;
                 self.send_gossip(vec![(self.id, node)], self.gossip_hops, None)
                     .await?;
                 return Ok(());
@@ -235,13 +295,24 @@ impl Registry {
     }
 
     #[skip]
-    async fn local_node(&self) -> Result<Node> {
+    async fn device_ips(&self) -> Result<Vec<IpAddr>> {
         let mut ips = self.dm.lock().await.ips().await?;
         ips.sort();
         ips.dedup();
+        Ok(ips)
+    }
+
+    #[skip]
+    async fn refresh_local_node(&mut self) -> Result<Node> {
+        let ips = self.device_ips().await?;
+        if self.last_ips.as_ref() != Some(&ips) {
+            self.last_ips = Some(ips.clone());
+            self.claimed_at = now_ms();
+        }
         Ok(Node {
             connection_types: self.connection_types.clone(),
             ips,
+            claimed_at: self.claimed_at,
         })
     }
 
@@ -267,15 +338,17 @@ impl Registry {
             routes.contains_key(id) || now.duration_since(*last_seen) < self.node_timeout
         });
         let live: HashSet<NodeId> = self.nodes.keys().copied().collect();
-        self.ips.lock().await.retain(|_, (id, last_seen)| {
-            live.contains(id) || now.duration_since(*last_seen) < self.node_timeout
+        let mut ips = self.ips.lock().await;
+        ips.retain(|_, entry| {
+            live.contains(&entry.node) || now.duration_since(entry.seen) < self.node_timeout
         });
+        self.conflicts.retain(|(ip, _)| ips.contains_key(ip));
         Ok(())
     }
 
     #[skip]
-    async fn send_seed(&self, dst: NodeId) -> Result<()> {
-        let local = self.local_node().await?;
+    async fn send_seed(&mut self, dst: NodeId) -> Result<()> {
+        let local = self.refresh_local_node().await?;
         let mut entries = self
             .nodes
             .iter()
@@ -368,8 +441,8 @@ impl Registry {
     }
 
     pub async fn get_local_ips(&self) -> Vec<String> {
-        match self.local_node().await {
-            Ok(node) => node.ips.iter().map(|ip| ip.to_string()).collect(),
+        match self.device_ips().await {
+            Ok(ips) => ips.iter().map(|ip| ip.to_string()).collect(),
             Err(err) => {
                 warn!("Failed to read local IP addresses: {err:?}");
                 Vec::new()
@@ -382,5 +455,31 @@ fn connection_type_name(connection_type: &ConnectionType) -> &'static str {
     match connection_type {
         ConnectionType::Ice => "ice",
         ConnectionType::DataChannel => "datachannel",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(node: NodeId, claimed_at: u64) -> IpEntry {
+        IpEntry {
+            node,
+            claimed_at,
+            seen: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn claim_wins_prefers_newer_claim() {
+        assert!(claim_wins(&entry(2, 100), 1, 101));
+        assert!(!claim_wins(&entry(2, 100), 1, 99));
+    }
+
+    #[test]
+    fn claim_wins_breaks_ties_by_node_id() {
+        assert!(claim_wins(&entry(2, 100), 1, 100));
+        assert!(!claim_wins(&entry(1, 100), 2, 100));
+        assert!(!claim_wins(&entry(1, 100), 1, 100));
     }
 }
