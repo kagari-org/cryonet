@@ -67,6 +67,7 @@ pub struct Registry {
     packet_rx: mpsc::Receiver<Packet>,
     gossip_ticker: Interval,
     ip_ticker: Interval,
+    sync_ticker: Interval,
     last_node: Option<Node>,
     mesh_event_rx: broadcast::Receiver<MeshEvent>,
     node_timeout: Duration,
@@ -131,6 +132,7 @@ impl Registry {
             packet_rx,
             gossip_ticker: delayed_interval(gossip_interval),
             ip_ticker: delayed_interval(Duration::from_secs(1)),
+            sync_ticker: delayed_interval(jitter(gossip_interval * 6, 0.1)),
             last_node: None,
             mesh_event_rx,
             node_timeout,
@@ -155,6 +157,7 @@ impl Registry {
             selection!(self.mesh_event_rx.recv().await, handle_mesh_event, it => it),
             selection!(self.gossip_ticker.tick().await, gossip_tick),
             selection!(self.ip_ticker.tick().await, ip_tick),
+            selection!(self.sync_ticker.tick().await, sync_tick),
         ]
     }
 
@@ -181,8 +184,31 @@ impl Registry {
                         if *id == self.id {
                             continue;
                         }
+                        if let Some((known, _)) = self.nodes.get(id)
+                            && node.claimed_at < known.claimed_at
+                        {
+                            debug!(
+                                "Ignoring stale registry entry for {id:X}: claim {} < {}",
+                                node.claimed_at, known.claimed_at
+                            );
+                            continue;
+                        }
                         let is_changed = self.nodes.get(id).is_none_or(|(known, _)| known != node);
-                        self.nodes.insert(*id, (node.clone(), now));
+                        let last_seen = if is_changed || *hops > 0 {
+                            now
+                        } else {
+                            self.nodes.get(id).map_or(now, |(_, last_seen)| *last_seen)
+                        };
+                        let previous = self.nodes.insert(*id, (node.clone(), last_seen));
+                        if let Some((previous, _)) = previous {
+                            for ip in &previous.ips {
+                                if !node.ips.contains(ip)
+                                    && ips.get(ip).is_some_and(|entry| entry.node == *id)
+                                {
+                                    ips.remove(ip);
+                                }
+                            }
+                        }
                         for ip in &node.ips {
                             let claim = node.claimed_at;
                             if claim > wall_now.saturating_add(MAX_CLAIM_SKEW_MS) {
@@ -208,6 +234,7 @@ impl Registry {
                                 }
                                 if current.node == *id
                                     && current.claimed_at == claim
+                                    && *hops > 0
                                     && let Some(current) = ips.get_mut(ip)
                                 {
                                     current.seen = now;
@@ -271,6 +298,26 @@ impl Registry {
     }
 
     #[no_reply]
+    async fn sync_tick(&mut self) -> Result<()> {
+        let peers = self
+            .mesh
+            .get_routes()
+            .await?
+            .into_keys()
+            .filter(|id| *id != self.id)
+            .collect::<Vec<_>>();
+        let Some(dst) = peers.get(random_below(peers.len())).copied() else {
+            return Ok(());
+        };
+        if let Err(err) = self.send_seed(dst).await {
+            debug!("Failed to sync registry with {dst:X}: {err:?}");
+        } else {
+            debug!("Synced registry with {dst:X}");
+        }
+        Ok(())
+    }
+
+    #[no_reply]
     async fn handle_mesh_event(&mut self, event: Result<MeshEvent, RecvError>) -> Result<()> {
         let event = match event {
             Ok(event) => event,
@@ -307,7 +354,7 @@ impl Registry {
         let ips = self.device_ips().await?;
         if self.last_ips.as_ref() != Some(&ips) {
             self.last_ips = Some(ips.clone());
-            self.claimed_at = now_ms();
+            self.claimed_at = now_ms().max(self.claimed_at.saturating_add(1));
         }
         Ok(Node {
             connection_types: self.connection_types.clone(),
@@ -349,10 +396,11 @@ impl Registry {
     #[skip]
     async fn send_seed(&mut self, dst: NodeId) -> Result<()> {
         let local = self.refresh_local_node().await?;
+        let routes = self.mesh.get_routes().await?;
         let mut entries = self
             .nodes
             .iter()
-            .filter(|(id, _)| **id != dst)
+            .filter(|(id, _)| **id != dst && routes.contains_key(*id))
             .map(|(id, (node, _))| (*id, node.clone()))
             .collect::<Vec<_>>();
         entries.push((self.id, local));
