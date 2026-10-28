@@ -152,6 +152,8 @@ impl TapManagerInner {
             enable_packet_information,
             ips,
             device2,
+            #[cfg(target_os = "linux")]
+            if_index,
             tap_mac,
             send_msg_rx,
         );
@@ -194,6 +196,7 @@ impl TapManagerInner {
         self.send_msg_tx
             .send(SendLoopMessage::Disconnected(node_id))
             .map_err(|_| anyhow!("Failed to send Disconnected"))?;
+        self.macs.remove(&node_id);
         if let Some(stop_tx) = self.recv_tasks.remove(&node_id) {
             let _ = stop_tx.send(true);
         }
@@ -281,6 +284,7 @@ async fn send_loop(
     enable_packet_information: bool,
     ips: Arc<Mutex<IpMap>>,
     device: Arc<AsyncDevice>,
+    #[cfg(target_os = "linux")] if_index: Option<u32>,
     device_mac: [u8; 6],
     mut msg_rx: mpsc::UnboundedReceiver<SendLoopMessage>,
 ) {
@@ -305,6 +309,20 @@ async fn send_loop(
                         by_mac.remove(&mac);
                     }
                     senders.remove(&node_id);
+                    #[cfg(target_os = "linux")]
+                    if let Some(if_index) = if_index {
+                        let peer_ips: Vec<IpAddr> = {
+                            let ip_map = ips.lock().await;
+                            ip_map
+                                .iter()
+                                .filter(|(_, entry)| entry.node == node_id)
+                                .map(|(ip, _)| *ip)
+                                .collect()
+                        };
+                        for ip in peer_ips {
+                            delete_neighbor(if_index, ip);
+                        }
+                    }
                 }
             },
             // Moving the keepalive logic to otherside is too annoying, so just send keepalive from here.
