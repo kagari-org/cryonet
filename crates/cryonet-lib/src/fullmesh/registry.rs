@@ -23,7 +23,7 @@ use crate::{
         MeshEvent, MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
-    time::{Instant, Interval, delayed_interval, jitter, random_below},
+    utils::{Instant, Interval, delayed_interval, jitter, random_below},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

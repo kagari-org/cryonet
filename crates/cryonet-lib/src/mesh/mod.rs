@@ -19,7 +19,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     errors::CryonetError,
-    time::{Instant, Interval, delayed_interval, jitter_up},
+    utils::{Instant, Interval, delayed_interval, jitter_up},
 };
 
 pub mod igp;

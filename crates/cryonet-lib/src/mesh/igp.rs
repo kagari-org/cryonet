@@ -21,7 +21,7 @@ use crate::mesh::{
     packet::{NodeId, Packet, Payload},
     seq::{Seq, SeqMetric},
 };
-use crate::time::{Instant, Interval, interval, jitter_down};
+use crate::utils::{Instant, Interval, interval, jitter_down};
 
 pub struct Igp {
     handle: IgpHandle,

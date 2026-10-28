@@ -31,7 +31,6 @@ interface CryonetConfig {
   servers: string[]
   ice_servers: IceServer[]
   enable_packet_information: boolean
-  tap_mac_prefix: number
   addresses: string[]
 }
 
@@ -50,7 +49,6 @@ const Config = Schema.object({
       credential: Schema.string(),
     })),
     enable_packet_information: Schema.boolean().required(),
-    tap_mac_prefix: Schema.number().required(),
     addresses: Schema.array(Schema.string()),
   }),
 }).description('cryonet')
@@ -65,7 +63,6 @@ const config = ref<Config>({
     servers: ['ws://127.0.0.1:2333'],
     ice_servers: [],
     enable_packet_information: false,
-    tap_mac_prefix: 0x0200,
     addresses: [ipv4, ipv6],
   },
 })
@@ -76,7 +73,6 @@ const initial = ref<Config>({
     servers: ['ws://127.0.0.1:2333'],
     ice_servers: [],
     enable_packet_information: false,
-    tap_mac_prefix: 0x0200,
     addresses: [ipv4, ipv6],
   },
 })
@@ -95,7 +91,9 @@ async function run() {
   file.value!.click()
   await promise
 
-  const mac = [...Cryonet.generate_tap_mac(config.value.cryonet.id, config.value.cryonet.tap_mac_prefix)].map(x => x.toString(16).padStart(2, '0')).join(':')
+  const macBytes = crypto.getRandomValues(new Uint8Array(6))
+  macBytes[0] = (macBytes[0]! & 0xfc) | 0x02
+  const mac = [...macBytes].map(x => x.toString(16).padStart(2, '0')).join(':')
 
   const v86 = new V86({
     wasm_path: v86wasm,
@@ -137,7 +135,10 @@ async function run() {
   })
 
   config.value.cryonet.addresses.push(macToLinkLocal(mac))
-  const cryonet = await Cryonet.init(config.value.cryonet, send, recv)
+  const cryonet = await Cryonet.init({
+    ...config.value.cryonet,
+    mac: mac.split(':').map(x => parseInt(x, 16)),
+  }, send, recv)
 
   // @ts-ignore
   globalThis.cryonet = cryonet

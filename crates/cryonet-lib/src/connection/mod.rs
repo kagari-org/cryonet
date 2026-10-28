@@ -26,7 +26,7 @@ use tokio::net::TcpListener;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_tungstenite::accept_async;
 
-use crate::time::{Interval, delayed_interval, jitter, timeout};
+use crate::utils::{Interval, delayed_interval, jitter, timeout};
 
 pub mod link;
 

@@ -8,46 +8,28 @@ pub use wasmtimer::{
     tokio::{Interval, MissedTickBehavior, interval, timeout},
 };
 
-// Spread a period uniformly over `[1 - ratio, 1 + ratio]` so independently
-// started nodes do not keep sending on the same schedule.
 pub fn jitter(period: Duration, ratio: f64) -> Duration {
     let ratio = ratio.clamp(0.0, 1.0);
     period.mul_f64(1.0 - ratio + 2.0 * ratio * random_unit())
 }
 
-// Like `jitter`, but never earlier than the nominal period. Used for retries,
-// where retrying ahead of the backoff would add pointless duplicates.
 pub fn jitter_up(period: Duration, ratio: f64) -> Duration {
     let ratio = ratio.clamp(0.0, 1.0);
     period.mul_f64(1.0 + ratio * random_unit())
 }
 
-// Shorten a period uniformly over `[1 - ratio, 1]`. Used for protocol timers
-// whose nominal period is an upper bound that must not be exceeded.
 pub fn jitter_down(period: Duration, ratio: f64) -> Duration {
     let ratio = ratio.clamp(0.0, 1.0);
     period.mul_f64(1.0 - ratio * random_unit())
 }
 
-// Missed ticks are dropped rather than replayed in a burst.
 pub fn delayed_interval(period: Duration) -> Interval {
     let mut interval = interval(period);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     interval
 }
 
-// Uniform value in `[0, bound)`, used for gossip peer and entry selection.
-pub(crate) fn random_below(bound: usize) -> usize {
-    if bound == 0 {
-        0
-    } else {
-        (random_unit() * bound as f64) as usize
-    }
-}
-
-// A cheap thread-local PRNG avoids pulling in another dependency on both
-// native and wasm; cryptographic quality is irrelevant for jitter.
-fn random_unit() -> f64 {
+pub(crate) fn random_u64() -> u64 {
     thread_local! {
         static STATE: Cell<u64> = Cell::new(seed());
     }
@@ -57,8 +39,27 @@ fn random_unit() -> f64 {
         value ^= value >> 7;
         value ^= value << 17;
         state.set(value);
-        (value >> 11) as f64 / (1u64 << 53) as f64
+        value
     })
+}
+
+fn random_unit() -> f64 {
+    (random_u64() >> 11) as f64 / (1u64 << 53) as f64
+}
+
+pub(crate) fn random_below(bound: usize) -> usize {
+    if bound == 0 {
+        0
+    } else {
+        (random_unit() * bound as f64) as usize
+    }
+}
+
+pub(crate) fn random_mac() -> [u8; 6] {
+    let bytes = random_u64().to_be_bytes();
+    let mut mac = [bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]];
+    mac[0] = (mac[0] & 0xfc) | 0x02;
+    mac
 }
 
 fn seed() -> u64 {

@@ -20,7 +20,7 @@ pub mod android;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-mod time;
+mod utils;
 
 pub async fn collect_stats(
     mesh: &MeshHandle,

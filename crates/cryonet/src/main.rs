@@ -54,8 +54,6 @@ struct Args {
 
     #[clap(env, long, default_value_t = false)]
     tap_mode: bool,
-    #[clap(env, long, default_value_t = 0x0200)]
-    tap_mac_prefix: u16,
     #[clap(env, long, default_value = "cn0")]
     tap_interface_name: String,
     #[clap(env, long, default_value_t = false, conflicts_with = "tap_mode")]
@@ -147,8 +145,6 @@ async fn main() -> Result<()> {
                 let ips = Arc::new(Mutex::new(HashMap::new()));
                 let dm: Arc<Mutex<Box<dyn DeviceManager>>> = if args.tap_mode {
                     Arc::new(Mutex::new(Box::new(TapManager::new(
-                        args.id,
-                        args.tap_mac_prefix,
                         args.tap_interface_name,
                         args.enable_packet_information,
                         ips.clone(),

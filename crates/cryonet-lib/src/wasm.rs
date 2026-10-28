@@ -13,7 +13,7 @@ use crate::{
         DeviceManager, IceServer,
         fullmesh::{FullMesh, FullMeshHandle},
         registry::{ConnectionType, Registry, RegistryHandle},
-        tap::{TapManager, generate_tap_mac},
+        tap::TapManager,
     },
     mesh::{
         Mesh, MeshHandle,
@@ -41,7 +41,7 @@ pub struct Args {
     pub servers: Vec<String>,
     pub ice_servers: Vec<IceServer>,
     pub enable_packet_information: bool,
-    pub tap_mac_prefix: u16,
+    pub mac: [u8; 6],
     pub addresses: Vec<IpAddr>,
 }
 
@@ -119,7 +119,7 @@ impl Cryonet {
             servers,
             ice_servers,
             enable_packet_information,
-            tap_mac_prefix,
+            mac,
             addresses,
         } = serde_wasm_bindgen::from_value(args)?;
 
@@ -139,8 +139,7 @@ impl Cryonet {
         .map_err(|e| JsValue::from_str(e.to_string().as_str()))?;
         let ips = Arc::new(Mutex::new(HashMap::new()));
         let dm = TapManager::new_with_device(
-            id,
-            tap_mac_prefix,
+            mac,
             enable_packet_information,
             ips.clone(),
             Arc::new(AsyncDevice {
@@ -180,10 +179,6 @@ impl Cryonet {
             registry: Box::into_raw(Box::new(registry)),
             fm: Box::into_raw(Box::new(fm)),
         })
-    }
-
-    pub fn generate_tap_mac(node_id: NodeId, tap_mac_prefix: u16) -> Vec<u8> {
-        generate_tap_mac(node_id, tap_mac_prefix).to_vec()
     }
 }
 

@@ -32,7 +32,7 @@ use crate::{
     errors::CryonetError,
     fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
     mesh::packet::NodeId,
-    time::{Instant, delayed_interval, jitter},
+    utils::{Instant, delayed_interval, jitter, random_mac},
 };
 
 pub struct TapManager {
@@ -42,43 +42,32 @@ pub struct TapManager {
 impl TapManager {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
-        node_id: NodeId,
-        tap_mac_prefix: u16,
         tap_interface_name: String,
         enable_packet_information: bool,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
     ) -> Result<TapManager> {
-        let tap_mac = generate_tap_mac(node_id, tap_mac_prefix);
         let device = Arc::new(
             DeviceBuilder::new()
                 .mtu(1280)
                 .layer(Layer::L2)
-                .mac_addr(tap_mac)
                 .name(&tap_interface_name)
                 .enable(true)
                 .build_async()?,
         );
-        Self::new_with_device(
-            node_id,
-            tap_mac_prefix,
-            enable_packet_information,
-            ips,
-            device,
-        )
+        let tap_mac = device.mac_address()?;
+        Self::new_with_device(tap_mac, enable_packet_information, ips, device)
     }
 
     pub fn new_with_device(
-        node_id: NodeId,
-        tap_mac_prefix: u16,
+        tap_mac: [u8; 6],
         enable_packet_information: bool,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
         device: Arc<AsyncDevice>,
     ) -> Result<TapManager> {
         Ok(TapManager {
             handle: TapManagerInner::new_with_device(
-                node_id,
+                tap_mac,
                 Duration::from_secs(3),
-                tap_mac_prefix,
                 enable_packet_information,
                 ips,
                 device,
@@ -112,6 +101,7 @@ struct TapManagerInner {
 
     device: Arc<AsyncDevice>,
     tap_mac: [u8; 6],
+    macs: HashMap<NodeId, [u8; 6]>,
     send_msg_tx: mpsc::UnboundedSender<SendLoopMessage>,
     recv_tasks: HashMap<NodeId, watch::Sender<bool>>,
 }
@@ -119,20 +109,19 @@ struct TapManagerInner {
 #[sactor]
 impl TapManagerInner {
     fn new_with_device(
-        node_id: NodeId,
+        tap_mac: [u8; 6],
         keepalive_interval: Duration,
-        tap_mac_prefix: u16,
         enable_packet_information: bool,
         ips: Arc<Mutex<HashMap<IpAddr, (NodeId, Instant)>>>,
         device: Arc<AsyncDevice>,
     ) -> Result<TapManagerInnerHandle> {
-        let tap_mac = generate_tap_mac(node_id, tap_mac_prefix);
         let device2 = device.clone();
 
         let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
         let (future, handle) = TapManagerInner::run(move |_| TapManagerInner {
             device,
             tap_mac,
+            macs: HashMap::new(),
             enable_packet_information,
             send_msg_tx,
             recv_tasks: HashMap::new(),
@@ -159,8 +148,9 @@ impl TapManagerInner {
         sender: Box<dyn ConnectionSender>,
         receiver: Box<dyn ConnectionReceiver>,
     ) -> Result<()> {
+        let peer_mac = self.mac(node_id);
         self.send_msg_tx
-            .send(SendLoopMessage::Connected(node_id, sender))
+            .send(SendLoopMessage::Connected(node_id, peer_mac, sender))
             .map_err(|_| anyhow!("Failed to send Connected"))?;
         let stop_tx = watch::channel(false).0;
         let future = recv_loop(
@@ -169,6 +159,7 @@ impl TapManagerInner {
             receiver,
             self.device.clone(),
             self.tap_mac,
+            peer_mac,
             stop_tx.subscribe(),
         );
         #[cfg(not(target_arch = "wasm32"))]
@@ -189,6 +180,20 @@ impl TapManagerInner {
         Ok(())
     }
 
+    fn mac(&mut self, node_id: NodeId) -> [u8; 6] {
+        if let Some(mac) = self.macs.get(&node_id) {
+            return *mac;
+        }
+        let mac = loop {
+            let mac = random_mac();
+            if mac != self.tap_mac && self.macs.values().all(|used| *used != mac) {
+                break mac;
+            }
+        };
+        self.macs.insert(node_id, mac);
+        mac
+    }
+
     fn ips(&self) -> Result<Vec<IpAddr>> {
         Ok(self.device.addresses()?)
     }
@@ -205,7 +210,7 @@ impl Drop for TapManagerInner {
 
 enum SendLoopMessage {
     Stop,
-    Connected(NodeId, Box<dyn ConnectionSender>),
+    Connected(NodeId, [u8; 6], Box<dyn ConnectionSender>),
     Disconnected(NodeId),
 }
 
@@ -218,6 +223,8 @@ async fn send_loop(
     mut msg_rx: mpsc::UnboundedReceiver<SendLoopMessage>,
 ) {
     let mut senders = HashMap::new();
+    let mut by_node = HashMap::new();
+    let mut by_mac = HashMap::new();
     let mut buf = [0u8; 2000];
     let mut keepalive_ticker = delayed_interval(jitter(keepalive_interval, 0.1));
     // We use a single byte as keepalive packet, which is guaranteed to be smaller than any valid packet.
@@ -226,7 +233,9 @@ async fn send_loop(
         tokio::select! {
             msg = msg_rx.recv() => match msg {
                 None | Some(SendLoopMessage::Stop) => break,
-                Some(SendLoopMessage::Connected(node_id, sender)) => {
+                Some(SendLoopMessage::Connected(node_id, mac, sender)) => {
+                    by_node.insert(node_id, mac);
+                    by_mac.insert(mac, node_id);
                     senders.insert(node_id, sender);
                 }
                 Some(SendLoopMessage::Disconnected(node_id)) => {
@@ -287,15 +296,17 @@ async fn send_loop(
                             continue;
                         };
                         let src_ip = arp.get_target_proto_addr();
-                        let src_mac: [u8; 6] = {
+                        let node_id = {
                             let ips = ips.lock().await;
-                            let Some((node_id, _)) = ips.get(&IpAddr::V4(src_ip)) else {
-                                warn!("Received ARP packet for unknown IP address: {src_ip}");
-                                continue;
-                            };
-                            let mut src_mac = vec![device_mac[0], device_mac[1]];
-                            src_mac.extend_from_slice(&node_id.to_be_bytes());
-                            src_mac.try_into().unwrap()
+                            ips.get(&IpAddr::V4(src_ip)).map(|(node_id, _)| *node_id)
+                        };
+                        let Some(node_id) = node_id else {
+                            warn!("Received ARP packet for unknown IP address: {src_ip}");
+                            continue;
+                        };
+                        let Some(src_mac) = by_node.get(&node_id).copied() else {
+                            debug!("No address assigned for node {node_id:X}");
+                            continue;
                         };
                         let dst_ip = arp.get_sender_proto_addr();
                         let dst_mac = device_mac;
@@ -312,15 +323,17 @@ async fn send_loop(
                             continue;
                         };
                         let src_ip = ns.get_target_addr();
-                        let src_mac: [u8; 6] = {
+                        let node_id = {
                             let ips = ips.lock().await;
-                            let Some((node_id, _)) = ips.get(&IpAddr::V6(src_ip)) else {
-                                warn!("Received NDP Neighbor Solicitation packet for unknown IP address: {src_ip}");
-                                continue;
-                            };
-                            let mut src_mac = vec![device_mac[0], device_mac[1]];
-                            src_mac.extend_from_slice(&node_id.to_be_bytes());
-                            src_mac.try_into().unwrap()
+                            ips.get(&IpAddr::V6(src_ip)).map(|(node_id, _)| *node_id)
+                        };
+                        let Some(node_id) = node_id else {
+                            warn!("Received NDP Neighbor Solicitation packet for unknown IP address: {src_ip}");
+                            continue;
+                        };
+                        let Some(src_mac) = by_node.get(&node_id).copied() else {
+                            debug!("No address assigned for node {node_id:X}");
+                            continue;
                         };
                         let dst_ip = ipv6.get_source();
                         let dst_mac = device_mac;
@@ -331,17 +344,16 @@ async fn send_loop(
                     }
                     continue;
                 }
-                if !(dst_mac.0 == device_mac[0] && dst_mac.1 == device_mac[1]) {
-                    warn!("Received Ethernet packet with unexpected destination MAC: {dst_mac}");
-                    continue;
-                }
                 // unicast
                 if packet.get_ethertype() == EtherTypes::Arp || is_ndp(&packet, NsNa::Na) {
                     // drop ARP and NDP responses
                     continue;
                 }
                 // TODO: drop packets other than IPv4, IPv6 and MPLS?
-                let node_id = u32::from_be_bytes([dst_mac.2, dst_mac.3, dst_mac.4, dst_mac.5]);
+                let Some(node_id) = by_mac.get(&dst_mac.octets()).copied() else {
+                    warn!("Received Ethernet packet with unexpected destination MAC: {dst_mac}");
+                    continue;
+                };
                 let Some(sender) = senders.get_mut(&node_id) else {
                     warn!("Received Ethernet packet for unknown node ID {node_id:X}");
                     continue;
@@ -367,13 +379,9 @@ async fn recv_loop(
     mut receiver: Box<dyn ConnectionReceiver>,
     device: Arc<AsyncDevice>,
     device_mac: [u8; 6],
+    peer_mac: [u8; 6],
     mut stop: watch::Receiver<bool>,
 ) {
-    let peer_mac: [u8; 6] = {
-        let mut prefix = vec![device_mac[0], device_mac[1]];
-        prefix.extend_from_slice(&peer_id.to_be_bytes());
-        prefix.try_into().unwrap()
-    };
     let mut buf = [0u8; 2000];
     loop {
         tokio::select! {
@@ -525,12 +533,4 @@ async fn send_ndp_na(
 
     device.send(&buf[..TOTAL_LEN]).await?;
     Ok(())
-}
-
-pub fn generate_tap_mac(node_id: NodeId, tap_mac_prefix: u16) -> [u8; 6] {
-    let mut tap_mac = tap_mac_prefix.to_be_bytes().to_vec();
-    // Set locally administered bit and ensure unicast
-    tap_mac[0] = (tap_mac[0] & 0xfe) | 0x02;
-    tap_mac.extend_from_slice(&node_id.to_be_bytes());
-    tap_mac.try_into().unwrap()
 }

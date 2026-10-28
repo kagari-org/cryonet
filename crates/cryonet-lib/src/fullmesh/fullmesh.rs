@@ -34,7 +34,7 @@ use crate::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
     },
-    time::{Instant, Interval, delayed_interval, jitter},
+    utils::{Instant, Interval, delayed_interval, jitter},
 };
 
 struct FullMeshConnection {

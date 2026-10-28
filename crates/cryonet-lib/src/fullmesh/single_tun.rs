@@ -16,7 +16,7 @@ use crate::{
     errors::CryonetError,
     fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
     mesh::packet::NodeId,
-    time::{Instant, delayed_interval, jitter},
+    utils::{Instant, delayed_interval, jitter},
 };
 
 pub struct SingleTunManager {
