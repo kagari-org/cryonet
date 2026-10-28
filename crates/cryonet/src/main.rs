@@ -1,12 +1,17 @@
 #![feature(try_blocks)]
 #![allow(clippy::new_ret_no_self)]
 use std::{
-    collections::HashMap, env::var, future::pending, net::SocketAddr, path::PathBuf, str::FromStr,
+    collections::HashMap,
+    env::var,
+    future::pending,
+    net::{Ipv6Addr, SocketAddr},
+    path::PathBuf,
+    str::FromStr,
     sync::Arc,
 };
 
 use anyhow::{Result, bail};
-use cidr::AnyIpCidr;
+use cidr::{AnyIpCidr, Ipv6Cidr};
 use clap::Parser;
 use cryonet_lib::{
     connection::ConnManager,
@@ -46,6 +51,8 @@ struct Args {
     interface_prefix: String,
     #[clap(env, long, default_value_t = false)]
     enable_packet_information: bool,
+    #[clap(env, long)]
+    ipv6_subnet: Option<Ipv6Cidr>,
     #[clap(env, long)]
     ctl_path: Option<PathBuf>,
 
@@ -102,6 +109,17 @@ async fn main() -> Result<()> {
             let result: Result<()> = try {
                 let started_at = std::time::Instant::now();
                 let id = random_node_id();
+                let ipv6 = args
+                    .ipv6_subnet
+                    .map(|subnet| -> Result<Ipv6Addr> {
+                        if subnet.network_length() != 64 {
+                            bail!("IPv6 subnet must be a /64");
+                        }
+                        let mut octets = subnet.first_address().octets();
+                        octets[8..].copy_from_slice(&id.to_be_bytes());
+                        Ok(Ipv6Addr::from(octets))
+                    })
+                    .transpose()?;
                 let (mode, interface) = if args.tap_mode {
                     ("tap".to_owned(), args.tap_interface_name.clone())
                 } else if args.single_tun_mode {
@@ -145,17 +163,20 @@ async fn main() -> Result<()> {
                         args.tap_interface_name,
                         args.enable_packet_information,
                         ips.clone(),
+                        ipv6,
                     )?)))
                 } else if args.single_tun_mode {
                     Arc::new(Mutex::new(Box::new(SingleTunManager::new(
                         args.single_tun_interface_name,
                         args.enable_packet_information,
                         ips.clone(),
+                        ipv6,
                     )?)))
                 } else {
                     Arc::new(Mutex::new(Box::new(TunManager::new(
                         args.interface_prefix,
                         args.enable_packet_information,
+                        ipv6,
                     ))))
                 };
                 let registry = Registry::new(

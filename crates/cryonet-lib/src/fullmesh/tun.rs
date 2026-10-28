@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    net::IpAddr,
+    net::{IpAddr, Ipv6Addr},
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -22,17 +22,24 @@ use crate::{
 pub struct TunManager {
     interface_prefix: String,
     enable_packet_information: bool,
+    ipv6: Option<Ipv6Addr>,
     keepalive_interval: Duration,
+    next_device: u32,
 
     devices: HashMap<NodeId, Weak<AsyncDevice>>,
     tasks: HashMap<NodeId, watch::Sender<bool>>,
 }
 
 impl TunManager {
-    pub fn new(interface_prefix: String, enable_packet_information: bool) -> TunManager {
+    pub fn new(
+        interface_prefix: String,
+        enable_packet_information: bool,
+        ipv6: Option<Ipv6Addr>,
+    ) -> TunManager {
         Self::new_with_parameters(
             interface_prefix,
             enable_packet_information,
+            ipv6,
             Duration::from_secs(3),
         )
     }
@@ -40,25 +47,30 @@ impl TunManager {
     pub fn new_with_parameters(
         interface_prefix: String,
         enable_packet_information: bool,
+        ipv6: Option<Ipv6Addr>,
         keepalive_interval: Duration,
     ) -> TunManager {
         TunManager {
             interface_prefix,
             enable_packet_information,
+            ipv6,
             keepalive_interval,
+            next_device: 0,
             devices: HashMap::new(),
             tasks: HashMap::new(),
         }
     }
 
     fn create_device(&mut self, node_id: NodeId) -> Result<Arc<AsyncDevice>> {
-        let create_device = || -> Result<AsyncDevice> {
-            let mut builder = DeviceBuilder::new()
-                .mtu(1280)
-                .name(format!("{}{node_id:X}", self.interface_prefix))
-                .enable(true);
+        let mut create_device = || -> Result<AsyncDevice> {
+            let name = format!("{}{}", self.interface_prefix, self.next_device);
+            self.next_device = self.next_device.wrapping_add(1);
+            let mut builder = DeviceBuilder::new().mtu(1280).name(name).enable(true);
             if self.enable_packet_information {
                 builder = builder.packet_information(true);
+            }
+            if let Some(ipv6) = self.ipv6 {
+                builder = builder.ipv6(ipv6, 64u8);
             }
             Ok(builder.build_async()?)
         };

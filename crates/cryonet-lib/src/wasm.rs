@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     future::pending,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     rc::Rc,
     str::FromStr,
     sync::Arc,
@@ -43,6 +43,7 @@ pub struct Args {
     pub enable_packet_information: bool,
     pub mac: [u8; 6],
     pub addresses: Vec<IpAddr>,
+    pub ipv6_subnet: Option<String>,
 }
 
 pub struct AsyncDevice {
@@ -121,7 +122,21 @@ impl Cryonet {
             enable_packet_information,
             mac,
             addresses,
+            ipv6_subnet,
         } = serde_wasm_bindgen::from_value(args)?;
+
+        let mut addresses = addresses;
+        if let Some(subnet) = ipv6_subnet.filter(|subnet| !subnet.is_empty()) {
+            let subnet = subnet
+                .parse::<cidr::Ipv6Cidr>()
+                .map_err(|err| JsValue::from_str(&err.to_string()))?;
+            if subnet.network_length() != 64 {
+                return Err(JsValue::from_str("IPv6 subnet must be a /64"));
+            }
+            let mut octets = subnet.first_address().octets();
+            octets[8..].copy_from_slice(&id.to_be_bytes());
+            addresses.push(IpAddr::V6(Ipv6Addr::from(octets)));
+        }
 
         let _guard = LOCAL_SET.with(|local_set| local_set.enter());
         let mesh = Mesh::new(id);

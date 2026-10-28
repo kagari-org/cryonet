@@ -1,4 +1,9 @@
-use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv6Addr},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -36,6 +41,7 @@ impl SingleTunManager {
         interface_name: String,
         enable_packet_information: bool,
         ips: Arc<Mutex<IpMap>>,
+        ipv6: Option<Ipv6Addr>,
     ) -> Result<SingleTunManager> {
         let mut builder = DeviceBuilder::new()
             .mtu(1280)
@@ -44,8 +50,12 @@ impl SingleTunManager {
         if enable_packet_information {
             builder = builder.packet_information(true);
         }
+        if let Some(ipv6) = ipv6 {
+            builder = builder.ipv6(ipv6, 64u8);
+        }
+        let device = builder.build_async()?;
         Self::new_with_parameters(
-            Arc::new(builder.build_async()?),
+            Arc::new(device),
             enable_packet_information,
             Duration::from_secs(3),
             ips,

@@ -68,6 +68,15 @@ return network.registerProtocol('cryonet', {
 				? true : _('Use 1–15 ASCII letters, digits, underscores, dots or hyphens. Single-dot and double-dot names are not allowed.');
 		};
 
+		o = s.taboption('general', form.Value, 'ipv6_subnet', _('IPv6 subnet'),
+			_('Optional /64 IPv6 subnet, for example fd00:1234:5678:9abc::/64 or 2001:db8:1:2::/64. The node ID is appended as the interface identifier.'));
+		o.datatype = 'cidr6';
+		o.rmempty = true;
+		o.validate = (section_id, value) => {
+			return !value || (/\/64$/.test(value))
+				? true : _('Enter an IPv6 /64 subnet, for example fd00::/64.');
+		};
+
 		o = s.taboption('general', form.Value, 'ipaddr', _('IPv4 address'),
 			_('Optional address in CIDR notation, for example 10.11.0.254/24.'));
 		o.datatype = 'cidr4';

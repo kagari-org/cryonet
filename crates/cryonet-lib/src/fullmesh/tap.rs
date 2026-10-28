@@ -45,15 +45,17 @@ impl TapManager {
         tap_interface_name: String,
         enable_packet_information: bool,
         ips: Arc<Mutex<IpMap>>,
+        ipv6: Option<Ipv6Addr>,
     ) -> Result<TapManager> {
-        let device = Arc::new(
-            DeviceBuilder::new()
-                .mtu(1280)
-                .layer(Layer::L2)
-                .name(&tap_interface_name)
-                .enable(true)
-                .build_async()?,
-        );
+        let mut builder = DeviceBuilder::new()
+            .mtu(1280)
+            .layer(Layer::L2)
+            .name(&tap_interface_name)
+            .enable(true);
+        if let Some(ipv6) = ipv6 {
+            builder = builder.ipv6(ipv6, 64u8);
+        }
+        let device = Arc::new(builder.build_async()?);
         let tap_mac = device.mac_address()?;
         Self::new_with_device(tap_mac, enable_packet_information, ips, device)
     }
