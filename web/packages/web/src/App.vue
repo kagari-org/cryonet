@@ -53,7 +53,16 @@ const Config = Schema.object({
   }),
 }).description('cryonet')
 
-const id = Math.floor(Math.random() * 0xffffffff) + 1
+const id = (() => {
+  const words = new Uint32Array(2)
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(words)
+  } else {
+    words[0] = Math.random() * 0x100000000
+    words[1] = Math.random() * 0x100000000
+  }
+  return ((words[0] & 0x1fffff) * 0x100000000 + words[1]) || 1
+})()
 const suffix = (id % 254) + 1
 const ipv4 = `10.114.0.${suffix}`
 const ipv6 = `fd72::${suffix.toString(16)}`

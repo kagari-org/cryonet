@@ -8,7 +8,6 @@ use std::{
 use anyhow::{Result, bail};
 use cidr::AnyIpCidr;
 use clap::Parser;
-use clap_num::maybe_hex;
 use cryonet_lib::{
     connection::ConnManager,
     fullmesh::{
@@ -21,7 +20,7 @@ use cryonet_lib::{
     },
     mesh::{Mesh, igp::Igp, packet::random_node_id},
 };
-use cryonet_uapi::{DaemonInfo, NodeId};
+use cryonet_uapi::DaemonInfo;
 use tokio::{sync::Mutex, task::LocalSet};
 use tracing_subscriber::EnvFilter;
 
@@ -31,8 +30,6 @@ mod uapi;
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[clap(env, value_parser = maybe_hex::<NodeId>)]
-    id: Option<NodeId>,
     #[clap(env, long, short)]
     token: Option<String>,
     #[clap(env, long, short, default_value = "0.0.0.0:2333")]
@@ -104,7 +101,7 @@ async fn main() -> Result<()> {
         .run_until(async move {
             let result: Result<()> = try {
                 let started_at = std::time::Instant::now();
-                let id = args.id.unwrap_or_else(random_node_id);
+                let id = random_node_id();
                 let (mode, interface) = if args.tap_mode {
                     ("tap".to_owned(), args.tap_interface_name.clone())
                 } else if args.single_tun_mode {

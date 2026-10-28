@@ -46,20 +46,6 @@ return network.registerProtocol('cryonet', {
 	renderFormOptions(s) {
 		let o;
 
-		o = s.taboption('general', form.Value, 'id', _('Node ID'),
-			_('Unique within the mesh. Enter a 64-bit unsigned decimal number or a hexadecimal number prefixed with 0x. Leave empty to generate a random ID on each start.'));
-		o.rmempty = true;
-		o.validate = (section_id, value) => {
-			if (!value) {
-				return true;
-			}
-			const invalid = _('Enter a node ID between 0 and 18446744073709551615 (hexadecimal with 0x is also accepted).');
-			if (!/^(?:[0-9]+|0x[0-9a-f]+)$/i.test(value)) {
-				return invalid;
-			}
-			return BigInt(value) <= 0xffffffffffffffffn ? true : invalid;
-		};
-
 		o = s.taboption('general', form.Value, 'token', _('Token'));
 		o.password = true;
 		o.rmempty = true;
