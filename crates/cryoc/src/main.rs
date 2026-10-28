@@ -1,6 +1,7 @@
 use std::{
+    collections::HashMap,
     env::var,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -65,6 +66,54 @@ fn format_cost(cost: u32) -> String {
     } else {
         cost.to_string()
     }
+}
+
+fn node_label(names: &HashMap<NodeId, String>, node: NodeId) -> String {
+    match names.get(&node) {
+        Some(name) if !name.is_empty() => format!("{name} ({node:X})"),
+        _ => format!("{node:X}"),
+    }
+}
+
+async fn send_request(
+    socket: &UnixDatagram,
+    ctl_path: &Path,
+    request: &CryonetUapi,
+    timeout: Duration,
+) -> Option<CryonetUapi> {
+    let request = serde_json::to_vec(request).ok()?;
+    socket.send_to(&request, ctl_path).await.ok()?;
+    let mut buf = vec![0u8; 1 << 20];
+    let len = tokio::time::timeout(timeout, socket.recv(&mut buf))
+        .await
+        .ok()?
+        .ok()?;
+    serde_json::from_slice(&buf[..len]).ok()
+}
+
+async fn fetch_names(
+    socket: &UnixDatagram,
+    ctl_path: &Path,
+    timeout: Duration,
+) -> HashMap<NodeId, String> {
+    let mut names = HashMap::new();
+    if let Some(CryonetUapi::GetInfoResponse(info)) =
+        send_request(socket, ctl_path, &CryonetUapi::GetInfo, timeout).await
+        && !info.name.is_empty()
+    {
+        names.insert(info.id, info.name);
+    }
+    if let Some(CryonetUapi::GetNodesResponse(nodes)) =
+        send_request(socket, ctl_path, &CryonetUapi::GetNodes, timeout).await
+    {
+        names.extend(
+            nodes
+                .into_iter()
+                .filter(|node| !node.name.is_empty())
+                .map(|node| (node.id, node.name)),
+        );
+    }
+    names
 }
 
 fn table(headers: &[&str], rows: &[Vec<String>]) {
@@ -177,6 +226,7 @@ async fn main() -> Result<()> {
     let ctl_path = resolve_ctl_path(args.ctl_path)?;
     let dir = tempdir()?;
     let socket = UnixDatagram::bind(dir.path().join("cryonetc"))?;
+    let names = fetch_names(&socket, &ctl_path, Duration::from_secs(5)).await;
 
     let time = Instant::now();
     let request = match args.subcommand {
@@ -215,7 +265,7 @@ async fn main() -> Result<()> {
                     .iter()
                     .map(|link| {
                         vec![
-                            format!("{:X}", link.node),
+                            node_label(&names, link.node),
                             if link.alive { "up" } else { "down" }.to_owned(),
                             if link.last_recv_ms < 0 {
                                 "-".to_owned()
@@ -238,7 +288,9 @@ async fn main() -> Result<()> {
             } else {
                 let rows = routes
                     .iter()
-                    .map(|(dst, next_hop)| vec![format!("{dst:X}"), format!("{next_hop:X}")])
+                    .map(|(dst, next_hop)| {
+                        vec![node_label(&names, *dst), node_label(&names, *next_hop)]
+                    })
                     .collect::<Vec<_>>();
                 table(&["DST", "NEXT HOP"], &rows);
             }
@@ -253,8 +305,8 @@ async fn main() -> Result<()> {
                     .iter()
                     .map(|route| {
                         vec![
-                            format!("{:X}", route.dst),
-                            format!("{:X}", route.from),
+                            node_label(&names, route.dst),
+                            node_label(&names, route.from),
                             route.seq.to_string(),
                             format_metric(route.metric),
                             format_metric(route.computed_metric),
@@ -303,7 +355,7 @@ async fn main() -> Result<()> {
                     .iter()
                     .map(|neighbor| {
                         vec![
-                            format!("{:X}", neighbor.node),
+                            node_label(&names, neighbor.node),
                             format_cost(neighbor.cost),
                             format_ms(neighbor.last_hello_ms),
                         ]
@@ -321,7 +373,7 @@ async fn main() -> Result<()> {
                     .iter()
                     .map(|source| {
                         vec![
-                            format!("{:X}", source.dst),
+                            node_label(&names, source.dst),
                             source.seq.to_string(),
                             format_metric(source.metric),
                             format_ms(source.expires_in_ms),
@@ -340,7 +392,7 @@ async fn main() -> Result<()> {
                     .iter()
                     .map(|request| {
                         vec![
-                            format!("{:X}", request.dst),
+                            node_label(&names, request.dst),
                             request.seq.to_string(),
                             request.retries.to_string(),
                             format_ms(request.expires_in_ms),
@@ -369,7 +421,7 @@ async fn main() -> Result<()> {
                             "-".to_owned()
                         };
                         vec![
-                            format!("{:X}", peer.node),
+                            node_label(&names, peer.node),
                             if peer.initiator {
                                 "initiator"
                             } else {
@@ -412,7 +464,7 @@ async fn main() -> Result<()> {
                     .iter()
                     .map(|pending| {
                         vec![
-                            format!("{:X}", pending.node),
+                            node_label(&names, pending.node),
                             format_ms(pending.retry_in_ms),
                             format_ms(pending.backoff_ms as i64),
                         ]
@@ -430,21 +482,20 @@ async fn main() -> Result<()> {
                 let rows = nodes
                     .iter()
                     .map(|node| {
-                        let name = if node.name.is_empty() {
-                            "-".to_owned()
+                        let label = if node.name.is_empty() {
+                            format!("{:X}", node.id)
                         } else {
-                            node.name.clone()
+                            format!("{} ({:X})", node.name, node.id)
                         };
                         vec![
-                            name,
-                            format!("{:X}", node.id),
+                            label,
                             format_ms(node.last_seen_ms),
                             join_or_dash(&node.connection_types),
                             join_or_dash(&node.ips),
                         ]
                     })
                     .collect::<Vec<_>>();
-                table(&["NAME", "NODE", "LAST SEEN", "TRANSPORTS", "IPS"], &rows);
+                table(&["NODE", "LAST SEEN", "TRANSPORTS", "IPS"], &rows);
             }
         }
         CryonetUapi::GetServersResponse(servers) => {
@@ -468,7 +519,7 @@ async fn main() -> Result<()> {
                             server.url.clone(),
                             server
                                 .node
-                                .map_or("-".to_owned(), |node| format!("{node:X}")),
+                                .map_or_else(|| "-".to_owned(), |node| node_label(&names, node)),
                             state.to_owned(),
                         ]
                     })
@@ -478,15 +529,12 @@ async fn main() -> Result<()> {
         }
         CryonetUapi::GetInfoResponse(info) => {
             println!("CRYONET {}", info.version);
-            kv("NODE", format!("{} (0x{:X})", info.id, info.id));
-            kv(
-                "NAME",
-                if info.name.is_empty() {
-                    "-"
-                } else {
-                    info.name.as_str()
-                },
-            );
+            let node = if info.name.is_empty() {
+                format!("0x{:X}", info.id)
+            } else {
+                format!("{} (0x{:X})", info.name, info.id)
+            };
+            kv("NODE", node);
             kv("UPTIME", format_ms(info.uptime_ms as i64));
             kv("MODE", info.mode);
             kv("INTERFACE", info.interface);
