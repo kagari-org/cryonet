@@ -294,8 +294,13 @@ impl FullMesh {
                             ecdh_key,
                         },
                     );
-                    if old.is_some() {
-                        self.dm.lock().await.disconnected(src).await?;
+                    if old.is_some()
+                        && let Err(err) = self.dm.lock().await.disconnected(src).await
+                    {
+                        error!(
+                            "node {:X}: failed to mark peer {src:X} disconnected: {err:?}",
+                            self.id
+                        );
                     }
                     self.last_seen_gen.insert(src, *conn_gen);
                     self.mesh
@@ -378,12 +383,6 @@ impl FullMesh {
                         .diffie_hellman(&public_key)
                         .extract::<Sha256>(None)
                         .expand(b"", &mut key)?;
-                    connection.set_recv_key(ConnectionRustrtcIceKey {
-                        index: *index,
-                        key: key.into(),
-                    });
-                    conn.ecdh_key = new_ecdh_key;
-                    conn.last_rekey = Instant::now();
                     self.mesh
                         .send_packet_reliable(
                             src,
@@ -393,6 +392,12 @@ impl FullMesh {
                             }),
                         )
                         .await?;
+                    connection.set_recv_key(ConnectionRustrtcIceKey {
+                        index: *index,
+                        key: key.into(),
+                    });
+                    conn.ecdh_key = new_ecdh_key;
+                    conn.last_rekey = Instant::now();
                 } else {
                     // we received the rekey response
                     if connection.key().is_some_and(|key| key.index == *index) {
@@ -502,8 +507,13 @@ impl FullMesh {
                         ecdh_key: EphemeralSecret::generate(),
                     },
                 );
-                if old.is_some() {
-                    self.dm.lock().await.disconnected(src).await?;
+                if old.is_some()
+                    && let Err(err) = self.dm.lock().await.disconnected(src).await
+                {
+                    error!(
+                        "node {:X}: failed to mark peer {src:X} disconnected: {err:?}",
+                        self.id
+                    );
                 }
                 self.last_seen_gen.insert(src, *conn_gen);
             }
@@ -624,10 +634,20 @@ impl FullMesh {
                 if stale {
                     if self.connections.remove(&src).is_some() {
                         let mut dm = self.dm.lock().await;
-                        dm.disconnected(src).await?;
+                        if let Err(err) = dm.disconnected(src).await {
+                            error!(
+                                "node {:X}: failed to mark peer {src:X} disconnected: {err:?}",
+                                self.id
+                            );
+                        }
                     }
                     self.connect_backoff.remove(&src);
-                    self.connect_to(src, connection_types.clone()).await?;
+                    if let Err(err) = self.connect_to(src, connection_types.clone()).await {
+                        error!(
+                            "node {:X}: failed to connect to peer {src:X}: {err:?}",
+                            self.id
+                        );
+                    }
                 }
                 return Ok(());
             }
@@ -691,24 +711,52 @@ impl FullMesh {
             }
             keep
         });
+        let mut failed = Vec::new();
         {
             let mut dm = self.dm.lock().await;
             for node_id in &disconnected {
                 debug!("node {:X}: connection to peer {node_id:X} is gone", self.id);
-                dm.disconnected(*node_id).await?;
+                if let Err(err) = dm.disconnected(*node_id).await {
+                    error!(
+                        "node {:X}: failed to mark peer {node_id:X} disconnected: {err:?}",
+                        self.id
+                    );
+                }
             }
             // mark connected
             for (node_id, conn) in &mut self.connections {
-                if !conn.once_connected && conn.connection.status() == ConnectionState::Connected {
-                    conn.once_connected = true;
+                if conn.once_connected || conn.connection.status() != ConnectionState::Connected {
+                    continue;
+                }
+                let result: Result<()> = try {
                     dm.connected(
                         *node_id,
                         conn.connection.sender().await?,
                         conn.connection.receiver().await?,
                     )
                     .await?;
+                };
+                match result {
+                    Ok(()) => conn.once_connected = true,
+                    Err(err) => {
+                        error!(
+                            "node {:X}: failed to attach peer {node_id:X}: {err:?}",
+                            self.id
+                        );
+                        if let Err(err) = dm.disconnected(*node_id).await {
+                            error!(
+                                "node {:X}: failed to mark peer {node_id:X} disconnected: {err:?}",
+                                self.id
+                            );
+                        }
+                        failed.push(*node_id);
+                    }
                 }
             }
+        }
+        for node_id in failed {
+            self.connections.remove(&node_id);
+            disconnected.push(node_id);
         }
         for node_id in &disconnected {
             self.schedule_retry(*node_id);
@@ -741,20 +789,38 @@ impl FullMesh {
             let Some(key) = connection.key() else {
                 continue;
             };
-            info!("Rekeying connection to peer {peer_id:X}");
             let new_ecdh_key = EphemeralSecret::generate();
             let new_public_key = new_ecdh_key.public_key();
-            conn.ecdh_key = new_ecdh_key;
-            conn.last_rekey = time;
-            self.mesh
+            let public_key = match serde_json::to_string(&new_public_key) {
+                Ok(public_key) => public_key,
+                Err(err) => {
+                    error!(
+                        "node {:X}: failed to encode the rekey key for peer {peer_id:X}: {err:?}",
+                        self.id
+                    );
+                    continue;
+                }
+            };
+            info!("Rekeying connection to peer {peer_id:X}");
+            if let Err(err) = self
+                .mesh
                 .send_packet_reliable(
                     *peer_id,
                     Box::new(FullMeshPayload::Rekey {
                         index: !key.index,
-                        public_key: serde_json::to_string(&new_public_key)?,
+                        public_key,
                     }),
                 )
-                .await?;
+                .await
+            {
+                error!(
+                    "node {:X}: failed to send rekey to peer {peer_id:X}: {err:?}",
+                    self.id
+                );
+                continue;
+            }
+            conn.ecdh_key = new_ecdh_key;
+            conn.last_rekey = time;
         }
         // connect
         for (&peer_id, node) in &nodes {
@@ -780,7 +846,8 @@ impl FullMesh {
                         self.connect_interval,
                     ),
                 );
-                self.mesh
+                if let Err(err) = self
+                    .mesh
                     .send_packet_reliable(
                         peer_id,
                         Box::new(FullMeshPayload::ConnectRequest {
@@ -789,11 +856,24 @@ impl FullMesh {
                             connection_types: self.connection_types.clone(),
                         }),
                     )
-                    .await?;
+                    .await
+                {
+                    error!(
+                        "node {:X}: failed to send a connect request to peer {peer_id:X}: {err:?}",
+                        self.id
+                    );
+                }
                 continue;
             }
-            self.connect_to(peer_id, node.0.connection_types.clone())
-                .await?;
+            if let Err(err) = self
+                .connect_to(peer_id, node.0.connection_types.clone())
+                .await
+            {
+                error!(
+                    "node {:X}: failed to connect to peer {peer_id:X}: {err:?}",
+                    self.id
+                );
+            }
         }
         Ok(())
     }
