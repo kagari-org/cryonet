@@ -5,15 +5,6 @@ use serde::{Deserialize, Serialize};
 
 pub use cryonet_uapi::NodeId;
 
-pub fn random_u64() -> u64 {
-    let value = uuid::Uuid::new_v4().as_u128();
-    (value as u64) ^ ((value >> 64) as u64)
-}
-
-pub fn random_node_id() -> NodeId {
-    random_u64()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Packet {
     pub src: NodeId,

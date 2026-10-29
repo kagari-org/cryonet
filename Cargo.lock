@@ -718,6 +718,7 @@ dependencies = [
  "cryonet-lib",
  "cryonet-uapi",
  "futures",
+ "rand 0.9.5",
  "sactor",
  "serde",
  "serde_json",
@@ -740,6 +741,7 @@ dependencies = [
  "cryonet-uapi",
  "dyn-clone",
  "futures",
+ "getrandom 0.3.4",
  "libc",
  "memoize",
  "netlink-packet-core 0.8.2",
@@ -747,6 +749,7 @@ dependencies = [
  "netlink-sys",
  "p256 0.14.0",
  "pnet_packet",
+ "rand 0.9.5",
  "reqwest",
  "reqwest-websocket",
  "rustls",
@@ -765,7 +768,6 @@ dependencies = [
  "tun-rs",
  "typetag",
  "uniffi",
- "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasmtimer",
@@ -779,7 +781,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "uniffi",
- "uuid",
 ]
 
 [[package]]
@@ -1377,9 +1378,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]

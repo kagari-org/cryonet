@@ -23,11 +23,7 @@ use cryonet_lib::{
         tap::TapManager,
         tun::TunManager,
     },
-    mesh::{
-        Mesh,
-        igp::Igp,
-        packet::{random_node_id, random_u64},
-    },
+    mesh::{Mesh, igp::Igp},
 };
 use cryonet_uapi::DaemonInfo;
 use tokio::{sync::Mutex, task::LocalSet};
@@ -122,7 +118,7 @@ async fn main() -> Result<()> {
         .run_until(async move {
             let result: Result<()> = try {
                 let started_at = std::time::Instant::now();
-                let id = args.id.unwrap_or_else(random_node_id);
+                let id = args.id.unwrap_or_else(rand::random);
                 let name = args
                     .name
                     .filter(|name| !name.is_empty())
@@ -135,7 +131,7 @@ async fn main() -> Result<()> {
                             bail!("IPv6 subnet must be a /64");
                         }
                         let mut octets = subnet.first_address().octets();
-                        octets[8..].copy_from_slice(&random_u64().max(1).to_be_bytes());
+                        octets[8..].copy_from_slice(&rand::random::<u64>().max(1).to_be_bytes());
                         Ok(Ipv6Addr::from(octets))
                     })
                     .transpose()?;
