@@ -41,6 +41,8 @@ mod uapi;
 struct Args {
     #[clap(env = "NODE_NAME", long)]
     name: Option<String>,
+    #[clap(env = "NODE_ID", long, value_parser = clap_num::maybe_hex::<u64>)]
+    id: Option<u64>,
     #[clap(env, long, short)]
     token: Option<String>,
     #[clap(env, long, short, default_value = "0.0.0.0:2333")]
@@ -120,7 +122,7 @@ async fn main() -> Result<()> {
         .run_until(async move {
             let result: Result<()> = try {
                 let started_at = std::time::Instant::now();
-                let id = random_node_id();
+                let id = args.id.unwrap_or_else(random_node_id);
                 let name = args
                     .name
                     .filter(|name| !name.is_empty())

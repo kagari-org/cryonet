@@ -11,7 +11,7 @@ pub fn random_u64() -> u64 {
 }
 
 pub fn random_node_id() -> NodeId {
-    random_u64().max(1)
+    random_u64()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

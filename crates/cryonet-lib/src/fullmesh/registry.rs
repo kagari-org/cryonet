@@ -187,6 +187,7 @@ impl Registry {
                     let mut ips = self.ips.lock().await;
                     for (id, node) in entries {
                         if *id == self.id {
+                            self.claim = self.claim.max(node.claim);
                             continue;
                         }
                         self.claim = self.claim.max(node.claim);

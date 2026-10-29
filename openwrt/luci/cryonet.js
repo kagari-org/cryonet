@@ -50,6 +50,11 @@ return network.registerProtocol('cryonet', {
 			_('Optional name shown by cryoc. Defaults to the system hostname.'));
 		o.rmempty = true;
 
+		o = s.taboption('general', form.Value, 'id', _('Node id'),
+			_('Optional node id in hex or decimal. Must be unique in the mesh; leave empty for a random id.'));
+		o.datatype = 'or(hex,uinteger)';
+		o.rmempty = true;
+
 		o = s.taboption('general', form.Value, 'token', _('Token'));
 		o.password = true;
 		o.rmempty = true;

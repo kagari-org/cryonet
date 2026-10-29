@@ -7,6 +7,7 @@ init_proto "$@"
 proto_cryonet_init_config() {
 
 	proto_config_add_string 'name'
+	proto_config_add_string 'id'
 	proto_config_add_string 'token'
 	proto_config_add_string 'listen'
 	proto_config_add_string 'servers'
@@ -24,9 +25,9 @@ proto_cryonet_init_config() {
 
 proto_cryonet_setup() {
 	local config="$1"
-	local name token listen servers ice_servers candidate_filter_prefixes
+	local name id token listen servers ice_servers candidate_filter_prefixes
 	local tap_interface_name ipv6_subnet encrypt_local_packets enable_packet_information ipaddr ip6addr
-	json_get_vars name token listen servers ice_servers candidate_filter_prefixes \
+	json_get_vars name id token listen servers ice_servers candidate_filter_prefixes \
 		tap_interface_name ipv6_subnet encrypt_local_packets enable_packet_information ipaddr ip6addr
 
 	case "$config" in
@@ -65,6 +66,7 @@ proto_cryonet_setup() {
 	}
 	set -- /usr/bin/cryonet --tap-mode --ctl-path "/var/run/cryonet-$config.ctl"
 	[ -n "$name" ] && set -- "$@" --name "$name"
+	[ -n "$id" ] && set -- "$@" --id "$id"
 	[ -n "$token" ] && set -- "$@" --token "$token"
 	[ -n "$listen" ] && set -- "$@" --listen "$listen"
 	[ -n "$servers" ] && set -- "$@" --servers "$servers"

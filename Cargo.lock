@@ -714,6 +714,7 @@ dependencies = [
  "anyhow",
  "cidr",
  "clap",
+ "clap-num",
  "cryonet-lib",
  "cryonet-uapi",
  "futures",
