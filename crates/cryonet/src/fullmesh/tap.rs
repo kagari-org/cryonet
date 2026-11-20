@@ -82,17 +82,15 @@ impl TapManager {
         });
 
         let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
-        let future = send_loop(
-            Duration::from_secs(3),
+        let context = TapContext {
             enable_packet_information,
+            tap_mac,
             ips,
-            device.clone(),
+            device: device.clone(),
             #[cfg(target_os = "linux")]
             if_index,
-            tap_mac,
-            send_msg_rx,
-        );
-        tokio::spawn(future);
+        };
+        tokio::spawn(context.run(send_msg_rx, Duration::from_secs(3)));
         Ok(TapManager {
             device,
             tap_mac,
@@ -228,178 +226,217 @@ fn delete_neighbor(if_index: u32, ip: IpAddr) {
     }
 }
 
-async fn send_loop(
-    keepalive_interval: Duration,
+struct TapContext {
     enable_packet_information: bool,
+    tap_mac: [u8; 6],
     ips: Arc<Mutex<IpMap>>,
     device: Arc<AsyncDevice>,
-    #[cfg(target_os = "linux")] if_index: Option<u32>,
-    device_mac: [u8; 6],
-    mut msg_rx: mpsc::UnboundedReceiver<SendLoopMessage>,
-) {
-    let mut senders = HashMap::new();
-    let mut by_node = HashMap::new();
-    let mut by_mac = HashMap::new();
-    let mut buf = [0u8; 2000];
-    let mut keepalive_ticker = delayed_interval(jitter(keepalive_interval, 0.1));
-    // We use a single byte as keepalive packet, which is guaranteed to be smaller than any valid packet.
-    let keepalive = Bytes::from_static(&[0u8; 1]);
-    loop {
-        tokio::select! {
-            msg = msg_rx.recv() => match msg {
-                None | Some(SendLoopMessage::Stop) => break,
-                Some(SendLoopMessage::Connected(node_id, mac, sender)) => {
-                    by_node.insert(node_id, mac);
-                    by_mac.insert(mac, node_id);
-                    senders.insert(node_id, sender);
-                }
-                Some(SendLoopMessage::Disconnected(node_id)) => {
-                    if let Some(mac) = by_node.remove(&node_id) {
-                        by_mac.remove(&mac);
+    #[cfg(target_os = "linux")]
+    if_index: Option<u32>,
+}
+
+impl TapContext {
+    async fn run(
+        self,
+        mut msg_rx: mpsc::UnboundedReceiver<SendLoopMessage>,
+        keepalive_interval: Duration,
+    ) {
+        let mut peers = Peers::default();
+        let mut buf = [0u8; 2000];
+        let mut keepalive_ticker = delayed_interval(jitter(keepalive_interval, 0.1));
+        // We use a single byte as keepalive packet, which is guaranteed to be smaller than any valid packet.
+        let keepalive = Bytes::from_static(&[0u8; 1]);
+        loop {
+            tokio::select! {
+                msg = msg_rx.recv() => match msg {
+                    None | Some(SendLoopMessage::Stop) => break,
+                    Some(SendLoopMessage::Connected(node_id, mac, sender)) => {
+                        peers.connect(node_id, mac, sender);
                     }
-                    senders.remove(&node_id);
-                    #[cfg(target_os = "linux")]
-                    if let Some(if_index) = if_index {
-                        let peer_ips: Vec<IpAddr> = {
-                            let ip_map = ips.lock().await;
-                            ip_map
-                                .iter()
-                                .filter(|(_, entry)| entry.node == node_id)
-                                .map(|(ip, _)| *ip)
-                                .collect()
-                        };
-                        for ip in peer_ips {
-                            delete_neighbor(if_index, ip);
-                        }
+                    Some(SendLoopMessage::Disconnected(node_id)) => {
+                        self.disconnect(&mut peers, node_id).await;
                     }
-                }
-            },
-            // Moving the keepalive logic to otherside is too annoying, so just send keepalive from here.
-            _ = keepalive_ticker.tick() => {
-                for (node_id, sender) in &mut senders {
-                    if let Err(err) = sender.send(keepalive.clone()).await {
-                        error!("Failed to send keepalive to node {node_id:X}: {err}");
-                    }
-                }
+                },
+                // Moving the keepalive logic to otherside is too annoying, so just send keepalive from here.
+                _ = keepalive_ticker.tick() => peers.keepalive(keepalive.clone()).await,
+                res = self.device.recv(&mut buf) => match res {
+                    Ok(size) => self.handle_frame(&mut peers, &buf[..size]).await,
+                    Err(err) => error!("Failed to read from TAP device: {err}"),
+                },
             }
-            res = device.recv(&mut buf) => {
-                let packet = match res {
-                    Ok(size) => match EthernetPacket::new(&buf[..size]) {
-                        Some(packet) => packet,
-                        None => {
-                            error!("Failed to parse Ethernet packet from TAP device");
-                            continue;
-                        }
-                    },
-                    Err(err) => {
-                        error!("Failed to read from TAP device: {err}");
-                        continue;
-                    }
-                };
-                if packet.get_source() != device_mac {
-                    warn!("Received Ethernet packet with unexpected source MAC: {}", packet.get_source());
-                    continue;
-                }
-                let dst_mac = packet.get_destination();
-                if dst_mac.0 & 1 == 1 {
-                    // multicast
-                    let arp = packet.get_ethertype() == EtherTypes::Arp;
-                    let ndp = is_ndp(&packet, NsNa::Ns);
-                    if !(arp || ndp) {
-                        // broadcast to all nodes
-                        for (node_id, sender) in &mut senders {
-                            let payload = packet.payload();
-                            let mut bytes = BytesMut::with_capacity(payload.len() + 4);
-                            if enable_packet_information {
-                                bytes.put_u16(0); // flags
-                                bytes.put_u16(packet.get_ethertype().0);
-                            }
-                            bytes.extend_from_slice(payload);
-                            if let Err(err) = sender.send(bytes.freeze()).await {
-                                error!("Failed to send packet to node {node_id:X}: {err}");
-                            }
-                        }
-                        continue;
-                    }
-                    // anwser ARP and NDP
-                    if arp {
-                        let Some(arp) = ArpPacket::new(packet.payload()) else {
-                            warn!("Failed to parse ARP packet");
-                            continue;
-                        };
-                        let src_ip = arp.get_target_proto_addr();
-                        let node_id = {
-                            let ips = ips.lock().await;
-                            ips.get(&IpAddr::V4(src_ip)).map(|entry| entry.node)
-                        };
-                        let Some(node_id) = node_id else {
-                            warn!("Received ARP packet for unknown IP address: {src_ip}");
-                            continue;
-                        };
-                        let Some(src_mac) = by_node.get(&node_id).copied() else {
-                            debug!("No address assigned for node {node_id:X}");
-                            continue;
-                        };
-                        let dst_ip = arp.get_sender_proto_addr();
-                        let dst_mac = device_mac;
-                        // send ARP reply
-                        if let Err(err) = send_arp_reply(&device, src_mac, dst_mac, src_ip, dst_ip).await {
-                            error!("Failed to send ARP reply for IP {src_ip}: {err}");
-                        }
-                    }
-                    if ndp {
-                        // we checked packets in is_ndp_ns
-                        let ipv6 = Ipv6Packet::new(packet.payload()).unwrap();
-                        let Some(ns) = NeighborSolicitPacket::new(ipv6.payload()) else {
-                            warn!("Failed to parse Neighbor Solicitation packet");
-                            continue;
-                        };
-                        let src_ip = ns.get_target_addr();
-                        let node_id = {
-                            let ips = ips.lock().await;
-                            ips.get(&IpAddr::V6(src_ip)).map(|entry| entry.node)
-                        };
-                        let Some(node_id) = node_id else {
-                            warn!("Received NDP Neighbor Solicitation packet for unknown IP address: {src_ip}");
-                            continue;
-                        };
-                        let Some(src_mac) = by_node.get(&node_id).copied() else {
-                            debug!("No address assigned for node {node_id:X}");
-                            continue;
-                        };
-                        let dst_ip = ipv6.get_source();
-                        let dst_mac = device_mac;
-                        // send na
-                        if let Err(err) = send_ndp_na(&device, src_mac, dst_mac, src_ip, dst_ip).await {
-                            error!("Failed to send NDP Neighbor Advertisement for IP {src_ip}: {err}");
-                        }
-                    }
-                    continue;
-                }
-                // unicast
-                if packet.get_ethertype() == EtherTypes::Arp || is_ndp(&packet, NsNa::Na) {
-                    // drop ARP and NDP responses
-                    continue;
-                }
-                // TODO: drop packets other than IPv4, IPv6 and MPLS?
-                let Some(node_id) = by_mac.get(&dst_mac.octets()).copied() else {
-                    warn!("Received Ethernet packet with unexpected destination MAC: {dst_mac}");
-                    continue;
-                };
-                let Some(sender) = senders.get_mut(&node_id) else {
-                    warn!("Received Ethernet packet for unknown node ID {node_id:X}");
-                    continue;
-                };
-                let payload = packet.payload();
-                let mut bytes = BytesMut::with_capacity(payload.len() + 4);
-                if enable_packet_information {
-                    bytes.put_u16(0); // flags
-                    bytes.put_u16(packet.get_ethertype().0);
-                }
-                bytes.extend_from_slice(payload);
-                if let Err(err) = sender.send(bytes.freeze()).await {
+        }
+    }
+
+    async fn disconnect(&self, peers: &mut Peers, node_id: NodeId) {
+        peers.remove(node_id);
+        #[cfg(target_os = "linux")]
+        if let Some(if_index) = self.if_index {
+            let peer_ips: Vec<IpAddr> = {
+                let ip_map = self.ips.lock().await;
+                ip_map
+                    .iter()
+                    .filter(|(_, entry)| entry.node == node_id)
+                    .map(|(ip, _)| *ip)
+                    .collect()
+            };
+            for ip in peer_ips {
+                delete_neighbor(if_index, ip);
+            }
+        }
+    }
+
+    async fn handle_frame(&self, peers: &mut Peers, frame: &[u8]) {
+        let Some(packet) = EthernetPacket::new(frame) else {
+            error!("Failed to parse Ethernet packet from TAP device");
+            return;
+        };
+        if packet.get_source() != self.tap_mac {
+            warn!(
+                "Received Ethernet packet with unexpected source MAC: {}",
+                packet.get_source()
+            );
+            return;
+        }
+        let dst_mac = packet.get_destination();
+        if dst_mac.0 & 1 == 1 {
+            self.handle_multicast(peers, &packet).await;
+        } else {
+            self.forward_unicast(peers, &packet).await;
+        }
+    }
+
+    async fn handle_multicast(&self, peers: &mut Peers, packet: &EthernetPacket<'_>) {
+        let arp = packet.get_ethertype() == EtherTypes::Arp;
+        let ndp = is_ndp(packet, NsNa::Ns);
+        if !(arp || ndp) {
+            // broadcast to all nodes
+            let bytes = self.encode(packet);
+            for (node_id, sender) in &mut peers.senders {
+                if let Err(err) = sender.send(bytes.clone()).await {
                     error!("Failed to send packet to node {node_id:X}: {err}");
                 }
+            }
+            return;
+        }
+        // anwser ARP and NDP
+        if arp {
+            self.answer_arp(peers, packet).await;
+        }
+        if ndp {
+            self.answer_ndp(peers, packet).await;
+        }
+    }
+
+    fn encode(&self, packet: &EthernetPacket<'_>) -> Bytes {
+        let payload = packet.payload();
+        let mut bytes = BytesMut::with_capacity(payload.len() + 4);
+        if self.enable_packet_information {
+            bytes.put_u16(0); // flags
+            bytes.put_u16(packet.get_ethertype().0);
+        }
+        bytes.extend_from_slice(payload);
+        bytes.freeze()
+    }
+
+    async fn answer_arp(&self, peers: &Peers, packet: &EthernetPacket<'_>) {
+        let Some(arp) = ArpPacket::new(packet.payload()) else {
+            warn!("Failed to parse ARP packet");
+            return;
+        };
+        let src_ip = arp.get_target_proto_addr();
+        let node_id = {
+            let ips = self.ips.lock().await;
+            ips.get(&IpAddr::V4(src_ip)).map(|entry| entry.node)
+        };
+        let Some(node_id) = node_id else {
+            warn!("Received ARP packet for unknown IP address: {src_ip}");
+            return;
+        };
+        let Some(src_mac) = peers.by_node.get(&node_id).copied() else {
+            debug!("No address assigned for node {node_id:X}");
+            return;
+        };
+        let dst_ip = arp.get_sender_proto_addr();
+        let dst_mac = self.tap_mac;
+        if let Err(err) = send_arp_reply(&self.device, src_mac, dst_mac, src_ip, dst_ip).await {
+            error!("Failed to send ARP reply for IP {src_ip}: {err}");
+        }
+    }
+
+    async fn answer_ndp(&self, peers: &Peers, packet: &EthernetPacket<'_>) {
+        // we checked packets in is_ndp_ns
+        let ipv6 = Ipv6Packet::new(packet.payload()).unwrap();
+        let Some(ns) = NeighborSolicitPacket::new(ipv6.payload()) else {
+            warn!("Failed to parse Neighbor Solicitation packet");
+            return;
+        };
+        let src_ip = ns.get_target_addr();
+        let node_id = {
+            let ips = self.ips.lock().await;
+            ips.get(&IpAddr::V6(src_ip)).map(|entry| entry.node)
+        };
+        let Some(node_id) = node_id else {
+            warn!("Received NDP Neighbor Solicitation packet for unknown IP address: {src_ip}");
+            return;
+        };
+        let Some(src_mac) = peers.by_node.get(&node_id).copied() else {
+            debug!("No address assigned for node {node_id:X}");
+            return;
+        };
+        let dst_ip = ipv6.get_source();
+        let dst_mac = self.tap_mac;
+        if let Err(err) = send_ndp_na(&self.device, src_mac, dst_mac, src_ip, dst_ip).await {
+            error!("Failed to send NDP Neighbor Advertisement for IP {src_ip}: {err}");
+        }
+    }
+
+    async fn forward_unicast(&self, peers: &mut Peers, packet: &EthernetPacket<'_>) {
+        let dst_mac = packet.get_destination();
+        if packet.get_ethertype() == EtherTypes::Arp || is_ndp(packet, NsNa::Na) {
+            // drop ARP and NDP responses
+            return;
+        }
+        // TODO: drop packets other than IPv4, IPv6 and MPLS?
+        let Some(node_id) = peers.by_mac.get(&dst_mac.octets()).copied() else {
+            warn!("Received Ethernet packet with unexpected destination MAC: {dst_mac}");
+            return;
+        };
+        let Some(sender) = peers.senders.get_mut(&node_id) else {
+            warn!("Received Ethernet packet for unknown node ID {node_id:X}");
+            return;
+        };
+        let bytes = self.encode(packet);
+        if let Err(err) = sender.send(bytes).await {
+            error!("Failed to send packet to node {node_id:X}: {err}");
+        }
+    }
+}
+
+#[derive(Default)]
+struct Peers {
+    senders: HashMap<NodeId, Box<IceSender>>,
+    by_node: HashMap<NodeId, [u8; 6]>,
+    by_mac: HashMap<[u8; 6], NodeId>,
+}
+
+impl Peers {
+    fn connect(&mut self, node_id: NodeId, mac: [u8; 6], sender: Box<IceSender>) {
+        self.by_node.insert(node_id, mac);
+        self.by_mac.insert(mac, node_id);
+        self.senders.insert(node_id, sender);
+    }
+
+    fn remove(&mut self, node_id: NodeId) {
+        if let Some(mac) = self.by_node.remove(&node_id) {
+            self.by_mac.remove(&mac);
+        }
+        self.senders.remove(&node_id);
+    }
+
+    async fn keepalive(&mut self, keepalive: Bytes) {
+        for (node_id, sender) in &mut self.senders {
+            if let Err(err) = sender.send(keepalive.clone()).await {
+                error!("Failed to send keepalive to node {node_id:X}: {err}");
             }
         }
     }

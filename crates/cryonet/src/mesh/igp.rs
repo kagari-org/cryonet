@@ -149,24 +149,10 @@ impl Igp {
             .await?;
         let mesh_event_rx = mesh.subscribe_mesh_events().await?;
         let now = Instant::now();
-        let self_metric = SeqMetric {
-            seq: Seq(0),
-            metric: 0,
-        };
         let mut routes = HashMap::new();
-        routes.insert(
-            (id, id),
-            Route {
-                metric: self_metric,
-                computed_metric: 0,
-                dst: id,
-                from: id,
-                timeout: now + route_timeout,
-                selected: true,
-            },
-        );
+        routes.insert((id, id), self_route(id, now, route_timeout));
         let mut sources = HashMap::new();
-        sources.insert(id, (self_metric, now + source_timeout));
+        sources.insert(id, self_source(now, source_timeout));
         let (future, igp) = Igp::run(move |handle| Igp {
             handle,
             id,
@@ -238,32 +224,18 @@ impl Igp {
     #[no_reply]
     async fn dump(&mut self, neigh: Option<NodeId>) -> Result<()> {
         // add self route
+        let now = Instant::now();
+        let id = self.id;
+        let route_timeout = self.route_timeout;
+        let source_timeout = self.source_timeout;
         self.routes
-            .entry((self.id, self.id))
-            .and_modify(|route| route.timeout = Instant::now() + self.route_timeout)
-            .or_insert_with(|| Route {
-                metric: SeqMetric {
-                    seq: Seq(0),
-                    metric: 0,
-                },
-                computed_metric: 0,
-                dst: self.id,
-                from: self.id,
-                timeout: Instant::now() + self.route_timeout,
-                selected: true,
-            });
+            .entry((id, id))
+            .and_modify(|route| route.timeout = now + route_timeout)
+            .or_insert_with(|| self_route(id, now, route_timeout));
         self.sources
-            .entry(self.id)
-            .and_modify(|source| source.1 = Instant::now() + self.source_timeout)
-            .or_insert_with(|| {
-                (
-                    SeqMetric {
-                        seq: Seq(0),
-                        metric: 0,
-                    },
-                    Instant::now() + self.source_timeout,
-                )
-            });
+            .entry(id)
+            .and_modify(|source| source.1 = now + source_timeout)
+            .or_insert_with(|| self_source(now, source_timeout));
 
         self.select_route().await?;
 
@@ -385,10 +357,8 @@ impl Igp {
                     .find(|((d, _), r)| d == dst && r.selected);
                 match route {
                     Some((_, route)) => {
-                        self.stats.updates_sent += 1;
-                        self.mesh
-                            .broadcast_packet_local(generate_update(route))
-                            .await?;
+                        let distance = route_distance(route);
+                        self.advertise(*dst, distance).await?;
                     }
                     None => {
                         self.stats.updates_sent += 1;
@@ -402,136 +372,111 @@ impl Igp {
             IgpPayload::RouteDump => self.dump(Some(src)).await?,
 
             IgpPayload::SequenceRequest { seq, dst, ttl } => {
-                let route = find_route_for_request(&mut self.routes, *dst, self.id);
-                let route = match route {
-                    Some(route) => {
-                        if route.metric.metric == u32::MAX {
-                            debug!(
-                                "Route to node {dst:X} is unreachable, dropping SequenceRequest"
-                            );
-                            return Ok(());
-                        }
-                        route
-                    }
-                    None => {
-                        debug!("No route to node {dst:X}, dropping SequenceRequest");
-                        return Ok(());
-                    }
-                };
-                if *seq <= route.metric.seq {
-                    self.stats.updates_sent += 1;
-                    self.mesh
-                        .broadcast_packet_local(generate_update(route))
-                        .await?;
-                    return Ok(());
-                }
-                if *dst == self.id {
-                    // RFC 8966 3.2.2 says the source increments its seqno on every
-                    // request, while 4.6.11 only requires the response to be no older
-                    // than the requested seqno. After a restart our self seqno is back
-                    // at 0 while neighbours still hold the previous value in their
-                    // feasibility distance. Incrementing by one would need one request
-                    // per missing seqno and usually falls back to the source GC timer;
-                    // jump straight to the requested value instead. The check above
-                    // guarantees the request is ahead, so this never moves the seqno
-                    // backwards. This is a deliberate local extension to the literal
-                    // +1 behaviour, not a spontaneous increment.
-                    route.metric.seq = self_seq_after_request(route.metric.seq, *seq);
-
-                    self.stats.updates_sent += 1;
-                    self.mesh
-                        .broadcast_packet_local(generate_update(route))
-                        .await?;
-                    return Ok(());
-                }
-                // forward the request
-                if *ttl == 0 {
-                    debug!("SequenceRequest to node {dst:X} expired: TTL=0");
-                    return Ok(());
-                }
-                let source = self.sources.get(dst);
-                let existing_request = self.requests.get(dst);
-                if let Some(existing_request) = existing_request
-                    && *seq <= existing_request.seq
-                    && Instant::now() < existing_request.expiry
-                {
-                    debug!(
-                        "Suppressing duplicate SequenceRequest for node {dst:X} with seq {seq:?}"
-                    );
-                    return Ok(());
-                }
-                self.requests.insert(
-                    *dst,
-                    RouteRequest {
-                        seq: *seq,
-                        expiry: Instant::now() + self.seqno_request_timeout,
-                        retries: 0,
-                    },
-                );
-                let mut route_feasible: Option<&Route> = None;
-                let mut route_any: Option<&Route> = None;
-                for ((_, neigh), route) in &self.routes {
-                    if *neigh == src || *dst != route.dst {
-                        continue;
-                    }
-                    if let Some(source) = source
-                        && route.metric.feasible(&source.0)
-                    {
-                        match route_feasible {
-                            None => route_feasible = Some(route),
-                            Some(rf) => {
-                                if route.computed_metric < rf.computed_metric {
-                                    route_feasible = Some(route);
-                                }
-                            }
-                        }
-                    }
-                    match route_any {
-                        None => route_any = Some(route),
-                        Some(ra) => {
-                            if route.computed_metric < ra.computed_metric {
-                                route_any = Some(route);
-                            }
-                        }
-                    }
-                }
-                // ttl decrement
-                let mut payload = Box::new(payload.clone());
-                match payload.as_mut() {
-                    IgpPayload::SequenceRequest { ttl, .. } => *ttl = ttl.saturating_sub(1),
-                    _ => unreachable!(),
-                }
-                // send
-                if let Some(route) = route_feasible {
-                    self.mesh.send_packet_link(route.from, payload).await?;
-                    return Ok(());
-                }
-                if let Some(route) = route_any {
-                    self.mesh.send_packet_link(route.from, payload).await?;
-                    return Ok(());
-                }
-                debug!("No alternative route to node {dst:X}, dropping SequenceRequest");
+                self.handle_sequence_request(src, *seq, *dst, *ttl).await?;
             }
 
             IgpPayload::Update { metric, dst } => {
-                self.apply_update(src, *metric, *dst).await?;
+                if self.apply_update(src, *metric, *dst).await? {
+                    self.select_route().await?;
+                }
             }
 
             IgpPayload::Updates(updates) => {
+                let mut changed = false;
                 for (metric, dst) in updates {
-                    self.apply_update(src, *metric, *dst).await?;
+                    changed |= self.apply_update(src, *metric, *dst).await?;
+                }
+                if changed {
+                    self.select_route().await?;
                 }
             }
         }
         Ok(())
     }
 
+    // RFC 8966 3.2.2: answer, jump the self seqno or forward the request.
     #[skip]
-    async fn apply_update(&mut self, src: NodeId, metric: SeqMetric, dst: NodeId) -> Result<()> {
+    async fn handle_sequence_request(
+        &mut self,
+        src: NodeId,
+        seq: Seq,
+        dst: NodeId,
+        ttl: u16,
+    ) -> Result<()> {
+        let Some(route) = find_route_for_request(&mut self.routes, dst, self.id) else {
+            debug!("No route to node {dst:X}, dropping SequenceRequest");
+            return Ok(());
+        };
+        if route.metric.metric == u32::MAX {
+            debug!("Route to node {dst:X} is unreachable, dropping SequenceRequest");
+            return Ok(());
+        }
+        if seq <= route.metric.seq {
+            let distance = route_distance(route);
+            self.advertise(dst, distance).await?;
+            return Ok(());
+        }
+        if dst == self.id {
+            // RFC 8966 3.2.2 says the source increments its seqno on every
+            // request, while 4.6.11 only requires the response to be no older
+            // than the requested seqno. After a restart our self seqno is back
+            // at 0 while neighbours still hold the previous value in their
+            // feasibility distance. Incrementing by one would need one request
+            // per missing seqno and usually falls back to the source GC timer;
+            // jump straight to the requested value instead. The check above
+            // guarantees the request is ahead, so this never moves the seqno
+            // backwards. This is a deliberate local extension to the literal
+            // +1 behaviour, not a spontaneous increment.
+            route.metric.seq = self_seq_after_request(route.metric.seq, seq);
+            let distance = route_distance(route);
+            self.advertise(dst, distance).await?;
+            return Ok(());
+        }
+        if ttl == 0 {
+            debug!("SequenceRequest to node {dst:X} expired: TTL=0");
+            return Ok(());
+        }
+        let source = self.sources.get(&dst).copied();
+        let existing_request = self.requests.get(&dst);
+        if let Some(existing_request) = existing_request
+            && seq <= existing_request.seq
+            && Instant::now() < existing_request.expiry
+        {
+            debug!("Suppressing duplicate SequenceRequest for node {dst:X} with seq {seq:?}");
+            return Ok(());
+        }
+        self.requests.insert(
+            dst,
+            RouteRequest {
+                seq,
+                expiry: Instant::now() + self.seqno_request_timeout,
+                retries: 0,
+            },
+        );
+        let next_hop = best_forward_route(&self.routes, src, dst, source.map(|source| source.0));
+        let Some(next_hop) = next_hop else {
+            debug!("No alternative route to node {dst:X}, dropping SequenceRequest");
+            return Ok(());
+        };
+        self.mesh
+            .send_packet_link(
+                next_hop,
+                Box::new(IgpPayload::SequenceRequest {
+                    seq,
+                    dst,
+                    ttl: ttl.saturating_sub(1),
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[skip]
+    async fn apply_update(&mut self, src: NodeId, metric: SeqMetric, dst: NodeId) -> Result<bool> {
         self.stats.updates_received += 1;
         if dst == self.id {
             // ignore updates about ourself
-            return Ok(());
+            return Ok(false);
         }
         let computed_metric = match (self.costs.get(&src), metric.metric) {
             (_, u32::MAX) => u32::MAX,
@@ -545,13 +490,13 @@ impl Igp {
             Entry::Vacant(entry) => {
                 if metric.metric == u32::MAX {
                     // ignore
-                    return Ok(());
+                    return Ok(false);
                 }
                 if let Some(source) = source
                     && !metric.feasible(&source.0)
                 {
                     // ignore
-                    return Ok(());
+                    return Ok(false);
                 }
                 entry.insert(Route {
                     metric,
@@ -570,7 +515,7 @@ impl Igp {
                     && !metric.feasible(&source.0)
                 {
                     // ignore
-                    return Ok(());
+                    return Ok(false);
                 }
                 // ignore seq of retraction update
                 if metric.metric == u32::MAX {
@@ -591,20 +536,16 @@ impl Igp {
         }
 
         // check seqno requests
-        let route = &self.routes[&(dst, src)];
         if let Some(seqno_request) = self.requests.get(&dst)
             && metric.seq >= seqno_request.seq
         {
             self.requests.remove(&dst);
             // trigger update
-            self.stats.updates_sent += 1;
-            self.mesh
-                .broadcast_packet_local(generate_update(route))
-                .await?;
+            let distance = route_distance(&self.routes[&(dst, src)]);
+            self.advertise(dst, distance).await?;
         }
 
-        self.select_route().await?;
-        Ok(())
+        Ok(true)
     }
 
     #[no_reply]
@@ -641,6 +582,17 @@ impl Igp {
             }
         };
         Ok(())
+    }
+
+    #[skip]
+    async fn advertise(&mut self, dst: NodeId, distance: SeqMetric) -> Result<()> {
+        self.stats.updates_sent += 1;
+        self.mesh
+            .broadcast_packet_local(Box::new(IgpPayload::Update {
+                dst,
+                metric: distance,
+            }))
+            .await
     }
 
     async fn select_route(&mut self) -> Result<()> {
@@ -869,6 +821,60 @@ fn route_distance(route: &Route) -> SeqMetric {
         seq: route.metric.seq,
         metric: route.computed_metric,
     }
+}
+
+fn self_route(id: NodeId, now: Instant, route_timeout: Duration) -> Route {
+    Route {
+        metric: SeqMetric {
+            seq: Seq(0),
+            metric: 0,
+        },
+        computed_metric: 0,
+        dst: id,
+        from: id,
+        timeout: now + route_timeout,
+        selected: true,
+    }
+}
+
+fn self_source(now: Instant, source_timeout: Duration) -> (SeqMetric, Instant) {
+    (
+        SeqMetric {
+            seq: Seq(0),
+            metric: 0,
+        },
+        now + source_timeout,
+    )
+}
+
+fn best_forward_route(
+    routes: &HashMap<(NodeId, NodeId), Route>,
+    src: NodeId,
+    dst: NodeId,
+    source: Option<SeqMetric>,
+) -> Option<NodeId> {
+    let mut feasible: Option<&Route> = None;
+    let mut any: Option<&Route> = None;
+    for ((_, neigh), route) in routes {
+        if *neigh == src || route.dst != dst {
+            continue;
+        }
+        if let Some(source) = source
+            && route.metric.feasible(&source)
+        {
+            feasible = Some(match feasible {
+                None => route,
+                Some(best) if route.computed_metric < best.computed_metric => route,
+                Some(best) => best,
+            });
+        }
+        any = Some(match any {
+            None => route,
+            Some(best) if route.computed_metric < best.computed_metric => route,
+            Some(best) => best,
+        });
+    }
+    feasible.or(any).map(|route| route.from)
 }
 
 fn remaining_ms(now: Instant, instant: Instant) -> i64 {

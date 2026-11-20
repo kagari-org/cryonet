@@ -188,15 +188,15 @@ impl FullMesh {
             return Ok(());
         };
         let src = packet.src;
+        if src == self.id {
+            error!("Received packet from self (node {:X}), ignoring", self.id);
+            return Ok(());
+        }
         let payload = packet
             .payload
             .as_payload()
             .and_then(|payload| (payload as &dyn Any).downcast_ref::<FullMeshPayload>())
             .unwrap();
-        if src == self.id {
-            error!("Received packet from self (node {:X}), ignoring", self.id);
-            return Ok(());
-        }
         match payload {
             FullMeshPayload::Shake {
                 ufrag,
@@ -206,236 +206,241 @@ impl FullMesh {
                 session,
                 conn_gen,
             } => {
-                let public_key = serde_json::from_str::<PublicKey>(public_key)?;
-                if !is_initiator(self.id, src) {
-                    if let Some(existing) = self.connections.get(&src)
-                        && existing.peer_session == *session
-                        && *conn_gen <= existing.conn_gen
-                    {
-                        debug!(
-                            "node {:X}: ignoring stale shake from {src:X}: gen {conn_gen} <= {}",
-                            self.id, existing.conn_gen
-                        );
-                        return Ok(());
-                    }
-                    let ecdh_key = EphemeralSecret::generate();
-                    let local_public_key = ecdh_key.public_key();
-                    let mut key = [0; 16];
-                    ecdh_key
-                        .diffie_hellman(&public_key)
-                        .extract::<Sha256>(None)
-                        .expand(b"", &mut key)?;
-                    let key = IceKey {
-                        index: false,
-                        key: key.into(),
-                    };
-
-                    let (mut connection, parameters, local_candidates) = IceConnection::new(
-                        self.id,
-                        src,
-                        self.handle.clone(),
-                        self.ice_servers.clone(),
-                        self.candidate_filter_prefixes.clone(),
-                        self.encrypt_local_packets,
-                        false,
-                    )
-                    .await?;
-                    connection.start(IceParameters::new(ufrag, pwd)).await?;
-                    connection.add_candidates(candidates);
-                    connection.set_recv_key(key);
-                    connection.set_send_key(key);
-                    let old = self.connections.insert(
-                        src,
-                        FullMeshConnection {
-                            connection,
-                            last_received: (0, Instant::now()),
-                            once_connected: false,
-                            peer_session: *session,
-                            conn_gen: *conn_gen,
-                            last_rekey: Instant::now(),
-                            ecdh_key,
-                        },
-                    );
-                    if old.is_some()
-                        && let Err(err) = self.dm.lock().await.disconnected(src).await
-                    {
-                        error!(
-                            "node {:X}: failed to mark peer {src:X} disconnected: {err:?}",
-                            self.id
-                        );
-                    }
-                    self.last_seen_gen.insert(src, *conn_gen);
-                    self.mesh
-                        .send_packet_reliable(
-                            src,
-                            Box::new(FullMeshPayload::Shake {
-                                ufrag: parameters.username_fragment,
-                                pwd: parameters.password,
-                                candidates: local_candidates,
-                                public_key: serde_json::to_string(&local_public_key)?,
-                                session: self.session,
-                                conn_gen: *conn_gen,
-                            }),
-                        )
-                        .await?;
-                } else {
-                    let Some(conn) = self.connections.get_mut(&src) else {
-                        warn!(
-                            "Received shake from peer {src:X} but no connection exists, ignoring"
-                        );
-                        return Ok(());
-                    };
-                    if *conn_gen != conn.conn_gen {
-                        debug!(
-                            "node {:X}: ignoring stale shake reply from {src:X}: gen {conn_gen} != {}",
-                            self.id, conn.conn_gen
-                        );
-                        return Ok(());
-                    }
-                    conn.peer_session = *session;
-                    conn.last_rekey = Instant::now();
-                    let mut key = [0; 16];
-                    conn.ecdh_key
-                        .diffie_hellman(&public_key)
-                        .extract::<Sha256>(None)
-                        .expand(b"", &mut key)?;
-                    let key = IceKey {
-                        index: false,
-                        key: key.into(),
-                    };
-                    let connection = &mut conn.connection;
-                    connection.start(IceParameters::new(ufrag, pwd)).await?;
-                    connection.add_candidates(candidates);
-                    connection.set_recv_key(key);
-                    connection.set_send_key(key);
-                }
+                self.handle_shake(src, ufrag, pwd, candidates, public_key, *session, *conn_gen)
+                    .await
             }
             FullMeshPayload::Rekey { index, public_key } => {
-                let public_key = serde_json::from_str::<PublicKey>(public_key)?;
-                let Some(conn) = self.connections.get_mut(&src) else {
-                    warn!("Received rekey from peer {src:X} but no connection exists, ignoring");
-                    return Ok(());
-                };
-                let connection = &mut conn.connection;
-                if !is_initiator(self.id, src) {
-                    // we received the rekey request
-                    let new_ecdh_key = EphemeralSecret::generate();
-                    let new_public_key = new_ecdh_key.public_key();
-                    let mut key = [0; 16];
-                    new_ecdh_key
-                        .diffie_hellman(&public_key)
-                        .extract::<Sha256>(None)
-                        .expand(b"", &mut key)?;
-                    self.mesh
-                        .send_packet_reliable(
-                            src,
-                            Box::new(FullMeshPayload::Rekey {
-                                index: *index,
-                                public_key: serde_json::to_string(&new_public_key)?,
-                            }),
-                        )
-                        .await?;
-                    connection.set_recv_key(IceKey {
-                        index: *index,
-                        key: key.into(),
-                    });
-                    conn.ecdh_key = new_ecdh_key;
-                    conn.last_rekey = Instant::now();
-                } else {
-                    // we received the rekey response
-                    if connection.key().is_some_and(|key| key.index == *index) {
-                        debug!("Ignoring stale rekey response from peer {src:X}");
-                        return Ok(());
-                    }
-                    let mut key = [0; 16];
-                    conn.ecdh_key
-                        .diffie_hellman(&public_key)
-                        .extract::<Sha256>(None)
-                        .expand(b"", &mut key)?;
-                    let new_key = IceKey {
-                        index: *index,
-                        key: key.into(),
-                    };
-                    connection.set_recv_key(new_key);
-                    connection.set_send_key(new_key);
-                    conn.last_rekey = Instant::now();
-                    self.mesh
-                        .send_packet_reliable(
-                            src,
-                            Box::new(FullMeshPayload::RekeyConfirm {
-                                index: *index,
-                                public_key: serde_json::to_string(&conn.ecdh_key.public_key())?,
-                            }),
-                        )
-                        .await?;
-                }
+                self.handle_rekey(src, *index, public_key).await
             }
             FullMeshPayload::RekeyConfirm { index, public_key } => {
-                let public_key = serde_json::from_str::<PublicKey>(public_key)?;
-                let Some(conn) = self.connections.get_mut(&src) else {
-                    warn!(
-                        "Received rekey ack from peer {src:X} but no connection exists, ignoring",
-                    );
-                    return Ok(());
-                };
-                let connection = &mut conn.connection;
-                // we confirmed the rekey
-                if connection.key().is_some_and(|key| key.index == *index) {
-                    debug!("Ignoring stale rekey confirm from peer {src:X}");
-                    return Ok(());
-                }
-                let mut key = [0; 16];
-                conn.ecdh_key
-                    .diffie_hellman(&public_key)
-                    .extract::<Sha256>(None)
-                    .expand(b"", &mut key)?;
-                connection.set_send_key(IceKey {
-                    index: *index,
-                    key: key.into(),
-                });
+                self.handle_rekey_confirm(src, *index, public_key).await
             }
             FullMeshPayload::ConnectRequest {
                 responder_session,
                 last_seen_gen,
             } => {
-                if !is_initiator(self.id, src) {
-                    return Ok(());
-                }
-                let stale = match self.connections.get(&src) {
-                    None => true,
-                    // Still waiting for this attempt's Shake reply.
-                    Some(conn) if conn.peer_session == 0 => false,
-                    Some(conn) => {
-                        conn.peer_session != *responder_session
-                            || last_seen_gen.is_some_and(|last| conn.conn_gen <= last)
-                    }
-                };
-                debug!(
-                    "node {:X}: ConnectRequest from {src:X}: responder_session={responder_session:X}, last_seen={last_seen_gen:?}, current={:?}, stale={stale}",
-                    self.id,
-                    self.connections
-                        .get(&src)
-                        .map(|conn| (conn.peer_session, conn.conn_gen))
-                );
-                if stale {
-                    if self.connections.remove(&src).is_some() {
-                        let mut dm = self.dm.lock().await;
-                        if let Err(err) = dm.disconnected(src).await {
-                            error!(
-                                "node {:X}: failed to mark peer {src:X} disconnected: {err:?}",
-                                self.id
-                            );
-                        }
-                    }
-                    self.connect_backoff.remove(&src);
-                    if let Err(err) = self.connect_to(src).await {
-                        error!(
-                            "node {:X}: failed to connect to peer {src:X}: {err:?}",
-                            self.id
-                        );
-                    }
-                }
+                self.handle_connect_request(src, *responder_session, *last_seen_gen)
+                    .await
+            }
+        }
+    }
+
+    #[skip]
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_shake(
+        &mut self,
+        src: NodeId,
+        ufrag: &str,
+        pwd: &str,
+        candidates: &[String],
+        public_key: &str,
+        session: u64,
+        conn_gen: u64,
+    ) -> Result<()> {
+        let public_key = serde_json::from_str::<PublicKey>(public_key)?;
+        if is_initiator(self.id, src) {
+            return self
+                .handle_shake_reply(src, ufrag, pwd, candidates, public_key, session, conn_gen)
+                .await;
+        }
+        if let Some(existing) = self.connections.get(&src)
+            && existing.peer_session == session
+            && conn_gen <= existing.conn_gen
+        {
+            debug!(
+                "node {:X}: ignoring stale shake from {src:X}: gen {conn_gen} <= {}",
+                self.id, existing.conn_gen
+            );
+            return Ok(());
+        }
+        let ecdh_key = EphemeralSecret::generate();
+        let local_public_key = ecdh_key.public_key();
+        let key = derive_ice_key(&ecdh_key, &public_key, false)?;
+        let (mut connection, parameters, local_candidates) = IceConnection::new(
+            self.id,
+            src,
+            self.handle.clone(),
+            self.ice_servers.clone(),
+            self.candidate_filter_prefixes.clone(),
+            self.encrypt_local_packets,
+            false,
+        )
+        .await?;
+        connection.start(IceParameters::new(ufrag, pwd)).await?;
+        connection.add_candidates(candidates);
+        connection.set_recv_key(key);
+        connection.set_send_key(key);
+        let old = self.connections.insert(
+            src,
+            FullMeshConnection {
+                connection,
+                last_received: (0, Instant::now()),
+                once_connected: false,
+                peer_session: session,
+                conn_gen,
+                last_rekey: Instant::now(),
+                ecdh_key,
+            },
+        );
+        if old.is_some() {
+            self.mark_disconnected(src).await;
+        }
+        self.last_seen_gen.insert(src, conn_gen);
+        self.mesh
+            .send_packet_reliable(
+                src,
+                Box::new(FullMeshPayload::Shake {
+                    ufrag: parameters.username_fragment,
+                    pwd: parameters.password,
+                    candidates: local_candidates,
+                    public_key: serde_json::to_string(&local_public_key)?,
+                    session: self.session,
+                    conn_gen,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[skip]
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_shake_reply(
+        &mut self,
+        src: NodeId,
+        ufrag: &str,
+        pwd: &str,
+        candidates: &[String],
+        public_key: PublicKey,
+        session: u64,
+        conn_gen: u64,
+    ) -> Result<()> {
+        let Some(conn) = self.connections.get_mut(&src) else {
+            warn!("Received shake from peer {src:X} but no connection exists, ignoring");
+            return Ok(());
+        };
+        if conn_gen != conn.conn_gen {
+            debug!(
+                "node {:X}: ignoring stale shake reply from {src:X}: gen {conn_gen} != {}",
+                self.id, conn.conn_gen
+            );
+            return Ok(());
+        }
+        conn.peer_session = session;
+        conn.last_rekey = Instant::now();
+        let key = derive_ice_key(&conn.ecdh_key, &public_key, false)?;
+        let connection = &mut conn.connection;
+        connection.start(IceParameters::new(ufrag, pwd)).await?;
+        connection.add_candidates(candidates);
+        connection.set_recv_key(key);
+        connection.set_send_key(key);
+        Ok(())
+    }
+
+    #[skip]
+    async fn handle_rekey(&mut self, src: NodeId, index: bool, public_key: &str) -> Result<()> {
+        let public_key = serde_json::from_str::<PublicKey>(public_key)?;
+        let Some(conn) = self.connections.get_mut(&src) else {
+            warn!("Received rekey from peer {src:X} but no connection exists, ignoring");
+            return Ok(());
+        };
+        if !is_initiator(self.id, src) {
+            // we received the rekey request
+            let new_ecdh_key = EphemeralSecret::generate();
+            let new_public_key = new_ecdh_key.public_key();
+            let key = derive_ice_key(&new_ecdh_key, &public_key, index)?;
+            self.mesh
+                .send_packet_reliable(
+                    src,
+                    Box::new(FullMeshPayload::Rekey {
+                        index,
+                        public_key: serde_json::to_string(&new_public_key)?,
+                    }),
+                )
+                .await?;
+            conn.connection.set_recv_key(key);
+            conn.ecdh_key = new_ecdh_key;
+            conn.last_rekey = Instant::now();
+        } else {
+            // we received the rekey response
+            if conn.connection.key().is_some_and(|key| key.index == index) {
+                debug!("Ignoring stale rekey response from peer {src:X}");
                 return Ok(());
+            }
+            let key = derive_ice_key(&conn.ecdh_key, &public_key, index)?;
+            conn.connection.set_recv_key(key);
+            conn.connection.set_send_key(key);
+            conn.last_rekey = Instant::now();
+            self.mesh
+                .send_packet_reliable(
+                    src,
+                    Box::new(FullMeshPayload::RekeyConfirm {
+                        index,
+                        public_key: serde_json::to_string(&conn.ecdh_key.public_key())?,
+                    }),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    #[skip]
+    async fn handle_rekey_confirm(
+        &mut self,
+        src: NodeId,
+        index: bool,
+        public_key: &str,
+    ) -> Result<()> {
+        let public_key = serde_json::from_str::<PublicKey>(public_key)?;
+        let Some(conn) = self.connections.get_mut(&src) else {
+            warn!("Received rekey ack from peer {src:X} but no connection exists, ignoring",);
+            return Ok(());
+        };
+        // we confirmed the rekey
+        if conn.connection.key().is_some_and(|key| key.index == index) {
+            debug!("Ignoring stale rekey confirm from peer {src:X}");
+            return Ok(());
+        }
+        let key = derive_ice_key(&conn.ecdh_key, &public_key, index)?;
+        conn.connection.set_send_key(key);
+        Ok(())
+    }
+
+    #[skip]
+    async fn handle_connect_request(
+        &mut self,
+        src: NodeId,
+        responder_session: u64,
+        last_seen_gen: Option<u64>,
+    ) -> Result<()> {
+        if !is_initiator(self.id, src) {
+            return Ok(());
+        }
+        let stale = match self.connections.get(&src) {
+            None => true,
+            // Still waiting for this attempt's Shake reply.
+            Some(conn) if conn.peer_session == 0 => false,
+            Some(conn) => {
+                conn.peer_session != responder_session
+                    || last_seen_gen.is_some_and(|last| conn.conn_gen <= last)
+            }
+        };
+        debug!(
+            "node {:X}: ConnectRequest from {src:X}: responder_session={responder_session:X}, last_seen={last_seen_gen:?}, current={:?}, stale={stale}",
+            self.id,
+            self.connections
+                .get(&src)
+                .map(|conn| (conn.peer_session, conn.conn_gen))
+        );
+        if stale {
+            if self.connections.remove(&src).is_some() {
+                self.mark_disconnected(src).await;
+            }
+            self.connect_backoff.remove(&src);
+            if let Err(err) = self.connect_to(src).await {
+                error!(
+                    "node {:X}: failed to connect to peer {src:X}: {err:?}",
+                    self.id
+                );
             }
         }
         Ok(())
@@ -473,7 +478,26 @@ impl FullMesh {
     #[no_reply]
     pub(crate) async fn connect_tick(&mut self) -> Result<()> {
         let time = Instant::now();
-        // gc
+        let mut disconnected = self.collect_dead_connections(time).await;
+        self.mark_connected(&mut disconnected).await;
+        for node_id in &disconnected {
+            self.schedule_retry(*node_id);
+        }
+        let nodes = self.registry.get_node_table().await?;
+        self.connect_backoff
+            .retain(|node_id, _| nodes.contains_key(node_id));
+        let peers = nodes.keys().copied().collect::<Vec<_>>();
+        for peer_id in &peers {
+            self.rekey_peer(*peer_id, time).await;
+        }
+        for peer_id in peers {
+            self.dial_peer(peer_id, time).await;
+        }
+        Ok(())
+    }
+
+    #[skip]
+    async fn collect_dead_connections(&mut self, time: Instant) -> Vec<NodeId> {
         let mut disconnected = Vec::new();
         self.connections.retain(|node_id, conn| {
             if is_closed(conn.connection.state()) {
@@ -497,19 +521,21 @@ impl FullMesh {
             }
             keep
         });
-        let mut failed = Vec::new();
-        {
+        if !disconnected.is_empty() {
             let mut dm = self.dm.lock().await;
             for node_id in &disconnected {
                 debug!("node {:X}: connection to peer {node_id:X} is gone", self.id);
-                if let Err(err) = dm.disconnected(*node_id).await {
-                    error!(
-                        "node {:X}: failed to mark peer {node_id:X} disconnected: {err:?}",
-                        self.id
-                    );
-                }
+                log_disconnected(self.id, *node_id, dm.disconnected(*node_id).await);
             }
-            // mark connected
+        }
+        disconnected
+    }
+
+    #[skip]
+    async fn mark_connected(&mut self, disconnected: &mut Vec<NodeId>) {
+        let mut failed = Vec::new();
+        {
+            let mut dm = self.dm.lock().await;
             for (node_id, conn) in &mut self.connections {
                 if conn.once_connected || !is_connected(conn.connection.state()) {
                     continue;
@@ -529,12 +555,7 @@ impl FullMesh {
                             "node {:X}: failed to attach peer {node_id:X}: {err:?}",
                             self.id
                         );
-                        if let Err(err) = dm.disconnected(*node_id).await {
-                            error!(
-                                "node {:X}: failed to mark peer {node_id:X} disconnected: {err:?}",
-                                self.id
-                            );
-                        }
+                        log_disconnected(self.id, *node_id, dm.disconnected(*node_id).await);
                         failed.push(*node_id);
                     }
                 }
@@ -544,113 +565,114 @@ impl FullMesh {
             self.connections.remove(&node_id);
             disconnected.push(node_id);
         }
-        for node_id in &disconnected {
-            self.schedule_retry(*node_id);
+    }
+
+    #[skip]
+    async fn rekey_peer(&mut self, peer_id: NodeId, time: Instant) {
+        if !is_initiator(self.id, peer_id) {
+            return;
         }
-        let nodes = self.registry.get_node_table().await?;
-        self.connect_backoff
-            .retain(|node_id, _| nodes.contains_key(node_id));
-        // rekey
-        for peer_id in nodes.keys() {
-            if !is_initiator(self.id, *peer_id) {
-                continue;
+        let Some(conn) = self.connections.get_mut(&peer_id) else {
+            return;
+        };
+        let connection = &mut conn.connection;
+        // TODO: rekey by sent/received bytes
+        if !is_connected(connection.state())
+            || time.duration_since(conn.last_rekey) < self.rekey_timeout
+        {
+            return;
+        }
+        let Some(key) = connection.key() else {
+            return;
+        };
+        let new_ecdh_key = EphemeralSecret::generate();
+        let new_public_key = new_ecdh_key.public_key();
+        let public_key = match serde_json::to_string(&new_public_key) {
+            Ok(public_key) => public_key,
+            Err(err) => {
+                error!(
+                    "node {:X}: failed to encode the rekey key for peer {peer_id:X}: {err:?}",
+                    self.id
+                );
+                return;
             }
-            let Some(conn) = self.connections.get_mut(peer_id) else {
-                continue;
-            };
-            let connection = &mut conn.connection;
-            // TODO: rekey by sent/received bytes
-            if !is_connected(connection.state())
-                || time.duration_since(conn.last_rekey) < self.rekey_timeout
-            {
-                continue;
-            }
-            let Some(key) = connection.key() else {
-                continue;
-            };
-            let new_ecdh_key = EphemeralSecret::generate();
-            let new_public_key = new_ecdh_key.public_key();
-            let public_key = match serde_json::to_string(&new_public_key) {
-                Ok(public_key) => public_key,
-                Err(err) => {
-                    error!(
-                        "node {:X}: failed to encode the rekey key for peer {peer_id:X}: {err:?}",
-                        self.id
-                    );
-                    continue;
-                }
-            };
-            info!("Rekeying connection to peer {peer_id:X}");
+        };
+        info!("Rekeying connection to peer {peer_id:X}");
+        if let Err(err) = self
+            .mesh
+            .send_packet_reliable(
+                peer_id,
+                Box::new(FullMeshPayload::Rekey {
+                    index: !key.index,
+                    public_key,
+                }),
+            )
+            .await
+        {
+            error!(
+                "node {:X}: failed to send rekey to peer {peer_id:X}: {err:?}",
+                self.id
+            );
+            return;
+        }
+        conn.ecdh_key = new_ecdh_key;
+        conn.last_rekey = time;
+    }
+
+    #[skip]
+    async fn dial_peer(&mut self, peer_id: NodeId, time: Instant) {
+        if self.connections.contains_key(&peer_id) {
+            return;
+        }
+        if let Some((retry_at, _)) = self.connect_backoff.get(&peer_id)
+            && time < *retry_at
+        {
+            return;
+        }
+        if !is_initiator(self.id, peer_id) {
+            debug!(
+                "node {:X}: responder request to {peer_id:X}: session={:X}, last_seen={:?}",
+                self.id,
+                self.session,
+                self.last_seen_gen.get(&peer_id)
+            );
+            self.connect_backoff.insert(
+                peer_id,
+                (
+                    time + jitter(self.connect_interval, 0.2),
+                    self.connect_interval,
+                ),
+            );
             if let Err(err) = self
                 .mesh
                 .send_packet_reliable(
-                    *peer_id,
-                    Box::new(FullMeshPayload::Rekey {
-                        index: !key.index,
-                        public_key,
+                    peer_id,
+                    Box::new(FullMeshPayload::ConnectRequest {
+                        responder_session: self.session,
+                        last_seen_gen: self.last_seen_gen.get(&peer_id).copied(),
                     }),
                 )
                 .await
             {
                 error!(
-                    "node {:X}: failed to send rekey to peer {peer_id:X}: {err:?}",
-                    self.id
-                );
-                continue;
-            }
-            conn.ecdh_key = new_ecdh_key;
-            conn.last_rekey = time;
-        }
-        // connect
-        for &peer_id in nodes.keys() {
-            if self.connections.contains_key(&peer_id) {
-                continue;
-            }
-            if let Some((retry_at, _)) = self.connect_backoff.get(&peer_id)
-                && time < *retry_at
-            {
-                continue;
-            }
-            if !is_initiator(self.id, peer_id) {
-                debug!(
-                    "node {:X}: responder request to {peer_id:X}: session={:X}, last_seen={:?}",
-                    self.id,
-                    self.session,
-                    self.last_seen_gen.get(&peer_id)
-                );
-                self.connect_backoff.insert(
-                    peer_id,
-                    (
-                        time + jitter(self.connect_interval, 0.2),
-                        self.connect_interval,
-                    ),
-                );
-                if let Err(err) = self
-                    .mesh
-                    .send_packet_reliable(
-                        peer_id,
-                        Box::new(FullMeshPayload::ConnectRequest {
-                            responder_session: self.session,
-                            last_seen_gen: self.last_seen_gen.get(&peer_id).copied(),
-                        }),
-                    )
-                    .await
-                {
-                    error!(
-                        "node {:X}: failed to send a connect request to peer {peer_id:X}: {err:?}",
-                        self.id
-                    );
-                }
-                continue;
-            }
-            if let Err(err) = self.connect_to(peer_id).await {
-                error!(
-                    "node {:X}: failed to connect to peer {peer_id:X}: {err:?}",
+                    "node {:X}: failed to send a connect request to peer {peer_id:X}: {err:?}",
                     self.id
                 );
             }
+            return;
         }
-        Ok(())
+        if let Err(err) = self.connect_to(peer_id).await {
+            error!(
+                "node {:X}: failed to connect to peer {peer_id:X}: {err:?}",
+                self.id
+            );
+        }
+    }
+
+    #[skip]
+    async fn mark_disconnected(&mut self, node_id: NodeId) {
+        let mut dm = self.dm.lock().await;
+        log_disconnected(self.id, node_id, dm.disconnected(node_id).await);
     }
 
     async fn connect_to(&mut self, peer_id: NodeId) -> Result<()> {
@@ -756,6 +778,24 @@ impl FullMesh {
     #[handle_error]
     fn handle_error(&mut self, err: &Error) {
         error!("Error: {err:?}");
+    }
+}
+
+fn derive_ice_key(secret: &EphemeralSecret, peer: &PublicKey, index: bool) -> Result<IceKey> {
+    let mut key = [0; 16];
+    secret
+        .diffie_hellman(peer)
+        .extract::<Sha256>(None)
+        .expand(b"", &mut key)?;
+    Ok(IceKey {
+        index,
+        key: key.into(),
+    })
+}
+
+fn log_disconnected(me: NodeId, node_id: NodeId, result: Result<()>) {
+    if let Err(err) = result {
+        error!("node {me:X}: failed to mark peer {node_id:X} disconnected: {err:?}");
     }
 }
 

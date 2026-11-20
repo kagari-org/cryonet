@@ -8,7 +8,10 @@ use std::{
 use anyhow::{Result, bail};
 use clap::Parser;
 use clap_num::maybe_hex;
-use cryonet_uapi::{ConnState, CryonetUapi, NodeId};
+use cryonet_uapi::{
+    ConnState, CryonetUapi, DaemonInfo, FullMeshStatus, IgpRoute, IgpStatus, LinkInfo, NodeId,
+    NodeInfo, ServerInfo, Stats,
+};
 use tempfile::tempdir;
 use tokio::net::UnixDatagram;
 
@@ -165,6 +168,379 @@ fn join_or_dash(values: &[String]) -> String {
     }
 }
 
+fn print_links(mut links: Vec<LinkInfo>, names: &HashMap<NodeId, String>) {
+    links.sort_by_key(|link| link.node);
+    println!("LINKS ({})", links.len());
+    if links.is_empty() {
+        println!("  (none)");
+        return;
+    }
+    let rows = links
+        .iter()
+        .map(|link| {
+            vec![
+                node_label(names, link.node),
+                if link.alive { "up" } else { "down" }.to_owned(),
+                if link.last_recv_ms < 0 {
+                    "-".to_owned()
+                } else {
+                    format_ms(link.last_recv_ms)
+                },
+                format_ms(link.idle_timeout_ms),
+            ]
+        })
+        .collect::<Vec<_>>();
+    table(&["NODE", "STATUS", "LAST RX", "IDLE"], &rows);
+}
+
+fn print_routes(hash_map: HashMap<NodeId, NodeId>, names: &HashMap<NodeId, String>) {
+    let mut routes: Vec<_> = hash_map.into_iter().collect();
+    routes.sort_by_key(|(dst, _)| *dst);
+    println!("ROUTES ({})", routes.len());
+    if routes.is_empty() {
+        println!("  (none)");
+        return;
+    }
+    let rows = routes
+        .iter()
+        .map(|(dst, next_hop)| vec![node_label(names, *dst), node_label(names, *next_hop)])
+        .collect::<Vec<_>>();
+    table(&["DST", "NEXT HOP"], &rows);
+}
+
+fn print_igp_routes(mut igp_routes: Vec<IgpRoute>, names: &HashMap<NodeId, String>) {
+    igp_routes.sort_by_key(|route| (route.dst, route.from));
+    println!("IGP ROUTES ({})", igp_routes.len());
+    if igp_routes.is_empty() {
+        println!("  (none)");
+        return;
+    }
+    let rows = igp_routes
+        .iter()
+        .map(|route| {
+            vec![
+                node_label(names, route.dst),
+                node_label(names, route.from),
+                route.seq.to_string(),
+                format_metric(route.metric),
+                format_metric(route.computed_metric),
+                if route.selected { "yes" } else { "no" }.to_owned(),
+                format_ms(route.timeout_remaining_ms),
+            ]
+        })
+        .collect::<Vec<_>>();
+    table(
+        &[
+            "DST", "FROM", "SEQ", "METRIC", "COMPUTED", "SELECTED", "EXPIRES",
+        ],
+        &rows,
+    );
+}
+
+fn print_igp_status(status: IgpStatus, names: &HashMap<NodeId, String>) {
+    println!("IGP STATUS");
+    kv("SELF SEQ", status.self_seq);
+    kv(
+        "TIMERS",
+        format!(
+            "hello {} · dump {} · gc {} · route {} · source {} · request {}",
+            format_ms(status.hello_interval_ms as i64),
+            format_ms(status.dump_interval_ms as i64),
+            format_ms(status.gc_interval_ms as i64),
+            format_ms(status.route_timeout_ms as i64),
+            format_ms(status.source_timeout_ms as i64),
+            format_ms(status.seqno_request_timeout_ms as i64),
+        ),
+    );
+    kv(
+        "PARAMETERS",
+        format!(
+            "diameter {} · update threshold {} · dump batch {}",
+            status.diameter, status.update_threshold, status.dump_batch_size
+        ),
+    );
+    println!();
+    println!("NEIGHBORS ({})", status.neighbors.len());
+    if status.neighbors.is_empty() {
+        println!("  (none)");
+    } else {
+        let rows = status
+            .neighbors
+            .iter()
+            .map(|neighbor| {
+                vec![
+                    node_label(names, neighbor.node),
+                    format_cost(neighbor.cost),
+                    format_ms(neighbor.last_hello_ms),
+                ]
+            })
+            .collect::<Vec<_>>();
+        table(&["NODE", "COST", "LAST HELLO"], &rows);
+    }
+    println!();
+    println!("FEASIBILITY DISTANCES ({})", status.sources.len());
+    if status.sources.is_empty() {
+        println!("  (none)");
+    } else {
+        let rows = status
+            .sources
+            .iter()
+            .map(|source| {
+                vec![
+                    node_label(names, source.dst),
+                    source.seq.to_string(),
+                    format_metric(source.metric),
+                    format_ms(source.expires_in_ms),
+                ]
+            })
+            .collect::<Vec<_>>();
+        table(&["DST", "SEQ", "METRIC", "EXPIRES"], &rows);
+    }
+    println!();
+    println!("PENDING SEQNO REQUESTS ({})", status.requests.len());
+    if status.requests.is_empty() {
+        println!("  (none)");
+    } else {
+        let rows = status
+            .requests
+            .iter()
+            .map(|request| {
+                vec![
+                    node_label(names, request.dst),
+                    request.seq.to_string(),
+                    request.retries.to_string(),
+                    format_ms(request.expires_in_ms),
+                ]
+            })
+            .collect::<Vec<_>>();
+        table(&["DST", "SEQ", "RETRIES", "EXPIRES"], &rows);
+    }
+}
+
+fn print_full_mesh_peers(status: FullMeshStatus, names: &HashMap<NodeId, String>) {
+    println!(
+        "FULL MESH PEERS ({}, session 0x{:X})",
+        status.peers.len(),
+        status.session
+    );
+    if status.peers.is_empty() {
+        println!("  (none)");
+    } else {
+        let rows = status
+            .peers
+            .iter()
+            .map(|peer| {
+                let rekey = format_ms(peer.last_rekey_ms);
+                vec![
+                    node_label(names, peer.node),
+                    peer.interface.as_deref().unwrap_or("-").to_owned(),
+                    if peer.initiator {
+                        "initiator"
+                    } else {
+                        "responder"
+                    }
+                    .to_owned(),
+                    peer.conn_gen.to_string(),
+                    format_state(peer.state).to_owned(),
+                    format_bytes(peer.sent),
+                    format_bytes(peer.received),
+                    format_ms(peer.last_recv_ms),
+                    rekey,
+                    peer.key_index
+                        .map_or("-".to_owned(), |index| u8::from(index).to_string()),
+                    peer.selected_candidate.as_deref().unwrap_or("-").to_owned(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        table(
+            &[
+                "NODE",
+                "IFACE",
+                "ROLE",
+                "GEN",
+                "STATE",
+                "TX",
+                "RX",
+                "LAST RX",
+                "REKEY",
+                "KEY",
+                "CANDIDATE",
+            ],
+            &rows,
+        );
+    }
+    if !status.pending.is_empty() {
+        println!();
+        println!("PENDING ({})", status.pending.len());
+        let rows = status
+            .pending
+            .iter()
+            .map(|pending| {
+                vec![
+                    node_label(names, pending.node),
+                    format_ms(pending.retry_in_ms),
+                    format_ms(pending.backoff_ms as i64),
+                ]
+            })
+            .collect::<Vec<_>>();
+        table(&["NODE", "RETRY IN", "BACKOFF"], &rows);
+    }
+}
+
+fn print_nodes(mut nodes: Vec<NodeInfo>) {
+    nodes.sort_by_key(|node| node.id);
+    println!("REGISTRY NODES ({})", nodes.len());
+    if nodes.is_empty() {
+        println!("  (none)");
+        return;
+    }
+    let rows = nodes
+        .iter()
+        .map(|node| {
+            let label = if node.name.is_empty() {
+                format!("{:X}", node.id)
+            } else {
+                format!("{} ({:X})", node.name, node.id)
+            };
+            vec![label, format_ms(node.last_seen_ms), join_or_dash(&node.ips)]
+        })
+        .collect::<Vec<_>>();
+    table(&["NODE", "LAST SEEN", "IPS"], &rows);
+}
+
+fn print_servers(servers: Vec<ServerInfo>, names: &HashMap<NodeId, String>) {
+    println!("SERVERS ({})", servers.len());
+    if servers.is_empty() {
+        println!("  (none)");
+        return;
+    }
+    let rows = servers
+        .iter()
+        .map(|server| {
+            let state = if server.connecting {
+                "connecting"
+            } else if server.connected {
+                "connected"
+            } else if server.node.is_some() {
+                "resolved"
+            } else {
+                "pending"
+            };
+            vec![
+                server.url.clone(),
+                server
+                    .node
+                    .map_or_else(|| "-".to_owned(), |node| node_label(names, node)),
+                state.to_owned(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    table(&["URL", "NODE", "STATE"], &rows);
+}
+
+fn print_info(info: DaemonInfo) {
+    println!("CRYONET {}", info.version);
+    let node = if info.name.is_empty() {
+        format!("0x{:X}", info.id)
+    } else {
+        format!("{} (0x{:X})", info.name, info.id)
+    };
+    kv("NODE", node);
+    kv("UPTIME", format_ms(info.uptime_ms as i64));
+    kv("MODE", info.mode);
+    kv("INTERFACE", info.interface);
+    kv("MTU", info.mtu);
+    kv("LISTEN", info.listen);
+    kv(
+        "ENCRYPT",
+        if info.encrypt_local_packets {
+            "on"
+        } else {
+            "off"
+        },
+    );
+    kv(
+        "PACKET INFO",
+        if info.packet_information { "on" } else { "off" },
+    );
+    kv("CONTROL", info.ctl_path);
+    kv("LOCAL IPS", join_or_dash(&info.local_ips));
+    kv("ICE SERVERS", join_or_dash(&info.ice_servers));
+    kv("FILTERS", join_or_dash(&info.candidate_filter_prefixes));
+}
+
+fn print_stats(stats: Stats) {
+    println!("STATS (uptime {})", format_ms(stats.uptime_ms as i64));
+    let mesh = &stats.mesh;
+    kv(
+        "MESH",
+        format!(
+            "links {} · routes {} · rx {} · tx {} · forwarded {}",
+            mesh.links, mesh.routes, mesh.received, mesh.sent, mesh.forwarded
+        ),
+    );
+    kv(
+        "DROPS",
+        format!(
+            "ttl {} · duplicate {} · unreachable {} · dispatch full {}",
+            mesh.dropped_ttl,
+            mesh.dropped_duplicate,
+            mesh.dropped_unreachable,
+            mesh.dropped_dispatch_full
+        ),
+    );
+    kv(
+        "RELIABLE",
+        format!(
+            "pending {} · retries {} · given up {} · acked {}",
+            mesh.reliable_pending,
+            mesh.reliable_retries,
+            mesh.reliable_given_up,
+            mesh.reliable_acked
+        ),
+    );
+    let igp = &stats.igp;
+    kv(
+        "IGP",
+        format!(
+            "routes {} · selected {} · neighbors {} · sources {} · requests {}",
+            igp.routes, igp.selected, igp.neighbors, igp.sources, igp.requests
+        ),
+    );
+    kv(
+        "IGP TX",
+        format!(
+            "hello {} · update {} · route request {} · seqno request {}",
+            igp.hellos_sent, igp.updates_sent, igp.route_requests, igp.seqno_requests
+        ),
+    );
+    kv(
+        "IGP RX",
+        format!(
+            "hello {} · update {}",
+            igp.hellos_received, igp.updates_received
+        ),
+    );
+    let fullmesh = &stats.fullmesh;
+    kv(
+        "FULL MESH",
+        format!(
+            "peers {} · connected {} · connecting {} · pending {} · tx {} · rx {}",
+            fullmesh.peers,
+            fullmesh.connected,
+            fullmesh.connecting,
+            fullmesh.pending,
+            format_bytes(fullmesh.sent),
+            format_bytes(fullmesh.received)
+        ),
+    );
+    let registry = &stats.registry;
+    kv(
+        "REGISTRY",
+        format!("nodes {} · ips {}", registry.nodes, registry.ips),
+    );
+}
+
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(short)]
@@ -255,372 +631,15 @@ async fn main() -> Result<()> {
     let response: CryonetUapi = serde_json::from_slice(&buf[..len])?;
 
     match response {
-        CryonetUapi::GetLinksResponse(mut links) => {
-            links.sort_by_key(|link| link.node);
-            println!("LINKS ({})", links.len());
-            if links.is_empty() {
-                println!("  (none)");
-            } else {
-                let rows = links
-                    .iter()
-                    .map(|link| {
-                        vec![
-                            node_label(&names, link.node),
-                            if link.alive { "up" } else { "down" }.to_owned(),
-                            if link.last_recv_ms < 0 {
-                                "-".to_owned()
-                            } else {
-                                format_ms(link.last_recv_ms)
-                            },
-                            format_ms(link.idle_timeout_ms),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                table(&["NODE", "STATUS", "LAST RX", "IDLE"], &rows);
-            }
-        }
-        CryonetUapi::GetRoutesResponse(hash_map) => {
-            let mut routes: Vec<_> = hash_map.into_iter().collect();
-            routes.sort_by_key(|(dst, _)| *dst);
-            println!("ROUTES ({})", routes.len());
-            if routes.is_empty() {
-                println!("  (none)");
-            } else {
-                let rows = routes
-                    .iter()
-                    .map(|(dst, next_hop)| {
-                        vec![node_label(&names, *dst), node_label(&names, *next_hop)]
-                    })
-                    .collect::<Vec<_>>();
-                table(&["DST", "NEXT HOP"], &rows);
-            }
-        }
-        CryonetUapi::GetIgpRoutesResponse(mut igp_routes) => {
-            igp_routes.sort_by_key(|route| (route.dst, route.from));
-            println!("IGP ROUTES ({})", igp_routes.len());
-            if igp_routes.is_empty() {
-                println!("  (none)");
-            } else {
-                let rows = igp_routes
-                    .iter()
-                    .map(|route| {
-                        vec![
-                            node_label(&names, route.dst),
-                            node_label(&names, route.from),
-                            route.seq.to_string(),
-                            format_metric(route.metric),
-                            format_metric(route.computed_metric),
-                            if route.selected { "yes" } else { "no" }.to_owned(),
-                            format_ms(route.timeout_remaining_ms),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                table(
-                    &[
-                        "DST", "FROM", "SEQ", "METRIC", "COMPUTED", "SELECTED", "EXPIRES",
-                    ],
-                    &rows,
-                );
-            }
-        }
-        CryonetUapi::GetIgpStatusResponse(status) => {
-            println!("IGP STATUS");
-            kv("SELF SEQ", status.self_seq);
-            kv(
-                "TIMERS",
-                format!(
-                    "hello {} · dump {} · gc {} · route {} · source {} · request {}",
-                    format_ms(status.hello_interval_ms as i64),
-                    format_ms(status.dump_interval_ms as i64),
-                    format_ms(status.gc_interval_ms as i64),
-                    format_ms(status.route_timeout_ms as i64),
-                    format_ms(status.source_timeout_ms as i64),
-                    format_ms(status.seqno_request_timeout_ms as i64),
-                ),
-            );
-            kv(
-                "PARAMETERS",
-                format!(
-                    "diameter {} · update threshold {} · dump batch {}",
-                    status.diameter, status.update_threshold, status.dump_batch_size
-                ),
-            );
-            println!();
-            println!("NEIGHBORS ({})", status.neighbors.len());
-            if status.neighbors.is_empty() {
-                println!("  (none)");
-            } else {
-                let rows = status
-                    .neighbors
-                    .iter()
-                    .map(|neighbor| {
-                        vec![
-                            node_label(&names, neighbor.node),
-                            format_cost(neighbor.cost),
-                            format_ms(neighbor.last_hello_ms),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                table(&["NODE", "COST", "LAST HELLO"], &rows);
-            }
-            println!();
-            println!("FEASIBILITY DISTANCES ({})", status.sources.len());
-            if status.sources.is_empty() {
-                println!("  (none)");
-            } else {
-                let rows = status
-                    .sources
-                    .iter()
-                    .map(|source| {
-                        vec![
-                            node_label(&names, source.dst),
-                            source.seq.to_string(),
-                            format_metric(source.metric),
-                            format_ms(source.expires_in_ms),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                table(&["DST", "SEQ", "METRIC", "EXPIRES"], &rows);
-            }
-            println!();
-            println!("PENDING SEQNO REQUESTS ({})", status.requests.len());
-            if status.requests.is_empty() {
-                println!("  (none)");
-            } else {
-                let rows = status
-                    .requests
-                    .iter()
-                    .map(|request| {
-                        vec![
-                            node_label(&names, request.dst),
-                            request.seq.to_string(),
-                            request.retries.to_string(),
-                            format_ms(request.expires_in_ms),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                table(&["DST", "SEQ", "RETRIES", "EXPIRES"], &rows);
-            }
-        }
-        CryonetUapi::GetFullMeshPeersResponse(status) => {
-            println!(
-                "FULL MESH PEERS ({}, session 0x{:X})",
-                status.peers.len(),
-                status.session
-            );
-            if status.peers.is_empty() {
-                println!("  (none)");
-            } else {
-                let rows = status
-                    .peers
-                    .iter()
-                    .map(|peer| {
-                        let rekey = format_ms(peer.last_rekey_ms);
-                        vec![
-                            node_label(&names, peer.node),
-                            peer.interface.as_deref().unwrap_or("-").to_owned(),
-                            if peer.initiator {
-                                "initiator"
-                            } else {
-                                "responder"
-                            }
-                            .to_owned(),
-                            peer.conn_gen.to_string(),
-                            format_state(peer.state).to_owned(),
-                            format_bytes(peer.sent),
-                            format_bytes(peer.received),
-                            format_ms(peer.last_recv_ms),
-                            rekey,
-                            peer.key_index
-                                .map_or("-".to_owned(), |index| u8::from(index).to_string()),
-                            peer.selected_candidate.as_deref().unwrap_or("-").to_owned(),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                table(
-                    &[
-                        "NODE",
-                        "IFACE",
-                        "ROLE",
-                        "GEN",
-                        "STATE",
-                        "TX",
-                        "RX",
-                        "LAST RX",
-                        "REKEY",
-                        "KEY",
-                        "CANDIDATE",
-                    ],
-                    &rows,
-                );
-            }
-            if !status.pending.is_empty() {
-                println!();
-                println!("PENDING ({})", status.pending.len());
-                let rows = status
-                    .pending
-                    .iter()
-                    .map(|pending| {
-                        vec![
-                            node_label(&names, pending.node),
-                            format_ms(pending.retry_in_ms),
-                            format_ms(pending.backoff_ms as i64),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                table(&["NODE", "RETRY IN", "BACKOFF"], &rows);
-            }
-        }
-        CryonetUapi::GetNodesResponse(mut nodes) => {
-            nodes.sort_by_key(|node| node.id);
-            println!("REGISTRY NODES ({})", nodes.len());
-            if nodes.is_empty() {
-                println!("  (none)");
-            } else {
-                let rows = nodes
-                    .iter()
-                    .map(|node| {
-                        let label = if node.name.is_empty() {
-                            format!("{:X}", node.id)
-                        } else {
-                            format!("{} ({:X})", node.name, node.id)
-                        };
-                        vec![label, format_ms(node.last_seen_ms), join_or_dash(&node.ips)]
-                    })
-                    .collect::<Vec<_>>();
-                table(&["NODE", "LAST SEEN", "IPS"], &rows);
-            }
-        }
-        CryonetUapi::GetServersResponse(servers) => {
-            println!("SERVERS ({})", servers.len());
-            if servers.is_empty() {
-                println!("  (none)");
-            } else {
-                let rows = servers
-                    .iter()
-                    .map(|server| {
-                        let state = if server.connecting {
-                            "connecting"
-                        } else if server.connected {
-                            "connected"
-                        } else if server.node.is_some() {
-                            "resolved"
-                        } else {
-                            "pending"
-                        };
-                        vec![
-                            server.url.clone(),
-                            server
-                                .node
-                                .map_or_else(|| "-".to_owned(), |node| node_label(&names, node)),
-                            state.to_owned(),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                table(&["URL", "NODE", "STATE"], &rows);
-            }
-        }
-        CryonetUapi::GetInfoResponse(info) => {
-            println!("CRYONET {}", info.version);
-            let node = if info.name.is_empty() {
-                format!("0x{:X}", info.id)
-            } else {
-                format!("{} (0x{:X})", info.name, info.id)
-            };
-            kv("NODE", node);
-            kv("UPTIME", format_ms(info.uptime_ms as i64));
-            kv("MODE", info.mode);
-            kv("INTERFACE", info.interface);
-            kv("MTU", info.mtu);
-            kv("LISTEN", info.listen);
-            kv(
-                "ENCRYPT",
-                if info.encrypt_local_packets {
-                    "on"
-                } else {
-                    "off"
-                },
-            );
-            kv(
-                "PACKET INFO",
-                if info.packet_information { "on" } else { "off" },
-            );
-            kv("CONTROL", info.ctl_path);
-            kv("LOCAL IPS", join_or_dash(&info.local_ips));
-            kv("ICE SERVERS", join_or_dash(&info.ice_servers));
-            kv("FILTERS", join_or_dash(&info.candidate_filter_prefixes));
-        }
-        CryonetUapi::GetStatsResponse(stats) => {
-            println!("STATS (uptime {})", format_ms(stats.uptime_ms as i64));
-            let mesh = &stats.mesh;
-            kv(
-                "MESH",
-                format!(
-                    "links {} · routes {} · rx {} · tx {} · forwarded {}",
-                    mesh.links, mesh.routes, mesh.received, mesh.sent, mesh.forwarded
-                ),
-            );
-            kv(
-                "DROPS",
-                format!(
-                    "ttl {} · duplicate {} · unreachable {} · dispatch full {}",
-                    mesh.dropped_ttl,
-                    mesh.dropped_duplicate,
-                    mesh.dropped_unreachable,
-                    mesh.dropped_dispatch_full
-                ),
-            );
-            kv(
-                "RELIABLE",
-                format!(
-                    "pending {} · retries {} · given up {} · acked {}",
-                    mesh.reliable_pending,
-                    mesh.reliable_retries,
-                    mesh.reliable_given_up,
-                    mesh.reliable_acked
-                ),
-            );
-            let igp = &stats.igp;
-            kv(
-                "IGP",
-                format!(
-                    "routes {} · selected {} · neighbors {} · sources {} · requests {}",
-                    igp.routes, igp.selected, igp.neighbors, igp.sources, igp.requests
-                ),
-            );
-            kv(
-                "IGP TX",
-                format!(
-                    "hello {} · update {} · route request {} · seqno request {}",
-                    igp.hellos_sent, igp.updates_sent, igp.route_requests, igp.seqno_requests
-                ),
-            );
-            kv(
-                "IGP RX",
-                format!(
-                    "hello {} · update {}",
-                    igp.hellos_received, igp.updates_received
-                ),
-            );
-            let fullmesh = &stats.fullmesh;
-            kv(
-                "FULL MESH",
-                format!(
-                    "peers {} · connected {} · connecting {} · pending {} · tx {} · rx {}",
-                    fullmesh.peers,
-                    fullmesh.connected,
-                    fullmesh.connecting,
-                    fullmesh.pending,
-                    format_bytes(fullmesh.sent),
-                    format_bytes(fullmesh.received)
-                ),
-            );
-            let registry = &stats.registry;
-            kv(
-                "REGISTRY",
-                format!("nodes {} · ips {}", registry.nodes, registry.ips),
-            );
-        }
+        CryonetUapi::GetLinksResponse(links) => print_links(links, &names),
+        CryonetUapi::GetRoutesResponse(routes) => print_routes(routes, &names),
+        CryonetUapi::GetIgpRoutesResponse(routes) => print_igp_routes(routes, &names),
+        CryonetUapi::GetIgpStatusResponse(status) => print_igp_status(status, &names),
+        CryonetUapi::GetFullMeshPeersResponse(status) => print_full_mesh_peers(status, &names),
+        CryonetUapi::GetNodesResponse(nodes) => print_nodes(nodes),
+        CryonetUapi::GetServersResponse(servers) => print_servers(servers, &names),
+        CryonetUapi::GetInfoResponse(info) => print_info(info),
+        CryonetUapi::GetStatsResponse(stats) => print_stats(stats),
         CryonetUapi::Pong => {
             println!("PONG  {} ms", time.elapsed().as_millis());
         }

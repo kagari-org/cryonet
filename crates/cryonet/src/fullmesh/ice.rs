@@ -11,7 +11,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use cidr::AnyIpCidr;
-use memoize::memoize;
 use rustrtc::{
     IceCandidate, IceCandidatePair, IceGathererState, IceRole, IceTransport, IceTransportState,
     RtcConfiguration,
@@ -139,7 +138,7 @@ impl IceConnection {
         self.ice.start(remote_parameters).await
     }
 
-    pub(crate) fn add_candidates(&self, candidates: &Vec<String>) {
+    pub(crate) fn add_candidates(&self, candidates: &[String]) {
         for candidate in candidates {
             if let Ok(candidate) = IceCandidate::from_sdp(candidate) {
                 if self
@@ -255,14 +254,17 @@ impl IceSender {
         if let Some(socket) = socket
             && let Some(pair) = pair
         {
-            let Some(mut key) = *self.key.borrow() else {
+            let mut key = *self.key.borrow();
+            if self.key.has_changed()? {
+                key = *self.key.borrow_and_update();
+                if let Some(key) = key {
+                    self.aes = Aes128Gcm::new(&key.key);
+                    self.counter = 1;
+                }
+            }
+            let Some(key) = key else {
                 anyhow::bail!("Encryption key is not set yet");
             };
-            if self.key.has_changed()? {
-                key = self.key.borrow_and_update().unwrap();
-                self.aes = Aes128Gcm::new(&key.key);
-                self.counter = 1;
-            }
 
             if self.encrypt_local_packets || !is_private(pair.remote.address) {
                 if self.counter >= 0b00011111_11111111_11111111_11111111 {
@@ -327,8 +329,9 @@ impl PacketReceiver for MpscSender {
 impl IceReceiver {
     pub(crate) async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
         let (data, addr) = self.rx.recv().await.ok_or(CryonetError::ChannelClosed)?;
-        if self.key.has_changed()? {
-            let key = self.key.borrow_and_update().unwrap();
+        if self.key.has_changed()?
+            && let Some(key) = *self.key.borrow_and_update()
+        {
             if key.index {
                 self.aes[1] = Aes128Gcm::new(&key.key);
             } else {
@@ -359,7 +362,6 @@ impl IceReceiver {
     }
 }
 
-#[memoize]
 fn is_private(addr: SocketAddr) -> bool {
     match addr.ip() {
         IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),

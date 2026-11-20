@@ -169,108 +169,114 @@ impl Registry {
             .unwrap();
         match payload {
             RegistryPayload::Gossip { entries, hops } => {
-                let now = Instant::now();
-                let mut changed = Vec::new();
-                let mut moved = Vec::new();
+                self.apply_gossip(src, entries, *hops).await?;
+            }
+        }
+        Ok(())
+    }
+
+    #[skip]
+    async fn apply_gossip(
+        &mut self,
+        src: NodeId,
+        entries: &[(NodeId, Node)],
+        hops: u8,
+    ) -> Result<()> {
+        let now = Instant::now();
+        let mut changed = Vec::new();
+        let mut moved = Vec::new();
+        {
+            let mut ips = self.ips.lock().await;
+            for (id, node) in entries {
+                self.claim = self.claim.max(node.claim);
+                if *id == self.id {
+                    continue;
+                }
+                if let Some((known, _)) = self.nodes.get(id)
+                    && node.claim < known.claim
                 {
-                    let mut ips = self.ips.lock().await;
-                    for (id, node) in entries {
-                        if *id == self.id {
-                            self.claim = self.claim.max(node.claim);
-                            continue;
-                        }
-                        self.claim = self.claim.max(node.claim);
-                        if let Some((known, _)) = self.nodes.get(id)
-                            && node.claim < known.claim
+                    debug!(
+                        "Ignoring stale registry entry for {id:X}: claim {} < {}",
+                        node.claim, known.claim
+                    );
+                    continue;
+                }
+                let is_changed = self.nodes.get(id).is_none_or(|(known, _)| known != node);
+                let last_seen = if is_changed || hops > 0 {
+                    now
+                } else {
+                    self.nodes.get(id).map_or(now, |(_, last_seen)| *last_seen)
+                };
+                let previous = self.nodes.insert(*id, (node.clone(), last_seen));
+                if let Some((previous, _)) = previous {
+                    for ip in &previous.ips {
+                        if !node.ips.contains(ip)
+                            && ips.get(ip).is_some_and(|entry| entry.node == *id)
                         {
-                            debug!(
-                                "Ignoring stale registry entry for {id:X}: claim {} < {}",
-                                node.claim, known.claim
+                            ips.remove(ip);
+                        }
+                    }
+                }
+                for ip in &node.ips {
+                    let claim = node.claim;
+                    if let Some(current) = ips.get(ip).copied()
+                        && !claim_wins(&current, *id, claim)
+                    {
+                        if current.node != *id && self.conflicts.insert((*ip, *id)) {
+                            warn!(
+                                "Ignoring claim for {ip} from {id:X}: owned by {:X} (claim {}, ours {claim})",
+                                current.node, current.claim
                             );
-                            continue;
                         }
-                        let is_changed = self.nodes.get(id).is_none_or(|(known, _)| known != node);
-                        let last_seen = if is_changed || *hops > 0 {
-                            now
-                        } else {
-                            self.nodes.get(id).map_or(now, |(_, last_seen)| *last_seen)
-                        };
-                        let previous = self.nodes.insert(*id, (node.clone(), last_seen));
-                        if let Some((previous, _)) = previous {
-                            for ip in &previous.ips {
-                                if !node.ips.contains(ip)
-                                    && ips.get(ip).is_some_and(|entry| entry.node == *id)
-                                {
-                                    ips.remove(ip);
-                                }
-                            }
+                        if current.node == *id
+                            && current.claim == claim
+                            && hops > 0
+                            && let Some(current) = ips.get_mut(ip)
+                        {
+                            current.seen = now;
                         }
-                        for ip in &node.ips {
-                            let claim = node.claim;
-                            let current = ips.get(ip).copied();
-                            let wins = match current {
-                                Some(current) => claim_wins(&current, *id, claim),
-                                None => true,
-                            };
-                            if !wins {
-                                let current = current.unwrap();
-                                if current.node != *id && self.conflicts.insert((*ip, *id)) {
-                                    warn!(
-                                        "Ignoring claim for {ip} from {id:X}: owned by {:X} (claim {}, ours {claim})",
-                                        current.node, current.claim
-                                    );
-                                }
-                                if current.node == *id
-                                    && current.claim == claim
-                                    && *hops > 0
-                                    && let Some(current) = ips.get_mut(ip)
-                                {
-                                    current.seen = now;
-                                }
-                                continue;
-                            }
-                            let previous = ips.insert(
-                                *ip,
-                                IpEntry {
-                                    node: *id,
-                                    claim,
-                                    seen: now,
-                                },
-                            );
-                            if previous.is_none_or(|previous| previous.node != *id) {
-                                moved.push(*ip);
-                            }
-                            if let Some(previous) = previous
-                                && previous.node != *id
-                            {
-                                warn!(
-                                    "{ip} moved from {:X} to {id:X} (claim {claim})",
-                                    previous.node
-                                );
-                            }
-                            self.conflicts.remove(&(*ip, *id));
-                        }
-                        if is_changed {
-                            changed.push((*id, node.clone()));
-                        }
+                        continue;
                     }
-                }
-                if !moved.is_empty() {
-                    moved.sort();
-                    moved.dedup();
-                    let mut dm = self.dm.lock().await;
-                    for ip in moved {
-                        if let Err(err) = dm.neighbor_changed(ip).await {
-                            warn!("Failed to invalidate neighbor for {ip}: {err:?}");
-                        }
+                    let previous = ips.insert(
+                        *ip,
+                        IpEntry {
+                            node: *id,
+                            claim,
+                            seen: now,
+                        },
+                    );
+                    if previous.is_none_or(|previous| previous.node != *id) {
+                        moved.push(*ip);
                     }
-                }
-                if !changed.is_empty() {
-                    self.notify().await;
-                    if *hops > 0 {
-                        self.send_gossip(changed, *hops - 1, Some(src)).await?;
+                    if let Some(previous) = previous
+                        && previous.node != *id
+                    {
+                        warn!(
+                            "{ip} moved from {:X} to {id:X} (claim {claim})",
+                            previous.node
+                        );
                     }
+                    self.conflicts.remove(&(*ip, *id));
                 }
+                if is_changed {
+                    changed.push((*id, node.clone()));
+                }
+            }
+        }
+        if !moved.is_empty() {
+            moved.sort();
+            moved.dedup();
+            let mut dm = self.dm.lock().await;
+            for ip in moved {
+                if let Err(err) = dm.neighbor_changed(ip).await {
+                    warn!("Failed to invalidate neighbor for {ip}: {err:?}");
+                }
+            }
+        }
+        if !changed.is_empty() {
+            self.notify().await;
+            if hops > 0 {
+                self.send_gossip(changed, hops - 1, Some(src)).await?;
             }
         }
         Ok(())

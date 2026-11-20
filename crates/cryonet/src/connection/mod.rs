@@ -18,8 +18,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-use tokio::net::TcpListener;
-use tokio_tungstenite::{accept_async, connect_async};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpListener,
+};
+use tokio_tungstenite::{WebSocketStream, accept_async, connect_async};
 
 use crate::utils::{Interval, delayed_interval, jitter, timeout};
 
@@ -45,6 +48,23 @@ pub(crate) struct ConnManager {
 struct AuthPacket {
     token: Option<String>,
     node_id: NodeId,
+}
+
+async fn handshake<T>(
+    ws: &mut WebSocketStream<T>,
+    auth: AuthPacket,
+    peer: &str,
+) -> Result<AuthPacket>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    use tokio_tungstenite::tungstenite::Message;
+    ws.send(Message::Binary(Bytes::from(serde_json::to_vec(&auth)?)))
+        .await?;
+    match ws.next().await {
+        Some(Ok(Message::Binary(bytes))) => Ok(serde_json::from_slice(&bytes)?),
+        _ => bail!("Failed to receive authentication response from {peer}"),
+    }
 }
 
 #[sactor(pub(crate))]
@@ -166,21 +186,18 @@ impl ConnManager {
         }
 
         info!("Connecting to server {server} ...");
-        use tokio_tungstenite::tungstenite::Message;
         let (mut ws, _) = connect_async(server.as_str()).await?;
-        ws.send(Message::Binary(Bytes::from(serde_json::to_vec(
-            &AuthPacket {
+        let AuthPacket {
+            node_id: neigh_id, ..
+        } = handshake(
+            &mut ws,
+            AuthPacket {
                 token: token.clone(),
                 node_id: id,
             },
-        )?)))
+            &format!("server {server}"),
+        )
         .await?;
-        let AuthPacket {
-            node_id: neigh_id, ..
-        } = match ws.next().await {
-            Some(Ok(Message::Binary(bytes))) => serde_json::from_slice(&bytes)?,
-            _ => bail!("Failed to receive authentication response from server {server}",),
-        };
         servers_map.lock().await.insert(server.clone(), neigh_id);
 
         let (sink, stream) = new_tungstenite_ws_link(ws);
@@ -202,7 +219,6 @@ impl ConnManager {
         &mut self,
         param: tokio::io::Result<(tokio::net::TcpStream, SocketAddr)>,
     ) -> Result<()> {
-        use tokio_tungstenite::tungstenite::Message;
         let (stream, addr) = param?;
         stream.set_nodelay(true)?;
         info!("Accepted connection from {addr}");
@@ -212,20 +228,17 @@ impl ConnManager {
             Ok(ws) => ws?,
             Err(_) => bail!("Timed out during WebSocket handshake with {addr}"),
         };
-        let auth = timeout(connect_timeout, async {
-            ws.send(Message::Binary(Bytes::from(serde_json::to_vec(
-                &AuthPacket {
+        let auth = timeout(
+            connect_timeout,
+            handshake(
+                &mut ws,
+                AuthPacket {
                     token: None,
                     node_id: id,
                 },
-            )?)))
-            .await?;
-            let auth = match ws.next().await {
-                Some(Ok(Message::Binary(bytes))) => serde_json::from_slice::<AuthPacket>(&bytes)?,
-                _ => bail!("Failed to receive authentication response from connection at {addr}",),
-            };
-            Ok::<_, Error>(auth)
-        })
+                &format!("connection at {addr}"),
+            ),
+        )
         .await;
         let AuthPacket {
             token: neigh_token,

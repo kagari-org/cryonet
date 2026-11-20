@@ -65,33 +65,22 @@ impl TunManager {
     }
 
     fn create_device(&mut self, node_id: NodeId) -> Result<Arc<AsyncDevice>> {
-        let mut create_device = || -> Result<AsyncDevice> {
-            let name = format!("{}{}", self.interface_prefix, self.next_device);
-            self.next_device = self.next_device.wrapping_add(1);
-            let mut builder = DeviceBuilder::new().mtu(1280).name(name).enable(true);
-            if self.enable_packet_information {
-                builder = builder.packet_information(true);
-            }
-            if let Some(ipv6) = self.ipv6 {
-                builder = builder.ipv6(ipv6, 64u8);
-            }
-            Ok(builder.build_async()?)
-        };
-        match self.devices.get(&node_id) {
-            Some(device) => match device.upgrade() {
-                Some(device) => Ok(device),
-                None => {
-                    let device = Arc::new(create_device()?);
-                    self.devices.insert(node_id, Arc::downgrade(&device));
-                    Ok(device)
-                }
-            },
-            None => {
-                let device = Arc::new(create_device()?);
-                self.devices.insert(node_id, Arc::downgrade(&device));
-                Ok(device)
-            }
+        self.devices.retain(|_, device| device.strong_count() > 0);
+        if let Some(device) = self.devices.get(&node_id).and_then(Weak::upgrade) {
+            return Ok(device);
         }
+        let name = format!("{}{}", self.interface_prefix, self.next_device);
+        self.next_device = self.next_device.wrapping_add(1);
+        let mut builder = DeviceBuilder::new().mtu(1280).name(name).enable(true);
+        if self.enable_packet_information {
+            builder = builder.packet_information(true);
+        }
+        if let Some(ipv6) = self.ipv6 {
+            builder = builder.ipv6(ipv6, 64u8);
+        }
+        let device = Arc::new(builder.build_async()?);
+        self.devices.insert(node_id, Arc::downgrade(&device));
+        Ok(device)
     }
 }
 
