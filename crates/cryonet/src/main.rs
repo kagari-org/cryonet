@@ -6,32 +6,34 @@ use std::{
     future::pending,
     net::{Ipv6Addr, SocketAddr},
     path::PathBuf,
+    rc::Rc,
     str::FromStr,
     sync::Arc,
 };
 
-use anyhow::{Result, bail};
-use cidr::{AnyIpCidr, Ipv6Cidr};
-use clap::Parser;
-use cryonet_lib::{
+use crate::{
     connection::ConnManager,
     fullmesh::{
-        DeviceManager, IceServer,
-        fullmesh::FullMesh,
-        registry::{ConnectionType, Registry},
-        single_tun::SingleTunManager,
-        tap::TapManager,
+        DeviceManager, IceServer, manager::FullMesh, registry::Registry, tap::TapManager,
         tun::TunManager,
     },
     mesh::{Mesh, igp::Igp},
 };
+use anyhow::{Result, bail};
+use cidr::{AnyIpCidr, Ipv6Cidr};
+use clap::Parser;
 use cryonet_uapi::DaemonInfo;
 use tokio::{sync::Mutex, task::LocalSet};
 use tracing_subscriber::EnvFilter;
 
-use crate::uapi::Uapi;
-
+mod connection;
+mod errors;
+mod fullmesh;
+mod mesh;
 mod uapi;
+mod utils;
+
+use crate::uapi::Uapi;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -64,10 +66,6 @@ struct Args {
     tap_mode: bool,
     #[clap(env, long, default_value = "cn0")]
     tap_interface_name: String,
-    #[clap(env, long, default_value_t = false, conflicts_with = "tap_mode")]
-    single_tun_mode: bool,
-    #[clap(env, long, default_value = "cn0")]
-    single_tun_interface_name: String,
 }
 
 fn parse_rtc_ice_server(input: &str) -> Result<IceServer> {
@@ -137,13 +135,8 @@ async fn main() -> Result<()> {
                     .transpose()?;
                 let (mode, interface) = if args.tap_mode {
                     ("tap".to_owned(), args.tap_interface_name.clone())
-                } else if args.single_tun_mode {
-                    (
-                        "single-tun".to_owned(),
-                        args.single_tun_interface_name.clone(),
-                    )
                 } else {
-                    ("tun".to_owned(), format!("{}<node>", args.interface_prefix))
+                    ("tun".to_owned(), format!("{}<seq>", args.interface_prefix))
                 };
                 let info = DaemonInfo {
                     id,
@@ -174,36 +167,21 @@ async fn main() -> Result<()> {
                 let mgr = ConnManager::new(id, mesh.clone(), args.token, args.servers, args.listen)
                     .await?;
                 let ips = Arc::new(Mutex::new(HashMap::new()));
-                let dm: Arc<Mutex<Box<dyn DeviceManager>>> = if args.tap_mode {
-                    Arc::new(Mutex::new(Box::new(TapManager::new(
+                let dm: Rc<Mutex<Box<dyn DeviceManager>>> = if args.tap_mode {
+                    Rc::new(Mutex::new(Box::new(TapManager::new(
                         args.tap_interface_name,
                         args.enable_packet_information,
                         ips.clone(),
                         ipv6,
                     )?)))
-                } else if args.single_tun_mode {
-                    Arc::new(Mutex::new(Box::new(SingleTunManager::new(
-                        args.single_tun_interface_name,
-                        args.enable_packet_information,
-                        ips.clone(),
-                        ipv6,
-                    )?)))
                 } else {
-                    Arc::new(Mutex::new(Box::new(TunManager::new(
+                    Rc::new(Mutex::new(Box::new(TunManager::new(
                         args.interface_prefix,
                         args.enable_packet_information,
                         ipv6,
                     ))))
                 };
-                let registry = Registry::new(
-                    id,
-                    mesh.clone(),
-                    dm.clone(),
-                    vec![ConnectionType::Ice, ConnectionType::DataChannel],
-                    name,
-                    ips,
-                )
-                .await?;
+                let registry = Registry::new(id, mesh.clone(), dm.clone(), name, ips).await?;
                 let fm = FullMesh::new(
                     id,
                     mesh.clone(),
@@ -212,7 +190,6 @@ async fn main() -> Result<()> {
                     args.ice_servers,
                     args.candidate_filter_prefixes,
                     args.encrypt_local_packets,
-                    vec![ConnectionType::Ice, ConnectionType::DataChannel],
                 )
                 .await?;
                 let _uapi =

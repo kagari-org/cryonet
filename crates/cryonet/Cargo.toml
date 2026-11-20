@@ -5,18 +5,35 @@ edition = "2024"
 
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
+async-trait = "0.1.89"
+bytes = "1.11.0"
+cidr = { version = "0.3.2", features = ["serde"] }
 clap = { version = "4.5.54", features = ["derive", "env"] }
 clap-num = "1.2.0"
-cidr = "0.3.2"
+dyn-clone = "1.0.20"
+futures = "0.3.31"
+pnet_packet = "0.35.0"
 rand = "0.9"
 sactor = "0.1.6"
-tokio = { version = "1.49.0", features = ["full"] }
-tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
-typetag = "0.2.21"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+thiserror = "2.0.17"
 tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+typetag = "0.2.21"
 uuid = { version = "1.19.0", features = ["serde", "v4"] }
-futures = "0.3.31"
-cryonet-lib = { path = "../cryonet-lib" }
 cryonet-uapi = { path = "../cryonet-uapi" }
+tokio = { version = "1.49.0", features = ["full"] }
+tun-rs = { version = "2.7.8", features = ["async"] }
+rustrtc = "0.3.145"
+tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
+p256 = { version = "0.14.0-rc.8", features = ["serde", "ecdh", "getrandom", "std"] }
+aes-gcm = "0.10.3"
+sha2 = "0.11.0"
+memoize = "0.6.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+netlink-packet-core = "0.8"
+netlink-packet-route = "0.28"
+netlink-sys = "0.8"

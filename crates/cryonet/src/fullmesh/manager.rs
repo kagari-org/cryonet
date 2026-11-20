@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
+use std::{any::Any, collections::HashMap, rc::Rc, sync::Arc, time::Duration};
 
 use anyhow::{Error, Result};
 use cidr::AnyIpCidr;
@@ -6,30 +6,15 @@ use cryonet_uapi::{ConnState, FullMeshStatus, PeerInfo, PendingPeer};
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
-#[cfg(not(target_arch = "wasm32"))]
-use tracing::info;
-
-#[cfg(target_arch = "wasm32")]
-use crate::fullmesh::conn_wasm::ConnectionWasmDataChannel;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::fullmesh::{
-    conn_rustrtc_dc::ConnectionRustrtcDataChannel,
-    conn_rustrtc_ice::{ConnectionRustrtcIce, ConnectionRustrtcIceKey},
-};
-#[cfg(not(target_arch = "wasm32"))]
+use crate::fullmesh::ice::{IceConnection, IceKey};
 use p256::{PublicKey, ecdh::EphemeralSecret, elliptic_curve::Generate};
-#[cfg(not(target_arch = "wasm32"))]
-use rustrtc::transports::ice::IceParameters;
-#[cfg(not(target_arch = "wasm32"))]
+use rustrtc::{IceTransportState, transports::ice::IceParameters};
 use sha2::Sha256;
 
 use crate::{
-    fullmesh::{
-        Connection, ConnectionState, DeviceManager, IceServer, NotifyFn, is_initiator,
-        registry::{ConnectionType, RegistryHandle},
-    },
+    fullmesh::{DeviceManager, IceServer, NotifyFn, is_initiator, registry::RegistryHandle},
     mesh::{
         MeshHandle,
         packet::{NodeId, Packet, Payload},
@@ -38,16 +23,13 @@ use crate::{
 };
 
 struct FullMeshConnection {
-    connection: Box<dyn Connection>,
+    connection: IceConnection,
     last_received: (u64, Instant),
     once_connected: bool,
     peer_session: u64,
     conn_gen: u64,
 
-    // for ice connection
-    #[cfg(not(target_arch = "wasm32"))]
     last_rekey: Instant,
-    #[cfg(not(target_arch = "wasm32"))]
     ecdh_key: EphemeralSecret,
 }
 
@@ -70,36 +52,22 @@ enum FullMeshPayload {
         index: bool,
         public_key: String,
     },
-    // data channel
-    Offer {
-        sdp: String,
-        candidates: Vec<String>,
-        session: u64,
-        conn_gen: u64,
-    },
-    Answer {
-        sdp: String,
-        candidates: Vec<String>,
-        session: u64,
-    },
     ConnectRequest {
         responder_session: u64,
         last_seen_gen: Option<u64>,
-        connection_types: Vec<ConnectionType>,
     },
 }
 
 #[typetag::serde]
 impl Payload for FullMeshPayload {}
 
-#[allow(unused)]
-pub struct FullMesh {
+pub(crate) struct FullMesh {
     handle: FullMeshHandle,
 
     id: NodeId,
     mesh: MeshHandle,
     registry: RegistryHandle,
-    dm: Arc<Mutex<Box<dyn DeviceManager>>>,
+    dm: Rc<Mutex<Box<dyn DeviceManager>>>,
     ice_servers: Vec<IceServer>,
     candidate_filter_prefixes: Vec<AnyIpCidr>,
     encrypt_local_packets: bool,
@@ -107,7 +75,6 @@ pub struct FullMesh {
     connect_timeout: Duration,
     rekey_timeout: Duration,
     connect_interval: Duration,
-    connection_types: Vec<ConnectionType>,
     session: u64,
     next_conn_gen: u64,
     last_seen_gen: HashMap<NodeId, u64>,
@@ -120,17 +87,16 @@ pub struct FullMesh {
     notifier: Arc<NotifyFn>,
 }
 
-#[sactor(pub)]
+#[sactor(pub(crate))]
 impl FullMesh {
-    pub async fn new(
+    pub(crate) async fn new(
         id: NodeId,
         mesh: MeshHandle,
         registry: RegistryHandle,
-        dm: Arc<Mutex<Box<dyn DeviceManager>>>,
+        dm: Rc<Mutex<Box<dyn DeviceManager>>>,
         ice_servers: Vec<IceServer>,
         candidate_filter_prefixes: Vec<AnyIpCidr>,
         encrypt_local_packets: bool,
-        connection_types: Vec<ConnectionType>,
     ) -> Result<FullMeshHandle> {
         Self::new_with_parameters(
             id,
@@ -144,17 +110,16 @@ impl FullMesh {
             Duration::from_secs(120),
             candidate_filter_prefixes,
             encrypt_local_packets,
-            connection_types,
         )
         .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn new_with_parameters(
+    pub(crate) async fn new_with_parameters(
         id: NodeId,
         mesh: MeshHandle,
         registry: RegistryHandle,
-        dm: Arc<Mutex<Box<dyn DeviceManager>>>,
+        dm: Rc<Mutex<Box<dyn DeviceManager>>>,
         ice_servers: Vec<IceServer>,
         connect_interval: Duration,
         connection_timeout: Duration,
@@ -162,7 +127,6 @@ impl FullMesh {
         rekey_timeout: Duration,
         candidate_filter_prefixes: Vec<AnyIpCidr>,
         encrypt_local_packets: bool,
-        connection_types: Vec<ConnectionType>,
     ) -> Result<FullMeshHandle> {
         let packet_rx = mesh
             .add_dispatchee(Box::new(|packet| {
@@ -184,7 +148,6 @@ impl FullMesh {
             connect_timeout,
             rekey_timeout,
             connect_interval,
-            connection_types,
             session,
             next_conn_gen: 1,
             last_seen_gen: HashMap::new(),
@@ -235,7 +198,6 @@ impl FullMesh {
             return Ok(());
         }
         match payload {
-            #[cfg(not(target_arch = "wasm32"))]
             FullMeshPayload::Shake {
                 ufrag,
                 pwd,
@@ -263,12 +225,12 @@ impl FullMesh {
                         .diffie_hellman(&public_key)
                         .extract::<Sha256>(None)
                         .expand(b"", &mut key)?;
-                    let key = ConnectionRustrtcIceKey {
+                    let key = IceKey {
                         index: false,
                         key: key.into(),
                     };
 
-                    let (mut connection, parameters, local_candidates) = ConnectionRustrtcIce::new(
+                    let (mut connection, parameters, local_candidates) = IceConnection::new(
                         self.id,
                         src,
                         self.handle.clone(),
@@ -285,7 +247,7 @@ impl FullMesh {
                     let old = self.connections.insert(
                         src,
                         FullMeshConnection {
-                            connection: Box::new(connection),
+                            connection,
                             last_received: (0, Instant::now()),
                             once_connected: false,
                             peer_session: *session,
@@ -337,43 +299,24 @@ impl FullMesh {
                         .diffie_hellman(&public_key)
                         .extract::<Sha256>(None)
                         .expand(b"", &mut key)?;
-                    let key = ConnectionRustrtcIceKey {
+                    let key = IceKey {
                         index: false,
                         key: key.into(),
                     };
-                    let Some(connection) = conn
-                        .connection
-                        .as_any_mut()
-                        .downcast_mut::<ConnectionRustrtcIce>()
-                    else {
-                        warn!(
-                            "Received shake from peer {src:X} but connection is not ConnectionRustrtcIce, ignoring",
-                        );
-                        return Ok(());
-                    };
+                    let connection = &mut conn.connection;
                     connection.start(IceParameters::new(ufrag, pwd)).await?;
                     connection.add_candidates(candidates);
                     connection.set_recv_key(key);
                     connection.set_send_key(key);
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
             FullMeshPayload::Rekey { index, public_key } => {
                 let public_key = serde_json::from_str::<PublicKey>(public_key)?;
                 let Some(conn) = self.connections.get_mut(&src) else {
                     warn!("Received rekey from peer {src:X} but no connection exists, ignoring");
                     return Ok(());
                 };
-                let Some(connection) = conn
-                    .connection
-                    .as_any_mut()
-                    .downcast_mut::<ConnectionRustrtcIce>()
-                else {
-                    warn!(
-                        "Received rekey from peer {src:X} but connection is not ConnectionRustrtcIce, ignoring",
-                    );
-                    return Ok(());
-                };
+                let connection = &mut conn.connection;
                 if !is_initiator(self.id, src) {
                     // we received the rekey request
                     let new_ecdh_key = EphemeralSecret::generate();
@@ -392,7 +335,7 @@ impl FullMesh {
                             }),
                         )
                         .await?;
-                    connection.set_recv_key(ConnectionRustrtcIceKey {
+                    connection.set_recv_key(IceKey {
                         index: *index,
                         key: key.into(),
                     });
@@ -409,7 +352,7 @@ impl FullMesh {
                         .diffie_hellman(&public_key)
                         .extract::<Sha256>(None)
                         .expand(b"", &mut key)?;
-                    let new_key = ConnectionRustrtcIceKey {
+                    let new_key = IceKey {
                         index: *index,
                         key: key.into(),
                     };
@@ -427,7 +370,6 @@ impl FullMesh {
                         .await?;
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
             FullMeshPayload::RekeyConfirm { index, public_key } => {
                 let public_key = serde_json::from_str::<PublicKey>(public_key)?;
                 let Some(conn) = self.connections.get_mut(&src) else {
@@ -436,16 +378,7 @@ impl FullMesh {
                     );
                     return Ok(());
                 };
-                let Some(connection) = conn
-                    .connection
-                    .as_any_mut()
-                    .downcast_mut::<ConnectionRustrtcIce>()
-                else {
-                    warn!(
-                        "Received rekey ack from peer {src:X} but connection is not ConnectionRustrtcIce, ignoring",
-                    );
-                    return Ok(());
-                };
+                let connection = &mut conn.connection;
                 // we confirmed the rekey
                 if connection.key().is_some_and(|key| key.index == *index) {
                     debug!("Ignoring stale rekey confirm from peer {src:X}");
@@ -456,161 +389,14 @@ impl FullMesh {
                     .diffie_hellman(&public_key)
                     .extract::<Sha256>(None)
                     .expand(b"", &mut key)?;
-                connection.set_send_key(ConnectionRustrtcIceKey {
+                connection.set_send_key(IceKey {
                     index: *index,
                     key: key.into(),
                 });
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            FullMeshPayload::Offer {
-                sdp,
-                candidates,
-                session,
-                conn_gen,
-            } => {
-                if let Some(existing) = self.connections.get(&src)
-                    && existing.peer_session == *session
-                    && *conn_gen <= existing.conn_gen
-                {
-                    debug!(
-                        "node {:X}: ignoring stale offer from {src:X}: gen {conn_gen} <= {}",
-                        self.id, existing.conn_gen
-                    );
-                    return Ok(());
-                }
-                let connection = ConnectionRustrtcDataChannel::new(
-                    self.ice_servers.clone(),
-                    self.candidate_filter_prefixes.clone(),
-                )
-                .await;
-                let (answer, local_candidates) = connection.create_answer(sdp.clone()).await?;
-                connection.add_candidates(candidates).await?;
-                self.mesh
-                    .send_packet_reliable(
-                        src,
-                        Box::new(FullMeshPayload::Answer {
-                            sdp: answer,
-                            candidates: local_candidates,
-                            session: self.session,
-                        }),
-                    )
-                    .await?;
-                let old = self.connections.insert(
-                    src,
-                    FullMeshConnection {
-                        connection: Box::new(connection),
-                        last_received: (0, Instant::now()),
-                        once_connected: false,
-                        peer_session: *session,
-                        conn_gen: *conn_gen,
-                        last_rekey: Instant::now(),
-                        ecdh_key: EphemeralSecret::generate(),
-                    },
-                );
-                if old.is_some()
-                    && let Err(err) = self.dm.lock().await.disconnected(src).await
-                {
-                    error!(
-                        "node {:X}: failed to mark peer {src:X} disconnected: {err:?}",
-                        self.id
-                    );
-                }
-                self.last_seen_gen.insert(src, *conn_gen);
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            FullMeshPayload::Answer {
-                sdp,
-                candidates,
-                session,
-            } => {
-                let Some(connection) = self.connections.get_mut(&src) else {
-                    warn!("Received answer from peer {src:X} but no connection exists, ignoring");
-                    return Ok(());
-                };
-                connection.peer_session = *session;
-                let Some(connection) = connection
-                    .connection
-                    .as_any_mut()
-                    .downcast_mut::<ConnectionRustrtcDataChannel>()
-                else {
-                    warn!(
-                        "Received answer from peer {src:X} but connection is not ConnectionRustrtcDataChannel, ignoring",
-                    );
-                    return Ok(());
-                };
-                connection.apply_answer(sdp.clone()).await?;
-                connection.add_candidates(candidates).await?;
-            }
-            #[cfg(target_arch = "wasm32")]
-            FullMeshPayload::Shake { .. }
-            | FullMeshPayload::Rekey { .. }
-            | FullMeshPayload::RekeyConfirm { .. } => {
-                warn!("Received unsupported payload from peer {src:X}, ignoring");
-            }
-            #[cfg(target_arch = "wasm32")]
-            FullMeshPayload::Offer {
-                sdp,
-                candidates,
-                session,
-                conn_gen,
-            } => {
-                let mut connection = ConnectionWasmDataChannel::new(
-                    self.ice_servers.clone(),
-                    self.candidate_filter_prefixes.clone(),
-                )
-                .await?;
-                let (answer, local_candidates) = connection.create_answer(sdp.clone()).await?;
-                connection.add_candidates(candidates).await?;
-                self.connections.insert(
-                    src,
-                    FullMeshConnection {
-                        connection: Box::new(connection),
-                        last_received: (0, Instant::now()),
-                        once_connected: false,
-                        peer_session: *session,
-                        conn_gen: *conn_gen,
-                    },
-                );
-                self.last_seen_gen.insert(src, *conn_gen);
-                self.mesh
-                    .send_packet_reliable(
-                        src,
-                        Box::new(FullMeshPayload::Answer {
-                            sdp: answer,
-                            candidates: local_candidates,
-                            session: self.session,
-                        }),
-                    )
-                    .await?;
-            }
-            #[cfg(target_arch = "wasm32")]
-            FullMeshPayload::Answer {
-                sdp,
-                candidates,
-                session,
-            } => {
-                let Some(conn) = self.connections.get_mut(&src) else {
-                    warn!("Received answer from peer {src:X} but no connection exists, ignoring");
-                    return Ok(());
-                };
-                conn.peer_session = *session;
-                let Some(connection) = conn
-                    .connection
-                    .as_any_mut()
-                    .downcast_mut::<ConnectionWasmDataChannel>()
-                else {
-                    warn!(
-                        "Received answer from peer {src:X} but connection is not ConnectionWasmDataChannel, ignoring",
-                    );
-                    return Ok(());
-                };
-                connection.apply_answer(sdp.clone()).await?;
-                connection.add_candidates(candidates).await?;
-            }
             FullMeshPayload::ConnectRequest {
                 responder_session,
                 last_seen_gen,
-                connection_types,
             } => {
                 if !is_initiator(self.id, src) {
                     return Ok(());
@@ -642,7 +428,7 @@ impl FullMesh {
                         }
                     }
                     self.connect_backoff.remove(&src);
-                    if let Err(err) = self.connect_to(src, connection_types.clone()).await {
+                    if let Err(err) = self.connect_to(src).await {
                         error!(
                             "node {:X}: failed to connect to peer {src:X}: {err:?}",
                             self.id
@@ -685,12 +471,12 @@ impl FullMesh {
     }
 
     #[no_reply]
-    pub async fn connect_tick(&mut self) -> Result<()> {
+    pub(crate) async fn connect_tick(&mut self) -> Result<()> {
         let time = Instant::now();
         // gc
         let mut disconnected = Vec::new();
         self.connections.retain(|node_id, conn| {
-            if conn.connection.status() == ConnectionState::Closed {
+            if is_closed(conn.connection.state()) {
                 disconnected.push(*node_id);
                 return false;
             }
@@ -725,13 +511,13 @@ impl FullMesh {
             }
             // mark connected
             for (node_id, conn) in &mut self.connections {
-                if conn.once_connected || conn.connection.status() != ConnectionState::Connected {
+                if conn.once_connected || !is_connected(conn.connection.state()) {
                     continue;
                 }
                 let result: Result<()> = try {
                     dm.connected(
                         *node_id,
-                        conn.connection.sender().await?,
+                        conn.connection.sender()?,
                         conn.connection.receiver().await?,
                     )
                     .await?;
@@ -765,7 +551,6 @@ impl FullMesh {
         self.connect_backoff
             .retain(|node_id, _| nodes.contains_key(node_id));
         // rekey
-        #[cfg(not(target_arch = "wasm32"))]
         for peer_id in nodes.keys() {
             if !is_initiator(self.id, *peer_id) {
                 continue;
@@ -773,15 +558,9 @@ impl FullMesh {
             let Some(conn) = self.connections.get_mut(peer_id) else {
                 continue;
             };
-            let Some(connection) = conn
-                .connection
-                .as_any_mut()
-                .downcast_mut::<ConnectionRustrtcIce>()
-            else {
-                continue;
-            };
+            let connection = &mut conn.connection;
             // TODO: rekey by sent/received bytes
-            if connection.status() != ConnectionState::Connected
+            if !is_connected(connection.state())
                 || time.duration_since(conn.last_rekey) < self.rekey_timeout
             {
                 continue;
@@ -823,7 +602,7 @@ impl FullMesh {
             conn.last_rekey = time;
         }
         // connect
-        for (&peer_id, node) in &nodes {
+        for &peer_id in nodes.keys() {
             if self.connections.contains_key(&peer_id) {
                 continue;
             }
@@ -853,7 +632,6 @@ impl FullMesh {
                         Box::new(FullMeshPayload::ConnectRequest {
                             responder_session: self.session,
                             last_seen_gen: self.last_seen_gen.get(&peer_id).copied(),
-                            connection_types: self.connection_types.clone(),
                         }),
                     )
                     .await
@@ -865,10 +643,7 @@ impl FullMesh {
                 }
                 continue;
             }
-            if let Err(err) = self
-                .connect_to(peer_id, node.0.connection_types.clone())
-                .await
-            {
+            if let Err(err) = self.connect_to(peer_id).await {
                 error!(
                     "node {:X}: failed to connect to peer {peer_id:X}: {err:?}",
                     self.id
@@ -878,158 +653,61 @@ impl FullMesh {
         Ok(())
     }
 
-    async fn connect_to(
-        &mut self,
-        peer_id: NodeId,
-        connection_types: Vec<ConnectionType>,
-    ) -> Result<()> {
+    async fn connect_to(&mut self, peer_id: NodeId) -> Result<()> {
         debug!("node {:X}: initiating full mesh to {peer_id:X}", self.id);
-        #[cfg(not(target_arch = "wasm32"))]
-        if connection_types.contains(&ConnectionType::Ice) {
-            let result: Result<()> = try {
-                let ecdh_key = EphemeralSecret::generate();
-                let public_key = ecdh_key.public_key();
-                let (connection, parameters, candidates) = ConnectionRustrtcIce::new(
-                    self.id,
+        let result: Result<()> = try {
+            let ecdh_key = EphemeralSecret::generate();
+            let public_key = ecdh_key.public_key();
+            let (connection, parameters, candidates) = IceConnection::new(
+                self.id,
+                peer_id,
+                self.handle.clone(),
+                self.ice_servers.clone(),
+                self.candidate_filter_prefixes.clone(),
+                self.encrypt_local_packets,
+                true,
+            )
+            .await?;
+            let conn_gen = self.next_conn_gen;
+            self.next_conn_gen += 1;
+            self.connections.insert(
+                peer_id,
+                FullMeshConnection {
+                    connection,
+                    last_rekey: Instant::now(),
+                    last_received: (0, Instant::now()),
+                    once_connected: false,
+                    peer_session: 0,
+                    conn_gen,
+                    ecdh_key,
+                },
+            );
+            self.mesh
+                .send_packet_reliable(
                     peer_id,
-                    self.handle.clone(),
-                    self.ice_servers.clone(),
-                    self.candidate_filter_prefixes.clone(),
-                    self.encrypt_local_packets,
-                    true,
+                    Box::new(FullMeshPayload::Shake {
+                        ufrag: parameters.username_fragment,
+                        pwd: parameters.password,
+                        candidates,
+                        // TODO: https://github.com/rust-lang/rust/issues/149488
+                        public_key: serde_json::to_string(&public_key).unwrap(),
+                        session: self.session,
+                        conn_gen,
+                    }),
                 )
                 .await?;
-                let conn_gen = self.next_conn_gen;
-                self.next_conn_gen += 1;
-                self.connections.insert(
-                    peer_id,
-                    FullMeshConnection {
-                        connection: Box::new(connection),
-                        last_rekey: Instant::now(),
-                        last_received: (0, Instant::now()),
-                        once_connected: false,
-                        peer_session: 0,
-                        conn_gen,
-                        ecdh_key,
-                    },
-                );
-                self.mesh
-                    .send_packet_reliable(
-                        peer_id,
-                        Box::new(FullMeshPayload::Shake {
-                            ufrag: parameters.username_fragment,
-                            pwd: parameters.password,
-                            candidates,
-                            // TODO: https://github.com/rust-lang/rust/issues/149488
-                            public_key: serde_json::to_string(&public_key).unwrap(),
-                            session: self.session,
-                            conn_gen,
-                        }),
-                    )
-                    .await?;
-            };
-            self.finish_connect(peer_id, result);
-        } else if connection_types.contains(&ConnectionType::DataChannel) {
-            let result: Result<()> = try {
-                let connection = ConnectionRustrtcDataChannel::new(
-                    self.ice_servers.clone(),
-                    self.candidate_filter_prefixes.clone(),
-                )
-                .await;
-                let (offer, candidates) = connection.create_offer().await?;
-                let conn_gen = self.next_conn_gen;
-                self.next_conn_gen += 1;
-                self.connections.insert(
-                    peer_id,
-                    FullMeshConnection {
-                        connection: Box::new(connection),
-                        last_received: (0, Instant::now()),
-                        once_connected: false,
-                        peer_session: 0,
-                        conn_gen,
-                        last_rekey: Instant::now(),
-                        ecdh_key: EphemeralSecret::generate(),
-                    },
-                );
-                self.mesh
-                    .send_packet_reliable(
-                        peer_id,
-                        Box::new(FullMeshPayload::Offer {
-                            sdp: offer,
-                            candidates,
-                            session: self.session,
-                            conn_gen,
-                        }),
-                    )
-                    .await?;
-            };
-            self.finish_connect(peer_id, result);
-        }
-        #[cfg(target_arch = "wasm32")]
-        if connection_types.contains(&ConnectionType::DataChannel) {
-            let result: Result<()> = try {
-                let mut connection = ConnectionWasmDataChannel::new(
-                    self.ice_servers.clone(),
-                    self.candidate_filter_prefixes.clone(),
-                )
-                .await?;
-                let (offer, candidates) = connection.create_offer().await?;
-                let conn_gen = self.next_conn_gen;
-                self.next_conn_gen += 1;
-                self.connections.insert(
-                    peer_id,
-                    FullMeshConnection {
-                        connection: Box::new(connection),
-                        last_received: (0, Instant::now()),
-                        once_connected: false,
-                        peer_session: 0,
-                        conn_gen,
-                    },
-                );
-                self.mesh
-                    .send_packet_reliable(
-                        peer_id,
-                        Box::new(FullMeshPayload::Offer {
-                            sdp: offer,
-                            candidates,
-                            session: self.session,
-                            conn_gen,
-                        }),
-                    )
-                    .await?;
-            };
-            self.finish_connect(peer_id, result);
-        }
+        };
+        self.finish_connect(peer_id, result);
         Ok(())
     }
 
-    pub async fn get_peers(&self) -> FullMeshStatus {
+    pub(crate) async fn get_peers(&self) -> FullMeshStatus {
         let now = Instant::now();
         let mut peers = Vec::with_capacity(self.connections.len());
         for (node_id, conn) in &self.connections {
-            let state = match conn.connection.status() {
-                ConnectionState::Connecting => ConnState::Connecting,
-                ConnectionState::Connected => ConnState::Connected,
-                ConnectionState::Closed => ConnState::Closed,
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            let (connection_type, key_index, last_rekey_ms) = {
-                let any = conn.connection.as_any();
-                let last_rekey_ms = now.duration_since(conn.last_rekey).as_millis() as i64;
-                if let Some(connection) = any.downcast_ref::<ConnectionRustrtcIce>() {
-                    (
-                        "ice".to_owned(),
-                        connection.key().map(|key| key.index),
-                        last_rekey_ms,
-                    )
-                } else if any.is::<ConnectionRustrtcDataChannel>() {
-                    ("datachannel".to_owned(), None, last_rekey_ms)
-                } else {
-                    ("unknown".to_owned(), None, last_rekey_ms)
-                }
-            };
-            #[cfg(target_arch = "wasm32")]
-            let (connection_type, key_index, last_rekey_ms) = ("datachannel".to_owned(), None, -1);
+            let state = to_conn_state(conn.connection.state());
+            let last_rekey_ms = now.duration_since(conn.last_rekey).as_millis() as i64;
+            let key_index = conn.connection.key().map(|key| key.index);
             peers.push(PeerInfo {
                 node: *node_id,
                 state,
@@ -1043,7 +721,6 @@ impl FullMesh {
                 last_recv_ms: now.duration_since(conn.last_received.1).as_millis() as i64,
                 last_rekey_ms,
                 key_index,
-                connection_type,
             });
         }
         peers.sort_by_key(|peer| peer.node);
@@ -1071,6 +748,29 @@ impl FullMesh {
     #[handle_error]
     fn handle_error(&mut self, err: &Error) {
         error!("Error: {err:?}");
+    }
+}
+
+fn is_connected(state: IceTransportState) -> bool {
+    matches!(
+        state,
+        IceTransportState::Connected
+            | IceTransportState::Completed
+            | IceTransportState::Disconnected
+    )
+}
+
+fn is_closed(state: IceTransportState) -> bool {
+    matches!(state, IceTransportState::Failed | IceTransportState::Closed)
+}
+
+fn to_conn_state(state: IceTransportState) -> ConnState {
+    match state {
+        IceTransportState::New | IceTransportState::Checking => ConnState::Connecting,
+        IceTransportState::Connected
+        | IceTransportState::Completed
+        | IceTransportState::Disconnected => ConnState::Connected,
+        IceTransportState::Failed | IceTransportState::Closed => ConnState::Closed,
     }
 }
 

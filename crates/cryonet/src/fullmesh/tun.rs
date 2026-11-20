@@ -14,12 +14,15 @@ use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::{
     errors::CryonetError,
-    fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager},
+    fullmesh::{
+        DeviceManager,
+        ice::{IceReceiver, IceSender},
+    },
     mesh::packet::NodeId,
     utils::{delayed_interval, jitter},
 };
 
-pub struct TunManager {
+pub(crate) struct TunManager {
     interface_prefix: String,
     enable_packet_information: bool,
     ipv6: Option<Ipv6Addr>,
@@ -31,7 +34,7 @@ pub struct TunManager {
 }
 
 impl TunManager {
-    pub fn new(
+    pub(crate) fn new(
         interface_prefix: String,
         enable_packet_information: bool,
         ipv6: Option<Ipv6Addr>,
@@ -44,7 +47,7 @@ impl TunManager {
         )
     }
 
-    pub fn new_with_parameters(
+    pub(crate) fn new_with_parameters(
         interface_prefix: String,
         enable_packet_information: bool,
         ipv6: Option<Ipv6Addr>,
@@ -97,8 +100,8 @@ impl DeviceManager for TunManager {
     async fn connected(
         &mut self,
         node_id: NodeId,
-        sender: Box<dyn ConnectionSender>,
-        receiver: Box<dyn ConnectionReceiver>,
+        sender: IceSender,
+        receiver: IceReceiver,
     ) -> Result<()> {
         if let Some(stop) = self.tasks.remove(&node_id) {
             let _ = stop.send(true);
@@ -141,7 +144,7 @@ impl DeviceManager for TunManager {
 async fn send_loop(
     node_id: NodeId,
     keepalive_interval: Duration,
-    mut sender: Box<dyn ConnectionSender>,
+    mut sender: IceSender,
     device: Arc<AsyncDevice>,
     mut stop: watch::Receiver<bool>,
 ) {
@@ -177,7 +180,7 @@ async fn send_loop(
 
 async fn recv_loop(
     node_id: NodeId,
-    mut receiver: Box<dyn ConnectionReceiver>,
+    mut receiver: IceReceiver,
     device: Arc<AsyncDevice>,
     mut stop: watch::Receiver<bool>,
 ) {

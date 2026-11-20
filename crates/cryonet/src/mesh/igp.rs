@@ -23,7 +23,7 @@ use crate::mesh::{
 };
 use crate::utils::{Instant, Interval, interval, jitter_down};
 
-pub struct Igp {
+pub(crate) struct Igp {
     handle: IgpHandle,
 
     id: NodeId,
@@ -92,18 +92,18 @@ struct IgpCounters {
 const MAX_SEQNO_REQUEST_RETRIES: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Route {
-    pub metric: SeqMetric,
-    pub computed_metric: u32,
-    pub dst: NodeId,
-    pub from: NodeId,
-    pub timeout: Instant,
-    pub selected: bool,
+pub(crate) struct Route {
+    pub(crate) metric: SeqMetric,
+    pub(crate) computed_metric: u32,
+    pub(crate) dst: NodeId,
+    pub(crate) from: NodeId,
+    pub(crate) timeout: Instant,
+    pub(crate) selected: bool,
 }
 
-#[sactor(pub)]
+#[sactor(pub(crate))]
 impl Igp {
-    pub async fn new(id: NodeId, mesh: MeshHandle) -> Result<IgpHandle> {
+    pub(crate) async fn new(id: NodeId, mesh: MeshHandle) -> Result<IgpHandle> {
         // RFC 8966 3.4.1 allows shortening the Hello interval at any time but
         // increasing it only right before sending a Hello, and 3.7.1 requires
         // each route to be advertised at least once per Update interval.
@@ -126,7 +126,7 @@ impl Igp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn new_with_parameters(
+    pub(crate) async fn new_with_parameters(
         hello_interval: Duration,
         dump_interval: Duration,
         gc_interval: Duration,
@@ -639,7 +639,6 @@ impl Igp {
                 }
                 self.update_route_costs(node_id, u32::MAX).await?;
             }
-            _ => {}
         };
         Ok(())
     }
@@ -773,7 +772,7 @@ impl Igp {
         Ok(())
     }
 
-    pub fn get_routes(&self) -> Vec<IgpRoute> {
+    pub(crate) fn get_routes(&self) -> Vec<IgpRoute> {
         let now = Instant::now();
         self.routes
             .values()
@@ -789,7 +788,7 @@ impl Igp {
             .collect()
     }
 
-    pub fn get_status(&self) -> IgpStatus {
+    pub(crate) fn get_status(&self) -> IgpStatus {
         let now = Instant::now();
         let mut neighbors = self
             .costs
@@ -843,7 +842,7 @@ impl Igp {
         }
     }
 
-    pub fn get_stats(&self) -> IgpStats {
+    pub(crate) fn get_stats(&self) -> IgpStats {
         IgpStats {
             routes: self.routes.len() as u64,
             selected: self.routes.values().filter(|route| route.selected).count() as u64,

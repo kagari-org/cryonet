@@ -1,29 +1,23 @@
 use std::time::Duration;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use tokio::time::{Instant, Interval, MissedTickBehavior, interval, timeout};
-#[cfg(target_arch = "wasm32")]
-pub use wasmtimer::{
-    std::Instant,
-    tokio::{Interval, MissedTickBehavior, interval, timeout},
-};
+pub(crate) use tokio::time::{Instant, Interval, MissedTickBehavior, interval, timeout};
 
-pub fn jitter(period: Duration, ratio: f64) -> Duration {
+pub(crate) fn jitter(period: Duration, ratio: f64) -> Duration {
     let ratio = ratio.clamp(0.0, 1.0);
     period.mul_f64(1.0 - ratio + 2.0 * ratio * rand::random::<f64>())
 }
 
-pub fn jitter_up(period: Duration, ratio: f64) -> Duration {
+pub(crate) fn jitter_up(period: Duration, ratio: f64) -> Duration {
     let ratio = ratio.clamp(0.0, 1.0);
     period.mul_f64(1.0 + ratio * rand::random::<f64>())
 }
 
-pub fn jitter_down(period: Duration, ratio: f64) -> Duration {
+pub(crate) fn jitter_down(period: Duration, ratio: f64) -> Duration {
     let ratio = ratio.clamp(0.0, 1.0);
     period.mul_f64(1.0 - ratio * rand::random::<f64>())
 }
 
-pub fn delayed_interval(period: Duration) -> Interval {
+pub(crate) fn delayed_interval(period: Duration) -> Interval {
     let mut interval = interval(period);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     interval

@@ -6,59 +6,31 @@ use std::{
 };
 
 use crate::{
-    connection::link::new_reqwest_ws_link,
+    connection::link::new_tungstenite_ws_link,
     mesh::{MeshHandle, packet::NodeId},
 };
 use anyhow::{Error, Result, bail};
 use bytes::Bytes;
 use cryonet_uapi::ServerInfo;
 use futures::{SinkExt, StreamExt};
-use reqwest_websocket::{Message, Upgrade};
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::connection::link::new_tungstenite_ws_link;
-#[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpListener;
-#[cfg(not(target_arch = "wasm32"))]
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::{accept_async, connect_async};
 
 use crate::utils::{Interval, delayed_interval, jitter, timeout};
 
-pub mod link;
+pub(crate) mod link;
 
-#[cfg(target_arch = "wasm32")]
-type AcceptParam = ();
-#[cfg(not(target_arch = "wasm32"))]
-type AcceptParam = tokio::io::Result<(tokio::net::TcpStream, SocketAddr)>;
-
-#[cfg(not(target_arch = "wasm32"))]
-fn build_client() -> Result<reqwest::Client> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(reqwest::Client::builder()
-        .use_preconfigured_tls(config)
-        .build()?)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn build_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::new())
-}
-
-pub struct ConnManager {
+pub(crate) struct ConnManager {
     id: NodeId,
     mesh: MeshHandle,
 
     token: Option<String>,
     servers: Vec<String>,
-    client: reqwest::Client,
 
     connect_timer: Interval,
     connect_timeout: Duration,
@@ -66,7 +38,6 @@ pub struct ConnManager {
     servers_map: Arc<Mutex<HashMap<String, NodeId>>>,
     connecting: Arc<Mutex<HashSet<String>>>,
 
-    #[cfg(not(target_arch = "wasm32"))]
     listener: TcpListener,
 }
 
@@ -76,9 +47,9 @@ struct AuthPacket {
     node_id: NodeId,
 }
 
-#[sactor(pub)]
+#[sactor(pub(crate))]
 impl ConnManager {
-    pub async fn new(
+    pub(crate) async fn new(
         id: NodeId,
         mesh: MeshHandle,
         token: Option<String>,
@@ -97,8 +68,7 @@ impl ConnManager {
         .await
     }
 
-    #[allow(unused_variables)]
-    pub async fn new_with_parameters(
+    pub(crate) async fn new_with_parameters(
         id: NodeId,
         mesh: MeshHandle,
         token: Option<String>,
@@ -107,24 +77,20 @@ impl ConnManager {
         connect_interval: Duration,
         connect_timeout: Duration,
     ) -> Result<ConnManagerHandle> {
-        #[cfg(not(target_arch = "wasm32"))]
         let listener = {
             let listener = TcpListener::bind(listen).await?;
             info!("Listening on {listen}");
             listener
         };
-        let client = build_client()?;
         let (future, mgr) = ConnManager::run(move |_| ConnManager {
             id,
             mesh,
             token,
             servers,
-            client,
             connect_timer: delayed_interval(connect_interval),
             connect_timeout,
             servers_map: Arc::new(Mutex::new(HashMap::new())),
             connecting: Arc::new(Mutex::new(HashSet::new())),
-            #[cfg(not(target_arch = "wasm32"))]
             listener,
         });
         tokio::task::spawn_local(future);
@@ -135,7 +101,6 @@ impl ConnManager {
     fn select(&mut self) -> Vec<Selection<'_>> {
         vec![
             selection!(self.connect_timer.tick().await, connect),
-            #[cfg(not(target_arch = "wasm32"))]
             selection!(self.listener.accept().await, accept, it => it),
         ]
     }
@@ -160,7 +125,6 @@ impl ConnManager {
             let id = self.id;
             let mesh = self.mesh.clone();
             let token = self.token.clone();
-            let client = self.client.clone();
             let servers_map = self.servers_map.clone();
             let connecting = self.connecting.clone();
             let connect_timeout = self.connect_timeout;
@@ -168,7 +132,7 @@ impl ConnManager {
             tokio::task::spawn_local(async move {
                 let result = match timeout(
                     connect_timeout,
-                    Self::connect_task(id, mesh, token, client, servers_map, server.clone()),
+                    Self::connect_task(id, mesh, token, servers_map, server.clone()),
                 )
                 .await
                 {
@@ -188,7 +152,6 @@ impl ConnManager {
         id: NodeId,
         mesh: MeshHandle,
         token: Option<String>,
-        client: reqwest::Client,
         servers_map: Arc<Mutex<HashMap<String, NodeId>>>,
         server: String,
     ) -> Result<()> {
@@ -203,13 +166,8 @@ impl ConnManager {
         }
 
         info!("Connecting to server {server} ...");
-        let mut ws = client
-            .get(&server)
-            .upgrade()
-            .send()
-            .await?
-            .into_websocket()
-            .await?;
+        use tokio_tungstenite::tungstenite::Message;
+        let (mut ws, _) = connect_async(server.as_str()).await?;
         ws.send(Message::Binary(Bytes::from(serde_json::to_vec(
             &AuthPacket {
                 token: token.clone(),
@@ -225,7 +183,7 @@ impl ConnManager {
         };
         servers_map.lock().await.insert(server.clone(), neigh_id);
 
-        let (sink, stream) = new_reqwest_ws_link(ws);
+        let (sink, stream) = new_tungstenite_ws_link(ws);
         let added = mesh
             .add_link(neigh_id, Box::new(sink), Box::new(stream), true)
             .await?;
@@ -240,18 +198,10 @@ impl ConnManager {
     }
 
     #[no_reply]
-    #[allow(unused)]
-    async fn accept(&mut self, param: AcceptParam) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let result = self.accept_internal(param).await;
-        #[cfg(target_arch = "wasm32")]
-        let result = Ok(());
-        result
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[skip]
-    async fn accept_internal(&mut self, param: AcceptParam) -> Result<()> {
+    async fn accept(
+        &mut self,
+        param: tokio::io::Result<(tokio::net::TcpStream, SocketAddr)>,
+    ) -> Result<()> {
         use tokio_tungstenite::tungstenite::Message;
         let (stream, addr) = param?;
         stream.set_nodelay(true)?;
@@ -308,12 +258,7 @@ impl ConnManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub async fn disconnect(&mut self, id: NodeId) -> Result<()> {
-        self.mesh.remove_link(id).await
-    }
-
-    pub async fn get_servers(&self) -> Vec<ServerInfo> {
+    pub(crate) async fn get_servers(&self) -> Vec<ServerInfo> {
         let links = self.mesh.get_link_ids().await.unwrap_or_default();
         let map = self.servers_map.lock().await;
         let connecting = self.connecting.lock().await;

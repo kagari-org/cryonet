@@ -5,8 +5,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(target_arch = "wasm32")]
-use crate::wasm::AsyncDevice;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -22,26 +20,34 @@ use pnet_packet::{
     ipv6::{Ipv6Packet, MutableIpv6Packet},
     util::ipv6_checksum,
 };
-use sactor::sactor;
 use tokio::sync::{Mutex, mpsc, watch};
 use tracing::{debug, error, warn};
-#[cfg(not(target_arch = "wasm32"))]
 use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
 
 use crate::{
     errors::CryonetError,
-    fullmesh::{ConnectionReceiver, ConnectionSender, DeviceManager, IpMap},
+    fullmesh::{
+        DeviceManager, IpMap,
+        ice::{IceReceiver, IceSender},
+    },
     mesh::packet::NodeId,
     utils::{delayed_interval, jitter, random_mac},
 };
 
-pub struct TapManager {
-    handle: TapManagerInnerHandle,
+pub(crate) struct TapManager {
+    enable_packet_information: bool,
+
+    device: Arc<AsyncDevice>,
+    tap_mac: [u8; 6],
+    macs: HashMap<NodeId, [u8; 6]>,
+    #[cfg(target_os = "linux")]
+    if_index: Option<u32>,
+    send_msg_tx: mpsc::UnboundedSender<SendLoopMessage>,
+    recv_tasks: HashMap<NodeId, watch::Sender<bool>>,
 }
 
 impl TapManager {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(
+    pub(crate) fn new(
         tap_interface_name: String,
         enable_packet_information: bool,
         ips: Arc<Mutex<IpMap>>,
@@ -62,70 +68,12 @@ impl TapManager {
         Self::new_with_device(tap_mac, enable_packet_information, ips, device)
     }
 
-    pub fn new_with_device(
+    fn new_with_device(
         tap_mac: [u8; 6],
         enable_packet_information: bool,
         ips: Arc<Mutex<IpMap>>,
         device: Arc<AsyncDevice>,
     ) -> Result<TapManager> {
-        Ok(TapManager {
-            handle: TapManagerInner::new_with_device(
-                tap_mac,
-                Duration::from_secs(3),
-                enable_packet_information,
-                ips,
-                device,
-            )?,
-        })
-    }
-}
-
-#[async_trait(?Send)]
-impl DeviceManager for TapManager {
-    async fn connected(
-        &mut self,
-        node_id: NodeId,
-        sender: Box<dyn ConnectionSender>,
-        receiver: Box<dyn ConnectionReceiver>,
-    ) -> Result<()> {
-        self.handle.connected(node_id, sender, receiver).await?
-    }
-
-    async fn disconnected(&mut self, node_id: NodeId) -> Result<()> {
-        self.handle.disconnected(node_id).await?
-    }
-
-    async fn ips(&self) -> Result<Vec<IpAddr>> {
-        self.handle.ips().await?
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn neighbor_changed(&mut self, ip: IpAddr) -> Result<()> {
-        self.handle.neighbor_changed(ip).await?
-    }
-}
-
-struct TapManagerInner {
-    enable_packet_information: bool,
-
-    device: Arc<AsyncDevice>,
-    tap_mac: [u8; 6],
-    macs: HashMap<NodeId, [u8; 6]>,
-    #[cfg(target_os = "linux")]
-    if_index: Option<u32>,
-    send_msg_tx: mpsc::UnboundedSender<SendLoopMessage>,
-    recv_tasks: HashMap<NodeId, watch::Sender<bool>>,
-}
-
-#[sactor]
-impl TapManagerInner {
-    fn new_with_device(
-        tap_mac: [u8; 6],
-        keepalive_interval: Duration,
-        enable_packet_information: bool,
-        ips: Arc<Mutex<IpMap>>,
-        device: Arc<AsyncDevice>,
-    ) -> Result<TapManagerInnerHandle> {
         #[cfg(target_os = "linux")]
         let if_index = device.name().ok().and_then(|name| {
             let name = std::ffi::CString::new(name).ok()?;
@@ -133,10 +81,19 @@ impl TapManagerInner {
             (index != 0).then_some(index)
         });
 
-        let device2 = device.clone();
-
         let (send_msg_tx, send_msg_rx) = mpsc::unbounded_channel();
-        let (future, handle) = TapManagerInner::run(move |_| TapManagerInner {
+        let future = send_loop(
+            Duration::from_secs(3),
+            enable_packet_information,
+            ips,
+            device.clone(),
+            #[cfg(target_os = "linux")]
+            if_index,
+            tap_mac,
+            send_msg_rx,
+        );
+        tokio::spawn(future);
+        Ok(TapManager {
             device,
             tap_mac,
             macs: HashMap::new(),
@@ -145,70 +102,7 @@ impl TapManagerInner {
             enable_packet_information,
             send_msg_tx,
             recv_tasks: HashMap::new(),
-        });
-        tokio::task::spawn_local(future);
-        let future = send_loop(
-            keepalive_interval,
-            enable_packet_information,
-            ips,
-            device2,
-            #[cfg(target_os = "linux")]
-            if_index,
-            tap_mac,
-            send_msg_rx,
-        );
-        #[cfg(not(target_arch = "wasm32"))]
-        tokio::spawn(future);
-        #[cfg(target_arch = "wasm32")]
-        tokio::task::spawn_local(future);
-        Ok(handle)
-    }
-
-    async fn connected(
-        &mut self,
-        node_id: NodeId,
-        sender: Box<dyn ConnectionSender>,
-        receiver: Box<dyn ConnectionReceiver>,
-    ) -> Result<()> {
-        let peer_mac = self.mac(node_id);
-        self.send_msg_tx
-            .send(SendLoopMessage::Connected(node_id, peer_mac, sender))
-            .map_err(|_| anyhow!("Failed to send Connected"))?;
-        let stop_tx = watch::channel(false).0;
-        let future = recv_loop(
-            self.enable_packet_information,
-            node_id,
-            receiver,
-            self.device.clone(),
-            self.tap_mac,
-            peer_mac,
-            stop_tx.subscribe(),
-        );
-        #[cfg(not(target_arch = "wasm32"))]
-        tokio::spawn(future);
-        #[cfg(target_arch = "wasm32")]
-        tokio::task::spawn_local(future);
-        self.recv_tasks.insert(node_id, stop_tx);
-        Ok(())
-    }
-
-    async fn disconnected(&mut self, node_id: NodeId) -> Result<()> {
-        self.send_msg_tx
-            .send(SendLoopMessage::Disconnected(node_id))
-            .map_err(|_| anyhow!("Failed to send Disconnected"))?;
-        self.macs.remove(&node_id);
-        if let Some(stop_tx) = self.recv_tasks.remove(&node_id) {
-            let _ = stop_tx.send(true);
-        }
-        Ok(())
-    }
-
-    async fn neighbor_changed(&mut self, _ip: IpAddr) -> Result<()> {
-        #[cfg(target_os = "linux")]
-        if let Some(if_index) = self.if_index {
-            delete_neighbor(if_index, _ip);
-        }
-        Ok(())
+        })
     }
 
     fn mac(&mut self, node_id: NodeId) -> [u8; 6] {
@@ -224,13 +118,64 @@ impl TapManagerInner {
         self.macs.insert(node_id, mac);
         mac
     }
+}
 
-    fn ips(&self) -> Result<Vec<IpAddr>> {
+#[async_trait(?Send)]
+impl DeviceManager for TapManager {
+    async fn connected(
+        &mut self,
+        node_id: NodeId,
+        sender: IceSender,
+        receiver: IceReceiver,
+    ) -> Result<()> {
+        let peer_mac = self.mac(node_id);
+        self.send_msg_tx
+            .send(SendLoopMessage::Connected(
+                node_id,
+                peer_mac,
+                Box::new(sender),
+            ))
+            .map_err(|_| anyhow!("Failed to send Connected"))?;
+        let stop_tx = watch::channel(false).0;
+        let future = recv_loop(
+            self.enable_packet_information,
+            node_id,
+            receiver,
+            self.device.clone(),
+            self.tap_mac,
+            peer_mac,
+            stop_tx.subscribe(),
+        );
+        tokio::spawn(future);
+        self.recv_tasks.insert(node_id, stop_tx);
+        Ok(())
+    }
+
+    async fn disconnected(&mut self, node_id: NodeId) -> Result<()> {
+        self.send_msg_tx
+            .send(SendLoopMessage::Disconnected(node_id))
+            .map_err(|_| anyhow!("Failed to send Disconnected"))?;
+        self.macs.remove(&node_id);
+        if let Some(stop_tx) = self.recv_tasks.remove(&node_id) {
+            let _ = stop_tx.send(true);
+        }
+        Ok(())
+    }
+
+    async fn ips(&self) -> Result<Vec<IpAddr>> {
         Ok(self.device.addresses()?)
+    }
+
+    async fn neighbor_changed(&mut self, _ip: IpAddr) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(if_index) = self.if_index {
+            delete_neighbor(if_index, _ip);
+        }
+        Ok(())
     }
 }
 
-impl Drop for TapManagerInner {
+impl Drop for TapManager {
     fn drop(&mut self) {
         for stop_tx in self.recv_tasks.values() {
             let _ = stop_tx.send(true);
@@ -241,7 +186,7 @@ impl Drop for TapManagerInner {
 
 enum SendLoopMessage {
     Stop,
-    Connected(NodeId, [u8; 6], Box<dyn ConnectionSender>),
+    Connected(NodeId, [u8; 6], Box<IceSender>),
     Disconnected(NodeId),
 }
 
@@ -459,7 +404,7 @@ async fn send_loop(
 async fn recv_loop(
     enable_packet_information: bool,
     peer_id: NodeId,
-    mut receiver: Box<dyn ConnectionReceiver>,
+    mut receiver: IceReceiver,
     device: Arc<AsyncDevice>,
     device_mac: [u8; 6],
     peer_mac: [u8; 6],

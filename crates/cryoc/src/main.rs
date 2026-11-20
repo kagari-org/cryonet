@@ -415,11 +415,7 @@ async fn main() -> Result<()> {
                     .peers
                     .iter()
                     .map(|peer| {
-                        let rekey = if peer.connection_type == "ice" && peer.last_rekey_ms >= 0 {
-                            format_ms(peer.last_rekey_ms)
-                        } else {
-                            "-".to_owned()
-                        };
+                        let rekey = format_ms(peer.last_rekey_ms);
                         vec![
                             node_label(&names, peer.node),
                             if peer.initiator {
@@ -487,15 +483,10 @@ async fn main() -> Result<()> {
                         } else {
                             format!("{} ({:X})", node.name, node.id)
                         };
-                        vec![
-                            label,
-                            format_ms(node.last_seen_ms),
-                            join_or_dash(&node.connection_types),
-                            join_or_dash(&node.ips),
-                        ]
+                        vec![label, format_ms(node.last_seen_ms), join_or_dash(&node.ips)]
                     })
                     .collect::<Vec<_>>();
-                table(&["NODE", "LAST SEEN", "TRANSPORTS", "IPS"], &rows);
+                table(&["NODE", "LAST SEEN", "IPS"], &rows);
             }
         }
         CryonetUapi::GetServersResponse(servers) => {

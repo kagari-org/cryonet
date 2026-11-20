@@ -2,6 +2,7 @@ use std::{
     any::Any,
     collections::{HashMap, HashSet},
     net::IpAddr,
+    rc::Rc,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -31,17 +32,10 @@ fn claim_wins(current: &IpEntry, node: NodeId, claim: u64) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ConnectionType {
-    Ice,
-    DataChannel,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Node {
-    pub name: String,
-    pub connection_types: Vec<ConnectionType>,
-    pub ips: Vec<IpAddr>,
-    pub claim: u64,
+pub(crate) struct Node {
+    pub(crate) name: String,
+    pub(crate) ips: Vec<IpAddr>,
+    pub(crate) claim: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,14 +49,13 @@ enum RegistryPayload {
 #[typetag::serde]
 impl Payload for RegistryPayload {}
 
-pub struct Registry {
+pub(crate) struct Registry {
     handle: RegistryHandle,
 
     id: NodeId,
     name: String,
     mesh: MeshHandle,
-    dm: Arc<Mutex<Box<dyn DeviceManager>>>,
-    connection_types: Vec<ConnectionType>,
+    dm: Rc<Mutex<Box<dyn DeviceManager>>>,
 
     packet_rx: mpsc::Receiver<Packet>,
     gossip_ticker: Interval,
@@ -84,13 +77,12 @@ pub struct Registry {
     notifiers: Vec<Weak<NotifyFn>>,
 }
 
-#[sactor(pub)]
+#[sactor(pub(crate))]
 impl Registry {
-    pub async fn new(
+    pub(crate) async fn new(
         id: NodeId,
         mesh: MeshHandle,
-        dm: Arc<Mutex<Box<dyn DeviceManager>>>,
-        connection_types: Vec<ConnectionType>,
+        dm: Rc<Mutex<Box<dyn DeviceManager>>>,
         name: String,
         ips: Arc<Mutex<IpMap>>,
     ) -> Result<RegistryHandle> {
@@ -98,7 +90,6 @@ impl Registry {
             id,
             mesh,
             dm,
-            connection_types,
             name,
             jitter(Duration::from_secs(5), 0.1),
             Duration::from_secs(120),
@@ -108,11 +99,10 @@ impl Registry {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn new_with_parameters(
+    pub(crate) async fn new_with_parameters(
         id: NodeId,
         mesh: MeshHandle,
-        dm: Arc<Mutex<Box<dyn DeviceManager>>>,
-        connection_types: Vec<ConnectionType>,
+        dm: Rc<Mutex<Box<dyn DeviceManager>>>,
         name: String,
         gossip_interval: Duration,
         node_timeout: Duration,
@@ -133,7 +123,6 @@ impl Registry {
             name,
             mesh,
             dm,
-            connection_types,
             packet_rx,
             gossip_ticker: delayed_interval(gossip_interval),
             ip_ticker: delayed_interval(Duration::from_secs(1)),
@@ -382,7 +371,6 @@ impl Registry {
         }
         Ok(Node {
             name: self.name.clone(),
-            connection_types: self.connection_types.clone(),
             ips,
             claim: self.claim,
         })
@@ -479,15 +467,15 @@ impl Registry {
         Ok(())
     }
 
-    pub async fn register_notifier(&mut self, notify: Weak<NotifyFn>) {
+    pub(crate) async fn register_notifier(&mut self, notify: Weak<NotifyFn>) {
         self.notifiers.push(notify);
     }
 
-    pub fn get_node_table(&self) -> HashMap<NodeId, (Node, Instant)> {
+    pub(crate) fn get_node_table(&self) -> HashMap<NodeId, (Node, Instant)> {
         self.nodes.clone()
     }
 
-    pub fn get_nodes(&self) -> Vec<NodeInfo> {
+    pub(crate) fn get_nodes(&self) -> Vec<NodeInfo> {
         let now = Instant::now();
         let mut nodes = self
             .nodes
@@ -496,11 +484,6 @@ impl Registry {
                 id: *id,
                 name: node.name.clone(),
                 ips: node.ips.iter().map(|ip| ip.to_string()).collect(),
-                connection_types: node
-                    .connection_types
-                    .iter()
-                    .map(|connection_type| connection_type_name(connection_type).to_owned())
-                    .collect(),
                 last_seen_ms: now.duration_since(*last_seen).as_millis() as i64,
             })
             .collect::<Vec<_>>();
@@ -508,13 +491,13 @@ impl Registry {
         nodes
     }
 
-    pub async fn get_stats(&self) -> RegistryStats {
+    pub(crate) async fn get_stats(&self) -> RegistryStats {
         let nodes = self.nodes.len() as u64;
         let ips = self.ips.lock().await.len() as u64;
         RegistryStats { nodes, ips }
     }
 
-    pub async fn get_local_ips(&self) -> Vec<String> {
+    pub(crate) async fn get_local_ips(&self) -> Vec<String> {
         match self.device_ips().await {
             Ok(ips) => ips.iter().map(|ip| ip.to_string()).collect(),
             Err(err) => {
@@ -522,13 +505,6 @@ impl Registry {
                 Vec::new()
             }
         }
-    }
-}
-
-fn connection_type_name(connection_type: &ConnectionType) -> &'static str {
-    match connection_type {
-        ConnectionType::Ice => "ice",
-        ConnectionType::DataChannel => "datachannel",
     }
 }
 

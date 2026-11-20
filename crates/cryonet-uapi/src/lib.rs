@@ -2,13 +2,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(target_os = "android")]
-uniffi::setup_scaffolding!();
-
 pub type NodeId = u64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct IgpRoute {
     pub seq: u16,
     pub metric: u32,
@@ -20,7 +16,6 @@ pub struct IgpRoute {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Enum))]
 pub enum ConnState {
     Connecting,
     Connected,
@@ -28,7 +23,6 @@ pub enum ConnState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct DaemonInfo {
     pub id: NodeId,
     pub name: String,
@@ -47,7 +41,6 @@ pub struct DaemonInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct LinkInfo {
     pub node: NodeId,
     pub alive: bool,
@@ -56,17 +49,14 @@ pub struct LinkInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct NodeInfo {
     pub id: NodeId,
     pub name: String,
     pub ips: Vec<String>,
-    pub connection_types: Vec<String>,
     pub last_seen_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct ServerInfo {
     pub url: String,
     pub node: Option<NodeId>,
@@ -75,7 +65,6 @@ pub struct ServerInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct IgpNeighbor {
     pub node: NodeId,
     pub cost: u32,
@@ -83,7 +72,6 @@ pub struct IgpNeighbor {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct IgpSource {
     pub dst: NodeId,
     pub seq: u16,
@@ -92,7 +80,6 @@ pub struct IgpSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct IgpRequest {
     pub dst: NodeId,
     pub seq: u16,
@@ -101,7 +88,6 @@ pub struct IgpRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct IgpStatus {
     pub self_seq: u16,
     pub neighbors: Vec<IgpNeighbor>,
@@ -119,7 +105,6 @@ pub struct IgpStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct PeerInfo {
     pub node: NodeId,
     pub state: ConnState,
@@ -133,11 +118,9 @@ pub struct PeerInfo {
     pub last_recv_ms: i64,
     pub last_rekey_ms: i64,
     pub key_index: Option<bool>,
-    pub connection_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct PendingPeer {
     pub node: NodeId,
     pub retry_in_ms: i64,
@@ -145,7 +128,6 @@ pub struct PendingPeer {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct FullMeshStatus {
     pub session: u64,
     pub peers: Vec<PeerInfo>,
@@ -153,7 +135,6 @@ pub struct FullMeshStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct MeshStats {
     pub links: u64,
     pub routes: u64,
@@ -171,7 +152,6 @@ pub struct MeshStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct IgpStats {
     pub routes: u64,
     pub selected: u64,
@@ -187,7 +167,6 @@ pub struct IgpStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct FullMeshStats {
     pub peers: u64,
     pub connected: u64,
@@ -198,14 +177,12 @@ pub struct FullMeshStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct RegistryStats {
     pub nodes: u64,
     pub ips: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(target_os = "android", derive(uniffi::Record))]
 pub struct Stats {
     pub uptime_ms: u64,
     pub mesh: MeshStats,

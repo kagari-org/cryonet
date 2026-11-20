@@ -6,18 +6,17 @@ use std::{
     time::{Duration, Instant as StdInstant},
 };
 
-use anyhow::{Error, Result};
-use cryonet_lib::{
-    collect_stats,
+use crate::{
     connection::ConnManagerHandle,
-    fullmesh::{fullmesh::FullMeshHandle, registry::RegistryHandle},
+    fullmesh::{manager::FullMeshHandle, registry::RegistryHandle},
     mesh::{
         MeshHandle,
         igp::IgpHandle,
         packet::{Packet, Payload},
     },
 };
-use cryonet_uapi::{CryonetUapi, DaemonInfo};
+use anyhow::{Error, Result};
+use cryonet_uapi::{ConnState, CryonetUapi, DaemonInfo, FullMeshStats, Stats};
 use sactor::sactor;
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -29,7 +28,40 @@ use tokio::{
 use tracing::{debug, error};
 use uuid::Uuid;
 
-pub struct Uapi {
+async fn collect_stats(
+    mesh: &MeshHandle,
+    igp: &IgpHandle,
+    fm: &FullMeshHandle,
+    registry: &RegistryHandle,
+    uptime_ms: u64,
+) -> Result<Stats> {
+    let status = fm.get_peers().await?;
+    let fullmesh = FullMeshStats {
+        peers: status.peers.len() as u64,
+        connected: status
+            .peers
+            .iter()
+            .filter(|peer| peer.state == ConnState::Connected)
+            .count() as u64,
+        connecting: status
+            .peers
+            .iter()
+            .filter(|peer| peer.state == ConnState::Connecting)
+            .count() as u64,
+        pending: status.pending.len() as u64,
+        sent: status.peers.iter().map(|peer| peer.sent).sum(),
+        received: status.peers.iter().map(|peer| peer.received).sum(),
+    };
+    Ok(Stats {
+        uptime_ms,
+        mesh: mesh.get_stats().await?,
+        igp: igp.get_stats().await?,
+        fullmesh,
+        registry: registry.get_stats().await?,
+    })
+}
+
+pub(crate) struct Uapi {
     handle: UapiHandle,
 
     mesh: MeshHandle,
@@ -57,10 +89,10 @@ enum UapiPayload {
     Pong(Uuid),
 }
 
-#[sactor(pub)]
+#[sactor(pub(crate))]
 impl Uapi {
     #[allow(clippy::too_many_arguments)]
-    pub async fn new(
+    pub(crate) async fn new(
         mesh: MeshHandle,
         igp: IgpHandle,
         fm: FullMeshHandle,
@@ -86,7 +118,7 @@ impl Uapi {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn new_with_parameters(
+    pub(crate) async fn new_with_parameters(
         mesh: MeshHandle,
         igp: IgpHandle,
         fm: FullMeshHandle,
@@ -98,10 +130,10 @@ impl Uapi {
         gc_interval: Duration,
         ping_timeout: Duration,
     ) -> Result<UapiHandle> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                create_dir_all(parent).await?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            create_dir_all(parent).await?;
         }
         let _ = remove_file(&path).await;
         let socket = UnixDatagram::bind(path).unwrap();

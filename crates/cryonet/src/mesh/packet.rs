@@ -3,25 +3,25 @@ use std::{any::Any, fmt::Debug};
 use dyn_clone::{DynClone, clone_trait_object};
 use serde::{Deserialize, Serialize};
 
-pub use cryonet_uapi::NodeId;
+pub(crate) use cryonet_uapi::NodeId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Packet {
-    pub src: NodeId,
-    pub dst: NodeId,
-    pub ttl: u8,
-    pub payload: PacketPayload,
+pub(crate) struct Packet {
+    pub(crate) src: NodeId,
+    pub(crate) dst: NodeId,
+    pub(crate) ttl: u8,
+    pub(crate) payload: PacketPayload,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PacketPayload {
+pub(crate) enum PacketPayload {
     Payload(Box<dyn Payload>),
     Reliable { seq: u64, payload: Box<dyn Payload> },
     Ack { seq: u64 },
 }
 
 impl PacketPayload {
-    pub fn as_payload(&self) -> Option<&dyn Payload> {
+    pub(crate) fn as_payload(&self) -> Option<&dyn Payload> {
         match self {
             PacketPayload::Payload(payload) | PacketPayload::Reliable { payload, .. } => {
                 Some(payload.as_ref())
@@ -32,7 +32,7 @@ impl PacketPayload {
 }
 
 #[typetag::serde]
-pub trait Payload: Debug + Send + Sync + Any + DynClone {}
+pub(crate) trait Payload: Debug + Send + Sync + Any + DynClone {}
 clone_trait_object!(Payload);
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Seq(pub u16);
+pub(crate) struct Seq(pub u16);
 
 impl Display for Seq {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -62,17 +62,17 @@ impl Ord for Seq {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SeqMetric {
-    pub seq: Seq,
-    pub metric: u32,
+pub(crate) struct SeqMetric {
+    pub(crate) seq: Seq,
+    pub(crate) metric: u32,
 }
 
 impl SeqMetric {
-    pub fn feasible(&self, rhs: &Self) -> bool {
+    pub(crate) fn feasible(&self, rhs: &Self) -> bool {
         self.metric == u32::MAX || self.better(rhs)
     }
 
-    pub fn better(&self, rhs: &Self) -> bool {
+    pub(crate) fn better(&self, rhs: &Self) -> bool {
         self.seq > rhs.seq || (self.seq == rhs.seq && self.metric < rhs.metric)
     }
 }

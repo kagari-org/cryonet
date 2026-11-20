@@ -1,5 +1,4 @@
 use std::{
-    any::Any,
     net::{IpAddr, SocketAddr},
     sync::{
         Arc,
@@ -26,35 +25,32 @@ use tracing::debug;
 
 use crate::{
     errors::CryonetError,
-    fullmesh::{
-        Connection, ConnectionReceiver, ConnectionSender, ConnectionState, IceServer,
-        fullmesh::FullMeshHandle,
-    },
+    fullmesh::{IceServer, manager::FullMeshHandle},
     mesh::packet::NodeId,
 };
 
 #[derive(Debug, Clone, Copy)]
-pub struct ConnectionRustrtcIceKey {
-    pub index: bool,
-    pub key: Key<Aes128Gcm>,
+pub(crate) struct IceKey {
+    pub(crate) index: bool,
+    pub(crate) key: Key<Aes128Gcm>,
 }
 
-pub struct ConnectionRustrtcIce {
+pub(crate) struct IceConnection {
     id: NodeId,
     peer_id: NodeId,
     ice: IceTransport,
     candidate_filter_prefixes: Vec<AnyIpCidr>,
     encrypt_local_packets: bool,
-    send_key: watch::Sender<Option<ConnectionRustrtcIceKey>>,
-    recv_key: watch::Sender<Option<ConnectionRustrtcIceKey>>,
+    send_key: watch::Sender<Option<IceKey>>,
+    recv_key: watch::Sender<Option<IceKey>>,
 
     sent: Arc<AtomicU64>,
     received: Arc<AtomicU64>,
 }
 
-impl ConnectionRustrtcIce {
+impl IceConnection {
     #[allow(clippy::too_many_arguments)]
-    pub async fn new(
+    pub(crate) async fn new(
         id: NodeId,
         peer_id: NodeId,
         fm: FullMeshHandle,
@@ -123,7 +119,7 @@ impl ConnectionRustrtcIce {
         let candidates = candidates.into_iter().map(|c| c.to_sdp()).collect();
 
         Ok((
-            ConnectionRustrtcIce {
+            IceConnection {
                 id,
                 peer_id,
                 ice,
@@ -139,11 +135,11 @@ impl ConnectionRustrtcIce {
         ))
     }
 
-    pub async fn start(&mut self, remote_parameters: IceParameters) -> Result<()> {
+    pub(crate) async fn start(&mut self, remote_parameters: IceParameters) -> Result<()> {
         self.ice.start(remote_parameters).await
     }
 
-    pub fn add_candidates(&self, candidates: &Vec<String>) {
+    pub(crate) fn add_candidates(&self, candidates: &Vec<String>) {
         for candidate in candidates {
             if let Ok(candidate) = IceCandidate::from_sdp(candidate) {
                 if self
@@ -158,35 +154,34 @@ impl ConnectionRustrtcIce {
         }
     }
 
-    pub fn set_recv_key(&self, key: ConnectionRustrtcIceKey) {
+    pub(crate) fn set_recv_key(&self, key: IceKey) {
         self.recv_key.send_replace(Some(key));
     }
 
-    pub fn set_send_key(&self, key: ConnectionRustrtcIceKey) {
+    pub(crate) fn set_send_key(&self, key: IceKey) {
         self.send_key.send_replace(Some(key));
     }
 
-    pub fn key(&self) -> Option<ConnectionRustrtcIceKey> {
+    pub(crate) fn key(&self) -> Option<IceKey> {
         *self.send_key.borrow()
     }
 }
 
-impl Drop for ConnectionRustrtcIce {
+impl Drop for IceConnection {
     fn drop(&mut self) {
         self.ice.stop();
     }
 }
 
-#[async_trait(?Send)]
-impl Connection for ConnectionRustrtcIce {
-    async fn sender(&self) -> Result<Box<dyn ConnectionSender>> {
+impl IceConnection {
+    pub(crate) fn sender(&self) -> Result<IceSender> {
         let key = self.send_key.subscribe();
         // The key is already set; a fresh watch receiver does not report it.
         let mut aes = Aes128Gcm::new(&[0u8; 16].into());
         if let Some(key) = *key.borrow() {
             aes = Aes128Gcm::new(&key.key);
         }
-        Ok(Box::new(ConnectionRustrtcIceSender {
+        Ok(IceSender {
             id: self.id,
             peer_id: self.peer_id,
             encrypt_local_packets: self.encrypt_local_packets,
@@ -197,10 +192,10 @@ impl Connection for ConnectionRustrtcIce {
             // We use counter=0 to indicate unencrypted packets.
             counter: 1,
             sent: self.sent.clone(),
-        }))
+        })
     }
 
-    async fn receiver(&self) -> Result<Box<dyn ConnectionReceiver>> {
+    pub(crate) async fn receiver(&self) -> Result<IceReceiver> {
         let (tx, rx) = mpsc::channel(16384);
         self.ice.set_data_receiver(Arc::new(MpscSender(tx))).await;
         let key = self.recv_key.subscribe();
@@ -212,63 +207,49 @@ impl Connection for ConnectionRustrtcIce {
         if let Some(key) = *key.borrow() {
             aes[if key.index { 1 } else { 0 }] = Aes128Gcm::new(&key.key);
         }
-        Ok(Box::new(ConnectionRustrtcIceReceiver {
+        Ok(IceReceiver {
             encrypt_local_packets: self.encrypt_local_packets,
             rx,
             key,
             aes,
             received: self.received.clone(),
-        }))
+        })
     }
 
-    fn sent(&self) -> u64 {
+    pub(crate) fn sent(&self) -> u64 {
         self.sent.load(Ordering::Relaxed)
     }
 
-    fn received(&self) -> u64 {
+    pub(crate) fn received(&self) -> u64 {
         self.received.load(Ordering::Relaxed)
     }
 
-    fn status(&self) -> ConnectionState {
-        use IceTransportState::*;
-        match self.ice.state() {
-            New | Checking => ConnectionState::Connecting,
-            Connected | Completed | Disconnected => ConnectionState::Connected,
-            Failed | Closed => ConnectionState::Closed,
-        }
+    pub(crate) fn state(&self) -> IceTransportState {
+        self.ice.state()
     }
 
-    async fn selected_candidate(&self) -> Option<String> {
+    pub(crate) async fn selected_candidate(&self) -> Option<String> {
         self.ice
             .get_selected_pair()
             .map(|pair| pair.remote.to_sdp())
     }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
 }
 
-pub struct ConnectionRustrtcIceSender {
+pub(crate) struct IceSender {
     id: NodeId,
     peer_id: NodeId,
     encrypt_local_packets: bool,
     socket: watch::Receiver<Option<IceSocketWrapper>>,
     pair: watch::Receiver<Option<IceCandidatePair>>,
-    key: watch::Receiver<Option<ConnectionRustrtcIceKey>>,
+    key: watch::Receiver<Option<IceKey>>,
     aes: Aes128Gcm,
     counter: u32,
 
     sent: Arc<AtomicU64>,
 }
 
-#[async_trait]
-impl ConnectionSender for ConnectionRustrtcIceSender {
-    async fn send(&mut self, data: Bytes) -> Result<usize> {
+impl IceSender {
+    pub(crate) async fn send(&mut self, data: Bytes) -> Result<usize> {
         let socket = self.socket.borrow().clone();
         let pair = self.pair.borrow().clone();
         if let Some(socket) = socket
@@ -322,13 +303,13 @@ impl ConnectionSender for ConnectionRustrtcIceSender {
     }
 }
 
-pub struct MpscSender(mpsc::Sender<(Bytes, SocketAddr)>);
+struct MpscSender(mpsc::Sender<(Bytes, SocketAddr)>);
 
-pub struct ConnectionRustrtcIceReceiver {
+pub(crate) struct IceReceiver {
     encrypt_local_packets: bool,
 
     rx: mpsc::Receiver<(Bytes, SocketAddr)>,
-    key: watch::Receiver<Option<ConnectionRustrtcIceKey>>,
+    key: watch::Receiver<Option<IceKey>>,
     aes: [Aes128Gcm; 2],
 
     received: Arc<AtomicU64>,
@@ -343,9 +324,8 @@ impl PacketReceiver for MpscSender {
     }
 }
 
-#[async_trait]
-impl ConnectionReceiver for ConnectionRustrtcIceReceiver {
-    async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
+impl IceReceiver {
+    pub(crate) async fn recv(&mut self) -> Result<(Bytes, SocketAddr)> {
         let (data, addr) = self.rx.recv().await.ok_or(CryonetError::ChannelClosed)?;
         if self.key.has_changed()? {
             let key = self.key.borrow_and_update().unwrap();
