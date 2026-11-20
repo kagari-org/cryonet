@@ -690,7 +690,7 @@ impl FullMesh {
                         pwd: parameters.password,
                         candidates,
                         // TODO: https://github.com/rust-lang/rust/issues/149488
-                        public_key: serde_json::to_string(&public_key).unwrap(),
+                        public_key: serde_json::to_string(&public_key).map_err(Error::from)?,
                         session: self.session,
                         conn_gen,
                     }),
