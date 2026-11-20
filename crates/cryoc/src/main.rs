@@ -418,6 +418,7 @@ async fn main() -> Result<()> {
                         let rekey = format_ms(peer.last_rekey_ms);
                         vec![
                             node_label(&names, peer.node),
+                            peer.interface.as_deref().unwrap_or("-").to_owned(),
                             if peer.initiator {
                                 "initiator"
                             } else {
@@ -439,6 +440,7 @@ async fn main() -> Result<()> {
                 table(
                     &[
                         "NODE",
+                        "IFACE",
                         "ROLE",
                         "GEN",
                         "STATE",

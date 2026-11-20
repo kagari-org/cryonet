@@ -703,6 +703,13 @@ impl FullMesh {
 
     pub(crate) async fn get_peers(&self) -> FullMeshStatus {
         let now = Instant::now();
+        let interfaces = {
+            let dm = self.dm.lock().await;
+            self.connections
+                .keys()
+                .map(|node_id| (*node_id, dm.interface(*node_id)))
+                .collect::<HashMap<_, _>>()
+        };
         let mut peers = Vec::with_capacity(self.connections.len());
         for (node_id, conn) in &self.connections {
             let state = to_conn_state(conn.connection.state());
@@ -710,6 +717,7 @@ impl FullMesh {
             let key_index = conn.connection.key().map(|key| key.index);
             peers.push(PeerInfo {
                 node: *node_id,
+                interface: interfaces.get(node_id).cloned().flatten(),
                 state,
                 initiator: is_initiator(self.id, *node_id),
                 peer_session: conn.peer_session,

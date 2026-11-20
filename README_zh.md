@@ -20,6 +20,10 @@ Cryonet 通过控制平面交换 ECDH 公钥，使用 AES-GCM 对数据进行加
 
 Cryonet 的 TAP 模式的数据包与 TUN 模式的数据包相同，因此网络中的节点可以混合使用 TUN 模式和 TAP 模式。
 
+## TLS
+
+Cryonet 的 `--listen` 是普通 WebSocket 监听，不提供 TLS。TLS 由反向代理终结，节点通过 `wss://` 连接反向代理。节点使用 `--servers wss://cryonet.example.com/`。认证 token 在 WebSocket 连接内传输。
+
 ## MPLS
 
 在开启 packet information 的情况下，Cryonet 支持传输 MPLS 包。TUN 设备在开启 packet information 的情况下可以正确处理 MPLS 包（尽管抓包工具可能无法正确解析）。

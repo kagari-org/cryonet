@@ -42,6 +42,9 @@ pub(crate) trait DeviceManager {
     ) -> Result<()>;
     async fn disconnected(&mut self, node_id: NodeId) -> Result<()>;
     async fn ips(&self) -> Result<Vec<IpAddr>>;
+    fn interface(&self, _node_id: NodeId) -> Option<String> {
+        None
+    }
     async fn neighbor_changed(&mut self, _ip: IpAddr) -> Result<()> {
         Ok(())
     }

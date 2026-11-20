@@ -22,6 +22,10 @@ In TAP mode, you can choose not to run a routing protocol on the interface. Simp
 
 Packets in TAP mode are identical to those in TUN mode, so nodes in the network can mix TUN mode and TAP mode.
 
+## TLS
+
+Cryonet's `--listen` is a plain WebSocket listener; it does not provide TLS. TLS termination is handled by a reverse proxy, and peers connect to the proxy with `wss://`. Peers use `--servers wss://cryonet.example.com/`. The authentication token is carried inside the WebSocket connection.
+
 ## MPLS
 
 When packet information is enabled, Cryonet supports forwarding MPLS packets. With packet information enabled, the TUN device can correctly handle MPLS packets (though packet capture tools may not parse them correctly).

@@ -149,6 +149,8 @@ const RELIABLE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const RELIABLE_RETRY_JITTER: f64 = 0.2;
 const RELIABLE_RETRY_TICK: Duration = Duration::from_millis(250);
 const RELIABLE_MAX_ATTEMPTS: u32 = 10;
+const MAX_PENDING_PER_PEER: usize = 256;
+const MAX_PENDING_TOTAL: usize = 8192;
 
 // Peers keep a receive window per source; starting at zero makes a restarted
 // process look like a duplicate of its previous run and its packets get dropped.
@@ -345,6 +347,7 @@ impl Mesh {
     ) -> Result<()> {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
+        self.trim_pending(dst);
         self.pending.insert(
             (dst, seq),
             PendingPacket {
@@ -359,6 +362,30 @@ impl Mesh {
             debug!("Reliable packet {seq} to {dst:X} is not routable yet: {err:?}");
         }
         Ok(())
+    }
+
+    #[skip]
+    fn trim_pending(&mut self, dst: NodeId) {
+        let per_peer = self.pending.keys().filter(|(peer, _)| *peer == dst).count();
+        if per_peer < MAX_PENDING_PER_PEER && self.pending.len() < MAX_PENDING_TOTAL {
+            return;
+        }
+        let victim = if per_peer >= MAX_PENDING_PER_PEER {
+            self.pending
+                .keys()
+                .filter(|(peer, _)| *peer == dst)
+                .min_by_key(|(_, seq)| *seq)
+                .copied()
+        } else {
+            self.pending.keys().min_by_key(|(_, seq)| *seq).copied()
+        };
+        if let Some(victim) = victim {
+            self.pending.remove(&victim);
+            warn!(
+                "Reliable pending queue full; dropping packet {:X} to {:X}",
+                victim.1, victim.0
+            );
+        }
     }
 
     async fn send_reliable_packet(

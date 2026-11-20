@@ -9,7 +9,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::{select, sync::watch};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::{
@@ -139,6 +139,13 @@ impl DeviceManager for TunManager {
         }
         Ok(result)
     }
+
+    fn interface(&self, node_id: NodeId) -> Option<String> {
+        self.devices
+            .get(&node_id)
+            .and_then(|device| device.upgrade())
+            .and_then(|device| device.name().ok())
+    }
 }
 
 async fn send_loop(
@@ -198,9 +205,17 @@ async fn recv_loop(
                         }
                     }
                 };
+                if packet.is_empty() {
+                    warn!("Received empty packet from node {node_id:X}");
+                    continue;
+                }
                 if packet.len() == 1 {
                     // Keepalive packet, ignore
                     debug!("Received keepalive packet from node {node_id:X}");
+                    continue;
+                }
+                if packet.len() > 2000 {
+                    warn!("Dropping oversized packet from node {node_id:X}: {} bytes", packet.len());
                     continue;
                 }
                 if let Err(err) = device.send(&packet).await {

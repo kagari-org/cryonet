@@ -107,6 +107,7 @@ pub struct IgpStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
     pub node: NodeId,
+    pub interface: Option<String>,
     pub state: ConnState,
     pub initiator: bool,
     pub peer_session: u64,

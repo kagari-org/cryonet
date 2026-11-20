@@ -166,6 +166,10 @@ impl DeviceManager for TapManager {
         Ok(self.device.addresses()?)
     }
 
+    fn interface(&self, _node_id: NodeId) -> Option<String> {
+        self.device.name().ok()
+    }
+
     async fn neighbor_changed(&mut self, _ip: IpAddr) -> Result<()> {
         #[cfg(target_os = "linux")]
         if let Some(if_index) = self.if_index {
@@ -425,6 +429,10 @@ async fn recv_loop(
                         }
                     }
                 };
+                if packet.is_empty() {
+                    warn!("Received empty packet from node {peer_id:X}");
+                    continue;
+                }
                 if packet.len() == 1 {
                     // Keepalive packet, ignore
                     debug!("Received keepalive packet from node {peer_id:X}");
@@ -442,13 +450,19 @@ async fn recv_loop(
                     let ethertype = if packet[0] >> 4 == 4 { EtherTypes::Ipv4 } else { EtherTypes::Ipv6 };
                     (&packet[..], ethertype, packet.len())
                 };
+                let frame_len = len + 14;
+                if frame_len > buf.len() {
+                    warn!(
+                        "Dropping oversized packet from node {peer_id:X}: {len} bytes of payload"
+                    );
+                    continue;
+                }
                 let mut ethernet = MutableEthernetPacket::new(&mut buf).unwrap();
                 ethernet.set_ethertype(ethertype);
                 ethernet.set_source(peer_mac.into());
                 ethernet.set_destination(device_mac.into());
                 ethernet.set_payload(payload);
-                // 14 is the size of the Ethernet header
-                if let Err(err) = device.send(&buf[..(len + 14)]).await {
+                if let Err(err) = device.send(&buf[..frame_len]).await {
                     error!("Failed to write to TAP device for node {peer_id:X}: {err}");
                 }
             }
