@@ -17,6 +17,7 @@ proto_cryonet_init_config() {
 	proto_config_add_string 'ipv6_subnet'
 	proto_config_add_boolean 'encrypt_local_packets'
 	proto_config_add_boolean 'enable_packet_information'
+	proto_config_add_boolean 'enable_mpls'
 	proto_config_add_string 'ipaddr:ipaddr'
 	proto_config_add_string 'ip6addr:ip6addr'
 	no_device=1
@@ -26,9 +27,9 @@ proto_cryonet_init_config() {
 proto_cryonet_setup() {
 	local config="$1"
 	local name id token listen servers ice_servers candidate_filter_prefixes
-	local tap_interface_name ipv6_subnet encrypt_local_packets enable_packet_information ipaddr ip6addr
+	local tap_interface_name ipv6_subnet encrypt_local_packets enable_packet_information enable_mpls ipaddr ip6addr
 	json_get_vars name id token listen servers ice_servers candidate_filter_prefixes \
-		tap_interface_name ipv6_subnet encrypt_local_packets enable_packet_information ipaddr ip6addr
+		tap_interface_name ipv6_subnet encrypt_local_packets enable_packet_information enable_mpls ipaddr ip6addr
 
 	case "$config" in
 		''|*[!a-zA-Z0-9_]*) proto_notify_error "$config" INVALID_INTERFACE; proto_block_restart "$config"; return 1 ;;
@@ -51,6 +52,17 @@ proto_cryonet_setup() {
 		proto_block_restart "$config"
 		return 1
 	}
+	if [ "$enable_mpls" = 1 ]; then
+		[ "$enable_packet_information" = 1 ] || {
+			proto_notify_error "$config" MPLS_REQUIRES_PACKET_INFORMATION
+			proto_block_restart "$config"
+			return 1
+		}
+		[ -e /proc/sys/net/mpls/platform_labels ] || {
+			proto_notify_error "$config" MPLS_UNAVAILABLE
+			return 1
+		}
+	fi
 	# Do not mistake an existing device (possibly another instance) for ours.
 	[ ! -e "/sys/class/net/$tap_interface_name" ] || {
 		proto_notify_error "$config" DEVICE_IN_USE
@@ -78,6 +90,7 @@ proto_cryonet_setup() {
 	[ -n "$ipv6_subnet" ] && set -- "$@" --ipv6-subnet "$ipv6_subnet"
 	[ "$encrypt_local_packets" = 1 ] && set -- "$@" --encrypt-local-packets
 	[ "$enable_packet_information" = 1 ] && set -- "$@" --enable-packet-information
+	[ "$enable_mpls" = 1 ] && set -- "$@" --enable-mpls
 
 	proto_run_command "$config" "$@" || {
 		proto_notify_error "$config" START_FAILED

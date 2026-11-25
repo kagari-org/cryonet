@@ -30,6 +30,8 @@ Cryonet's `--listen` is a plain WebSocket listener; it does not provide TLS. TLS
 
 When packet information is enabled, Cryonet supports forwarding MPLS packets. With packet information enabled, the TUN device can correctly handle MPLS packets (though packet capture tools may not parse them correctly).
 
+On Linux, pass `--enable-mpls` together with `--enable-packet-information` to have Cryonet configure the required MPLS sysctls: it raises `net.mpls.platform_labels` from zero if needed and enables `net.mpls.conf.<interface>.input` on every interface it creates.
+
 ## Usage
 
 Use the `--help` option to see usage instructions. You can also use the `cryoc` command-line tool to communicate with the Cryonet daemon and query its running status.

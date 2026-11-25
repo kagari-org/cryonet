@@ -28,6 +28,8 @@ Cryonet 的 `--listen` 是普通 WebSocket 监听，不提供 TLS。TLS 由反�
 
 在开启 packet information 的情况下，Cryonet 支持传输 MPLS 包。TUN 设备在开启 packet information 的情况下可以正确处理 MPLS 包（尽管抓包工具可能无法正确解析）。
 
+在 Linux 上，同时传入 `--enable-mpls` 与 `--enable-packet-information` 后，Cryonet 会自动配置所需的 MPLS sysctl：必要时将 `net.mpls.platform_labels` 从 0 提高，并为它创建的每个接口开启 `net.mpls.conf.<interface>.input`。
+
 ## 使用方法
 
 请使用 `--help` 选项查看使用方法。你还可以使用 `cryoc` 命令行工具与 Cryonet 守护进程通信，查询运行状态。

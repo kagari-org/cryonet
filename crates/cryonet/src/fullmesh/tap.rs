@@ -31,7 +31,7 @@ use crate::{
         ice::{IceReceiver, IceSender},
     },
     mesh::packet::NodeId,
-    utils::{delayed_interval, jitter, random_mac},
+    utils::{delayed_interval, enable_mpls_input, jitter, random_mac},
 };
 
 pub(crate) struct TapManager {
@@ -50,6 +50,7 @@ impl TapManager {
     pub(crate) fn new(
         tap_interface_name: String,
         enable_packet_information: bool,
+        enable_mpls: bool,
         ips: Arc<Mutex<IpMap>>,
         ipv6: Option<Ipv6Addr>,
     ) -> Result<TapManager> {
@@ -64,6 +65,9 @@ impl TapManager {
             builder = builder.ipv6(ipv6, 64u8);
         }
         let device = Arc::new(builder.build_async()?);
+        if enable_mpls {
+            enable_mpls_input(&device.name()?)?;
+        }
         let tap_mac = device.mac_address()?;
         Self::new_with_device(tap_mac, enable_packet_information, ips, device)
     }

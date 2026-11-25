@@ -57,6 +57,8 @@ struct Args {
     interface_prefix: String,
     #[clap(env, long, default_value_t = false)]
     enable_packet_information: bool,
+    #[clap(env, long, default_value_t = false)]
+    enable_mpls: bool,
     #[clap(env, long)]
     ipv6_subnet: Option<Ipv6Cidr>,
     #[clap(env, long)]
@@ -101,6 +103,9 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
+    if args.enable_mpls && !args.enable_packet_information {
+        bail!("--enable-mpls requires --enable-packet-information");
+    }
     let ctl_path = match (
         args.ctl_path,
         var("RUNTIME_DIRECTORY"),
@@ -150,6 +155,7 @@ async fn main() -> Result<()> {
                     ctl_path: ctl_path.display().to_string(),
                     encrypt_local_packets: args.encrypt_local_packets,
                     packet_information: args.enable_packet_information,
+                    mpls: args.enable_mpls,
                     ice_servers: args
                         .ice_servers
                         .iter()
@@ -162,6 +168,9 @@ async fn main() -> Result<()> {
                         .collect(),
                     local_ips: Vec::new(),
                 };
+                if args.enable_mpls {
+                    utils::init_mpls()?;
+                }
                 let mesh = Mesh::new(id);
                 let igp = Igp::new(id, mesh.clone()).await?;
                 let mgr = ConnManager::new(id, mesh.clone(), args.token, args.servers, args.listen)
@@ -171,6 +180,7 @@ async fn main() -> Result<()> {
                     Rc::new(Mutex::new(Box::new(TapManager::new(
                         args.tap_interface_name,
                         args.enable_packet_information,
+                        args.enable_mpls,
                         ips.clone(),
                         ipv6,
                     )?)))
@@ -178,6 +188,7 @@ async fn main() -> Result<()> {
                     Rc::new(Mutex::new(Box::new(TunManager::new(
                         args.interface_prefix,
                         args.enable_packet_information,
+                        args.enable_mpls,
                         ipv6,
                     ))))
                 };

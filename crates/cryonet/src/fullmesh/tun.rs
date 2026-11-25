@@ -19,12 +19,13 @@ use crate::{
         ice::{IceReceiver, IceSender},
     },
     mesh::packet::NodeId,
-    utils::{delayed_interval, jitter},
+    utils::{delayed_interval, enable_mpls_input, jitter},
 };
 
 pub(crate) struct TunManager {
     interface_prefix: String,
     enable_packet_information: bool,
+    enable_mpls: bool,
     ipv6: Option<Ipv6Addr>,
     keepalive_interval: Duration,
     next_device: u32,
@@ -37,11 +38,13 @@ impl TunManager {
     pub(crate) fn new(
         interface_prefix: String,
         enable_packet_information: bool,
+        enable_mpls: bool,
         ipv6: Option<Ipv6Addr>,
     ) -> TunManager {
         Self::new_with_parameters(
             interface_prefix,
             enable_packet_information,
+            enable_mpls,
             ipv6,
             Duration::from_secs(3),
         )
@@ -50,12 +53,14 @@ impl TunManager {
     pub(crate) fn new_with_parameters(
         interface_prefix: String,
         enable_packet_information: bool,
+        enable_mpls: bool,
         ipv6: Option<Ipv6Addr>,
         keepalive_interval: Duration,
     ) -> TunManager {
         TunManager {
             interface_prefix,
             enable_packet_information,
+            enable_mpls,
             ipv6,
             keepalive_interval,
             next_device: 0,
@@ -79,6 +84,9 @@ impl TunManager {
             builder = builder.ipv6(ipv6, 64u8);
         }
         let device = Arc::new(builder.build_async()?);
+        if self.enable_mpls {
+            enable_mpls_input(&device.name()?)?;
+        }
         self.devices.insert(node_id, Arc::downgrade(&device));
         Ok(device)
     }

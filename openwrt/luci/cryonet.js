@@ -9,6 +9,8 @@ network.registerErrorCode('DEVICE_IN_USE', _('The TAP device already exists. Cho
 network.registerErrorCode('SOCKET_CLEANUP_FAILED', _('Unable to remove the previous control socket.'));
 network.registerErrorCode('START_FAILED', _('Unable to start Cryonet.'));
 network.registerErrorCode('START_TIMEOUT', _('Cryonet did not create its TAP device and control socket within 10 seconds.'));
+network.registerErrorCode('MPLS_REQUIRES_PACKET_INFORMATION', _('MPLS support requires packet information.'));
+network.registerErrorCode('MPLS_UNAVAILABLE', _('MPLS is not available in this kernel. Install the MPLS kernel modules.'));
 
 return network.registerProtocol('cryonet', {
 	getI18n() {
@@ -113,5 +115,11 @@ return network.registerProtocol('cryonet', {
 		o = s.taboption('advanced', form.Flag, 'enable_packet_information', _('Enable packet information'));
 		o.default = o.disabled;
 		o.rmempty = false;
+
+		o = s.taboption('advanced', form.Flag, 'enable_mpls', _('Enable MPLS'),
+			_('Let Cryonet configure the MPLS sysctls for its interface. Requires packet information.'));
+		o.default = o.disabled;
+		o.rmempty = false;
+		o.depends('enable_packet_information', '1');
 	}
 });

@@ -35,6 +35,7 @@ pub struct DaemonInfo {
     pub ctl_path: String,
     pub encrypt_local_packets: bool,
     pub packet_information: bool,
+    pub mpls: bool,
     pub ice_servers: Vec<String>,
     pub candidate_filter_prefixes: Vec<String>,
     pub local_ips: Vec<String>,

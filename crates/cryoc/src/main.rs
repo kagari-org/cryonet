@@ -463,6 +463,7 @@ fn print_info(info: DaemonInfo) {
         "PACKET INFO",
         if info.packet_information { "on" } else { "off" },
     );
+    kv("MPLS", if info.mpls { "on" } else { "off" });
     kv("CONTROL", info.ctl_path);
     kv("LOCAL IPS", join_or_dash(&info.local_ips));
     kv("ICE SERVERS", join_or_dash(&info.ice_servers));
