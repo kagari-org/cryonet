@@ -40,7 +40,6 @@ pub(crate) struct TapManager {
     device: Arc<AsyncDevice>,
     tap_mac: [u8; 6],
     macs: HashMap<NodeId, [u8; 6]>,
-    #[cfg(target_os = "linux")]
     if_index: Option<u32>,
     send_msg_tx: mpsc::UnboundedSender<SendLoopMessage>,
     recv_tasks: HashMap<NodeId, watch::Sender<bool>>,
@@ -78,7 +77,6 @@ impl TapManager {
         ips: Arc<Mutex<IpMap>>,
         device: Arc<AsyncDevice>,
     ) -> Result<TapManager> {
-        #[cfg(target_os = "linux")]
         let if_index = device.name().ok().and_then(|name| {
             let name = std::ffi::CString::new(name).ok()?;
             let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
@@ -91,7 +89,6 @@ impl TapManager {
             tap_mac,
             ips,
             device: device.clone(),
-            #[cfg(target_os = "linux")]
             if_index,
         };
         tokio::spawn(context.run(send_msg_rx, Duration::from_secs(3)));
@@ -99,7 +96,6 @@ impl TapManager {
             device,
             tap_mac,
             macs: HashMap::new(),
-            #[cfg(target_os = "linux")]
             if_index,
             enable_packet_information,
             send_msg_tx,
@@ -173,7 +169,6 @@ impl DeviceManager for TapManager {
     }
 
     async fn neighbor_changed(&mut self, _ip: IpAddr) -> Result<()> {
-        #[cfg(target_os = "linux")]
         if let Some(if_index) = self.if_index {
             delete_neighbor(if_index, _ip);
         }
@@ -196,7 +191,6 @@ enum SendLoopMessage {
     Disconnected(NodeId),
 }
 
-#[cfg(target_os = "linux")]
 fn delete_neighbor(if_index: u32, ip: IpAddr) {
     use netlink_packet_core::{NLM_F_REQUEST, NetlinkHeader, NetlinkMessage, NetlinkPayload};
     use netlink_packet_route::{
@@ -235,7 +229,6 @@ struct TapContext {
     tap_mac: [u8; 6],
     ips: Arc<Mutex<IpMap>>,
     device: Arc<AsyncDevice>,
-    #[cfg(target_os = "linux")]
     if_index: Option<u32>,
 }
 
@@ -273,7 +266,6 @@ impl TapContext {
 
     async fn disconnect(&self, peers: &mut Peers, node_id: NodeId) {
         peers.remove(node_id);
-        #[cfg(target_os = "linux")]
         if let Some(if_index) = self.if_index {
             let peer_ips: Vec<IpAddr> = {
                 let ip_map = self.ips.lock().await;

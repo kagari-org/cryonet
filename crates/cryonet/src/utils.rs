@@ -2,7 +2,6 @@ use std::time::Duration;
 
 pub(crate) use tokio::time::{Instant, Interval, MissedTickBehavior, interval, timeout};
 
-#[cfg(target_os = "linux")]
 pub(crate) fn init_mpls() -> anyhow::Result<()> {
     const PLATFORM_LABELS: &str = "/proc/sys/net/mpls/platform_labels";
     let labels = std::fs::read_to_string(PLATFORM_LABELS)
@@ -14,22 +13,11 @@ pub(crate) fn init_mpls() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn init_mpls() -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("MPLS is only supported on Linux"))
-}
-
-#[cfg(target_os = "linux")]
 pub(crate) fn enable_mpls_input(interface: &str) -> anyhow::Result<()> {
     let path = format!("/proc/sys/net/mpls/conf/{interface}/input");
     std::fs::write(&path, "1\n")
         .map_err(|err| anyhow::anyhow!("Failed to enable MPLS input on {interface}: {err}"))?;
     Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn enable_mpls_input(_interface: &str) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("MPLS is only supported on Linux"))
 }
 
 pub(crate) fn jitter(period: Duration, ratio: f64) -> Duration {
