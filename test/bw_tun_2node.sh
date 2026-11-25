@@ -252,8 +252,93 @@ log "data path up after ${i}s"
 log "MTU/mss: cn0=$(ip -n "$NS1" link show cn0 | sed -n 's/.*mtu \([0-9]*\).*/\1/p')"
 ip netns exec "$NS1" "$IPERF3" -c "$TB" -t 2 -O 1 -i 0 >/dev/null 2>&1 || true
 
+PERF=${PERF:-}
+PERF_DIR=${PERF_DIR:-}
+PERF_FREQ=${PERF_FREQ:-999}
+PERF_CALLGRAPH=${PERF_CALLGRAPH:-fp}
+declare -A PERF_PID
+
+perf_start() { # tag
+    [ -n "$PERF_DIR" ] || return 0
+    local tag=$1 i pid
+    mkdir -p "$PERF_DIR"
+    for i in 1 2; do
+        pid=${NODE_PID[$i]:-}
+        [ -n "$pid" ] || continue
+        "$PERF" record -p "$pid" -F "$PERF_FREQ" -g --call-graph "$PERF_CALLGRAPH" \
+            -o "$PERF_DIR/perf-$tag-node$i.data" \
+            >"$PERF_DIR/perf-$tag-node$i.log" 2>&1 &
+        PERF_PID[$i]=$!
+    done
+    sleep 0.5
+}
+
+perf_stop() {
+    [ -n "$PERF_DIR" ] || return 0
+    local i pid
+    for i in 1 2; do
+        pid=${PERF_PID[$i]:-}
+        [ -n "$pid" ] && kill -INT "$pid" 2>/dev/null
+    done
+    for i in 1 2; do
+        pid=${PERF_PID[$i]:-}
+        [ -n "$pid" ] && wait "$pid" 2>/dev/null
+        unset 'PERF_PID[$i]'
+    done
+}
+
+STRACE=${STRACE:-}
+STRACE_DIR=${STRACE_DIR:-}
+STRACE_SECS=${STRACE_SECS:-3}
+declare -A STRACE_PID
+
+strace_start() { # tag
+    [ -n "$STRACE_DIR" ] || return 0
+    local tag=$1 i pid
+    mkdir -p "$STRACE_DIR"
+    for i in 1 2; do
+        pid=${NODE_PID[$i]:-}
+        [ -n "$pid" ] || continue
+        timeout -s INT "$STRACE_SECS" "$STRACE" -c -f -p "$pid" \
+            -o "$STRACE_DIR/strace-$tag-node$i.txt" >/dev/null 2>&1 &
+        STRACE_PID[$i]=$!
+    done
+}
+
+strace_stop() {
+    [ -n "$STRACE_DIR" ] || return 0
+    local i pid
+    for i in 1 2; do
+        pid=${STRACE_PID[$i]:-}
+        [ -n "$pid" ] && wait "$pid" 2>/dev/null
+        unset 'STRACE_PID[$i]'
+    done
+}
+
+SNMP_DUMP=${SNMP_DUMP:-0}
+
+snmp_dump() { # tag
+    [ "$SNMP_DUMP" = 1 ] || return 0
+    local tag=$1 i ns
+    for i in 1 2; do
+        ns="NS$i"
+        ip netns exec "${!ns}" cat /proc/net/snmp >"$OUT/snmp-$tag-node$i.txt" 2>&1 || true
+    done
+}
+
+snmp_dump before
+perf_start tun-fwd
+strace_start tun-fwd
 run_iperf tun-fwd "$NS1" "$NS2" "$CPIC" "$CPIS" "$TB"
+strace_stop
+perf_stop
+
+perf_start tun-rev
+strace_start tun-rev
 run_iperf tun-rev "$NS1" "$NS2" "$CPIC" "$CPIS" "$TB" -R
+strace_stop
+perf_stop
+snmp_dump after
 
 if [ "$UDP" = 1 ]; then
     run_iperf tun-udp-fwd "$NS1" "$NS2" "$CPIC" "$CPIS" "$TB" -u -b 0 -l 1200
